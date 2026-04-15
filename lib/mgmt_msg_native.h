@@ -256,6 +256,24 @@ _Static_assert(sizeof(struct mgmt_msg_header) ==
 			       sizeof(((struct mgmt_msg_header *)0)->req_id),
 	       "Size mismatch");
 
+/*
+ * Wire error values for struct mgmt_msg_error.error. Defined with
+ * literal numbers (not -E<name> from <errno.h>) so external clients on
+ * non-Linux libcs match the on-wire numbers, not their local errno.
+ */
+#define MGMT_MSG_ERR_OK		  0
+#define MGMT_MSG_ERR_NOT_FOUND	  (-2)
+#define MGMT_MSG_ERR_IO		  (-5)
+#define MGMT_MSG_ERR_TXN_LOCKED	  (-11)
+#define MGMT_MSG_ERR_NO_MEMORY	  (-12)
+#define MGMT_MSG_ERR_INTERNAL	  (-14)
+#define MGMT_MSG_ERR_LOCKED	  (-16)
+#define MGMT_MSG_ERR_EXISTS	  (-17)
+#define MGMT_MSG_ERR_YANG_INVALID (-22)
+#define MGMT_MSG_ERR_BAD_MSG	  (-74)
+#define MGMT_MSG_ERR_NO_CHANGES	  (-114)
+#define MGMT_MSG_ERR_IN_PROGRESS  (-115)
+
 /**
  * struct mgmt_msg_error - Common error message.
  *
