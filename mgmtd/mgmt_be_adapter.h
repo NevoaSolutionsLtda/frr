@@ -49,6 +49,17 @@ struct mgmt_be_client_adapter {
 
 	struct mgmt_commit_stats cfg_stats;
 
+	/*
+	 * UB-14 telemetry: number of CFG_APPLY_REQ messages sent to this
+	 * backend that have not yet been acknowledged with CFG_APPLY_REPLY.
+	 * Incremented in txn_cfg_send_cfg_apply, decremented in
+	 * mgmt_txn_handle_cfg_apply_reply. Exposed via zlog_info entries
+	 * tagged "cmt-telemetry:" for post-hoc queue-depth analysis in the
+	 * mgc-connect PoC. Local-only instrumentation — not for upstream
+	 * submission while FRR freeze is active.
+	 */
+	uint32_t inflight_commits;
+
 	LIST_ENTRY(mgmt_be_client_adapter) link;
 };
 
