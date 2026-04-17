@@ -403,13 +403,16 @@ static int txn_cfg_make_and_send_cfg_req(struct txn_req_commit *ccreq,
 			UNSET_IDBIT(ccreq->clients, id);
 			msg_conn_disconnect(adapter->conn, false);
 		} else {
-			/* UB-14 telemetry — SEND_CFG phase (sessão 4i-J) */
+			/* UB-14 telemetry — SEND_CFG phase (sessão 4i-J; epoch added 4i-K) */
 			gettimeofday(&ccreq->cmt_stats->prep_cfg_start, NULL);
 			adapter->inflight_commits++;
 			zlog_info("cmt-telemetry: event=send_enqueue txn_id=%" PRIu64
-				  " adapter=%s inflight=%u",
+				  " adapter=%s inflight=%u enqueue_epoch_us=%lld",
 				  txn_req->txn->txn_id, adapter->name,
-				  adapter->inflight_commits);
+				  adapter->inflight_commits,
+				  (long long)ccreq->cmt_stats->prep_cfg_start.tv_sec *
+						  1000000LL +
+					  (long long)ccreq->cmt_stats->prep_cfg_start.tv_usec);
 		}
 		ccreq->cmt_stats->last_num_cfgdata_reqs++;
 	}
@@ -847,9 +850,11 @@ void mgmt_txn_handle_cfg_apply_reply(uint64_t txn_id, struct mgmt_be_client_adap
 				   ccreq->cmt_stats->apply_cfg_start.tv_usec);
 		}
 		zlog_info("cmt-telemetry: event=apply_ack txn_id=%" PRIu64
-			  " adapter=%s inflight=%u wall_us=%lu",
+			  " adapter=%s inflight=%u wall_us=%lu ack_epoch_us=%lld",
 			  txn_id, adapter->name, adapter->inflight_commits,
-			  wall_us);
+			  wall_us,
+			  (long long)ack_now.tv_sec * 1000000LL +
+				  (long long)ack_now.tv_usec);
 	}
 
 	txn_cfg_adapter_acked(ccreq, adapter);

@@ -39,6 +39,9 @@ struct mgmt_edit_req {
 	bool created;
 	bool unlock_candidate;
 	bool unlock_running;
+	/* UB-14 telemetry — dark phases (sessão 4i-K) */
+	struct timeval fe_edit_recv;
+	struct timeval fe_reply_sent;
 };
 
 /* Initialise frontend adapter module */

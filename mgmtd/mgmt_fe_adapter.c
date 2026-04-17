@@ -1184,6 +1184,13 @@ int mgmt_fe_adapter_send_edit_reply(uint64_t session_id, uint64_t txn_id, uint64
 	if ((*edit)->unlock_candidate)
 		mgmt_fe_session_unlock_ds(can_id, can_ds, session);
 
+	/* UB-14 telemetry — FE reply about to be sent (sessão 4i-K) */
+	gettimeofday(&(*edit)->fe_reply_sent, NULL);
+	zlog_info("cmt-telemetry: event=fe_reply_sent phase=dark txn_id=%" PRIu64
+		  " reply_epoch_us=%lld",
+		  txn_id,
+		  (long long)(*edit)->fe_reply_sent.tv_sec * 1000000LL +
+			  (long long)(*edit)->fe_reply_sent.tv_usec);
 
 	if (result != MGMTD_SUCCESS && result != MGMTD_NO_CFG_CHANGES)
 		ret = fe_session_send_error(session, req_id, false, mgmt_result_to_error(result),
@@ -1216,6 +1223,10 @@ static void fe_session_handle_edit(struct mgmt_fe_session_ctx *session, void *_m
 	char errstr[BUFSIZ];
 	bool commit;
 	int ret;
+	/* UB-14 telemetry — capture FE EDIT receive timestamp (sessão 4i-K) */
+	struct timeval fe_edit_recv;
+
+	gettimeofday(&fe_edit_recv, NULL);
 
 	/* grab the deprecated commit flag -- the lock flag isn't required at all */
 	commit = CHECK_FLAG(msg->flags, EDIT_FLAG_IMPLICIT_COMMIT);
@@ -1280,6 +1291,8 @@ static void fe_session_handle_edit(struct mgmt_fe_session_ctx *session, void *_m
 	edit->unlock_candidate = implicit_can_lock;
 	edit->unlock_running = implicit_run_lock;
 	edit->nb_backup = nb_config_dup(nb_config); /* keep a backup of candidate */
+	/* UB-14 telemetry — carry FE EDIT receive timestamp through TXN (sessão 4i-K) */
+	edit->fe_edit_recv = fe_edit_recv;
 
 	/* Make edits to the candidate DS */
 	ret = nb_candidate_edit_tree(nb_config, msg->operation, msg->request_type, xpath, data,
@@ -1300,6 +1313,13 @@ static void fe_session_handle_edit(struct mgmt_fe_session_ctx *session, void *_m
 
 		_dbg("Created new config txn-id: %Lu for session-id: %Lu", txn_id,
 		     session->session_id);
+
+		/* UB-14 telemetry — FE EDIT received (sessão 4i-K) */
+		zlog_info("cmt-telemetry: event=fe_edit_recv phase=dark txn_id=%" PRIu64
+			  " recv_epoch_us=%lld",
+			  txn_id,
+			  (long long)fe_edit_recv.tv_sec * 1000000LL +
+				  (long long)fe_edit_recv.tv_usec);
 
 		/* And this is modifying the running */
 		mgmt_txn_send_commit_config_req(txn_id, msg->req_id, can_id, can_ds, run_id,
