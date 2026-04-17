@@ -50,7 +50,9 @@
 #include "bgpd/bgp_evpn_mh.h"
 #include "bgpd/bgp_nhg.h"
 #include "bgpd/bgp_routemap_nb.h"
+#include "bgpd/bgpd_nb_lite.h"
 #include "bgpd/bgp_community_alias.h"
+#include "lib/mgmt_be_client.h"
 
 DEFINE_HOOK(bgp_hook_config_write_vrf, (struct vty *vty, struct vrf *vrf),
 	    (vty, vrf));
@@ -380,6 +382,7 @@ static const struct frr_yang_module_info *const bgpd_yang_modules[] = {
 	&frr_route_map_info,
 	&frr_vrf_info,
 	&frr_bgp_route_map_info,
+	&frr_bgpd_lite_info,
 };
 
 /* clang-format off */
@@ -396,6 +399,34 @@ FRR_DAEMON_INFO(bgpd, BGP,
 	.n_yang_modules = array_size(bgpd_yang_modules),
 );
 /* clang-format on */
+
+static const char *const bgpd_config_xpaths[] = {
+	"/frr-host:host",
+	"/frr-logging:logging",
+	"/frr-interface:lib/interface",
+	"/frr-route-map:lib",
+	"/frr-vrf:lib",
+	"/frr-rt:routing",
+	"/frr-bgpd-lite:bgp",
+};
+
+static const char *const bgpd_oper_xpaths[] = {
+	"/frr-backend:clients",
+	"/frr-rt:routing",
+};
+
+static const char *const bgpd_rpc_xpaths[] = {
+	"/frr-logging",
+};
+
+static struct mgmt_be_client_cbs bgpd_be_client_data = {
+	.config_xpaths = bgpd_config_xpaths,
+	.nconfig_xpaths = array_size(bgpd_config_xpaths),
+	.oper_xpaths = bgpd_oper_xpaths,
+	.noper_xpaths = array_size(bgpd_oper_xpaths),
+	.rpc_xpaths = bgpd_rpc_xpaths,
+	.nrpc_xpaths = array_size(bgpd_rpc_xpaths),
+};
 
 #define DEPRECATED_OPTIONS ""
 
@@ -542,6 +573,8 @@ int main(int argc, char **argv)
 	}
 
 	bgp_if_init();
+
+	(void)mgmt_be_client_create("bgpd", &bgpd_be_client_data, 0, bm->master);
 
 	frr_config_fork();
 	/* must be called after fork() */

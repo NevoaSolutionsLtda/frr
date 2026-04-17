@@ -148,6 +148,16 @@ const struct frr_yang_module_info zebra_route_map_info = {
 	.nodes = { { .xpath = NULL } },
 };
 
+/* MGC Connect bgpd-lite -- stub so mgmtd libyang context can validate
+ * EditCandidate paths under /frr-bgpd-lite:bgp. Actual callbacks live in
+ * bgpd (see bgpd/bgpd_nb_config_lite.c and registration in bgp_main.c).
+ */
+const struct frr_yang_module_info frr_bgpd_lite_info_stub = {
+	.name = "frr-bgpd-lite",
+	.ignore_cfg_cbs = true,
+	.nodes = { { .xpath = NULL } },
+};
+
 /*
  * List of YANG modules to be loaded in the process context of
  * MGMTd.
@@ -172,6 +182,7 @@ static const struct frr_yang_module_info *const mgmt_yang_modules[] = {
 
 	&frr_zebra_cli_info,
 	&zebra_route_map_info,
+	&frr_bgpd_lite_info_stub,
 	&ietf_key_chain_cli_info,
 	&ietf_key_chain_deviation_info,
 	&ietf_srv6_types_info,

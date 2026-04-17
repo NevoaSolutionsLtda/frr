@@ -1,0 +1,323 @@
+module frr-bgpd-lite {
+  yang-version 1.1;
+  namespace "http://frrouting.org/yang/bgpd-lite";
+  prefix frr-bgpd-lite;
+
+  import ietf-inet-types {
+    prefix inet;
+    reference "RFC 6991: Common YANG Data Types.";
+  }
+  import ietf-routing-types {
+    prefix rt-types;
+    reference "RFC 8294: Common YANG Data Types for the Routing Area.";
+  }
+  import frr-interface {
+    prefix frr-interface;
+  }
+  import frr-vrf {
+    prefix frr-vrf;
+  }
+  import frr-route-map {
+    prefix frr-route-map;
+  }
+  import frr-filter {
+    prefix frr-filter;
+  }
+
+  organization
+    "FRRouting";
+  contact
+    "FRR mailing list: dev@lists.frrouting.org";
+  description
+    "Minimal northbound model for bgpd. Scope: single-AF IPv4-unicast,
+     no peer-group, no VPN/EVPN. Designed to coexist with legacy
+     frr-bgp.yang -- this module owns /frr-bgpd-lite:bgp and nothing
+     else. Follows the ospfd-lite precedent (FRR PR #18401).
+
+     Staged by MGC Connect PoC (Reinaldo Saraiva). Intended for
+     upstream contribution to FRRouting/frr.";
+
+  revision 2026-04-12 {
+    description
+      "Initial -lite revision (15 writable leaves, config-true).";
+    reference
+      "MGC Connect PoC -- poc/frr-grpc-poc session 4+.";
+  }
+
+  /* -------- typedefs -------- */
+
+  typedef as-number {
+    type uint32 {
+      range "1..4294967295";
+    }
+    description
+      "BGP Autonomous System Number (RFC 6793 4-octet).";
+  }
+
+  typedef peer-address {
+    type inet:ip-address;
+    description
+      "IPv4 or IPv6 neighbor address. Link-local addresses and
+       interface-based peers are out of scope in -lite v0.1.";
+  }
+
+  typedef bgp-afi-safi {
+    type enumeration {
+      enum ipv4-unicast {
+        description "AFI=1, SAFI=1.";
+      }
+    }
+    description
+      "Address-family / subsequent-address-family subset supported
+       by -lite v0.1. Future revisions may add ipv6-unicast.";
+  }
+
+  typedef redistribute-protocol {
+    type enumeration {
+      enum kernel;
+      enum connected;
+      enum static;
+      enum ospf;
+    }
+    description
+      "Protocols eligible for BGP redistribution in -lite v0.1.";
+  }
+
+  /* -------- grouping: timers -------- */
+
+  grouping bgp-timers {
+    description
+      "Per-neighbor BGP timers (override global defaults).";
+
+    leaf keepalive {
+      type uint16 {
+        range "1..65535";
+      }
+      units "seconds";
+      default "60";
+      description
+        "Keepalive interval (RFC 4271).";
+    }
+
+    leaf hold-time {
+      type uint16 {
+        range "3..65535";
+      }
+      units "seconds";
+      default "180";
+      must ". >= (../keepalive * 3)" {
+        error-message
+          "hold-time must be >= 3x keepalive (RFC 4271 section 10).";
+      }
+      description
+        "Hold timer (RFC 4271 section 10).";
+    }
+  }
+
+  /* -------- grouping: AF-neighbor knobs -------- */
+
+  grouping bgp-af-neighbor-opts {
+    description
+      "Per-neighbor per-AF knobs (route-maps, soft-reconfig, limits).";
+
+    leaf activate {
+      type boolean;
+      default "false";
+      description
+        "Enable this neighbor in the enclosing address-family.";
+    }
+
+    leaf soft-reconfiguration-inbound {
+      type boolean;
+      default "false";
+      description
+        "Store unmodified Adj-RIB-In for inbound soft-reconfig.";
+    }
+
+    container route-map {
+      description
+        "Route-map attach for this neighbor/AF.";
+
+      leaf import {
+        type leafref {
+          path "/frr-route-map:lib/frr-route-map:route-map/"
+             + "frr-route-map:name";
+        }
+        description
+          "Inbound route-map (direction=in).";
+      }
+
+      leaf export {
+        type leafref {
+          path "/frr-route-map:lib/frr-route-map:route-map/"
+             + "frr-route-map:name";
+        }
+        description
+          "Outbound route-map (direction=out).";
+      }
+    }
+
+    leaf maximum-prefix {
+      type uint32 {
+        range "1..4294967295";
+      }
+      description
+        "Maximum number of accepted prefixes. Absent means no limit.";
+    }
+  }
+
+  /* -------- root container -------- */
+
+  container bgp {
+    description
+      "Root for all bgpd instances managed by the -lite northbound.";
+
+    list instance {
+      key "asn vrf";
+      description
+        "One BGP speaker instance (router bgp ASN [vrf VRF]).";
+
+      leaf asn {
+        type as-number;
+        description "Local AS.";
+      }
+
+      leaf vrf {
+        type leafref {
+          path "/frr-vrf:lib/frr-vrf:vrf/frr-vrf:name";
+          require-instance false;
+        }
+        description
+          "VRF name. Use 'default' for the default VRF.";
+      }
+
+      /* -------- global knobs -------- */
+
+      leaf router-id {
+        type rt-types:router-id;
+        description
+          "Manual router-id. Absent = auto-select by bgpd.";
+      }
+
+      leaf as-path-multipath-relax {
+        type boolean;
+        default "false";
+        description
+          "ECMP across paths with equal AS_PATH length but different
+           AS_PATH attributes.";
+      }
+
+      leaf ebgp-requires-policy {
+        type boolean;
+        default "true";
+        description
+          "RFC 8212 enforcement. Lab/PoC deployments usually set this
+           to false.";
+      }
+
+      leaf network-import-check {
+        type boolean;
+        default "true";
+        description
+          "Require prefix in IGP/connected before 'network' advertises.";
+      }
+
+      /* -------- neighbors -------- */
+
+      list neighbor {
+        key "remote-address";
+        description
+          "BGP peer. peer-group is out of scope in -lite v0.1.";
+
+        leaf remote-address {
+          type peer-address;
+          description "Peer IP address.";
+        }
+
+        leaf remote-as {
+          type as-number;
+          mandatory true;
+          description "Peer AS.";
+        }
+
+        leaf bfd {
+          type boolean;
+          default "false";
+          description
+            "Enable BFD for this neighbor. BFD profile attach is
+             out of scope in -lite v0.1.";
+        }
+
+        leaf description {
+          type string {
+            length "1..80";
+          }
+          description
+            "Free-form operator description.";
+        }
+
+        container timers {
+          description
+            "Per-neighbor timers (override global defaults).";
+          uses bgp-timers;
+        }
+
+        list address-family {
+          key "afi-safi";
+          description
+            "Per-neighbor address-family knobs.";
+
+          leaf afi-safi {
+            type bgp-afi-safi;
+            description "Address-family / SAFI selector.";
+          }
+
+          uses bgp-af-neighbor-opts;
+        }
+      }
+
+      /* -------- global AF (network + redistribute) -------- */
+
+      list address-family {
+        key "afi-safi";
+        description
+          "Global per-AF configuration (network + redistribute).";
+
+        leaf afi-safi {
+          type bgp-afi-safi;
+          description "Address-family / SAFI selector.";
+        }
+
+        list network {
+          key "prefix";
+          description
+            "Originated prefix via 'network' statement.";
+
+          leaf prefix {
+            type inet:ipv4-prefix;
+            description "CIDR to advertise.";
+          }
+        }
+
+        list redistribute {
+          key "protocol";
+          description
+            "Redistribute routes from another protocol.";
+
+          leaf protocol {
+            type redistribute-protocol;
+            description "Source protocol.";
+          }
+
+          leaf route-map {
+            type leafref {
+              path "/frr-route-map:lib/frr-route-map:route-map/"
+                 + "frr-route-map:name";
+            }
+            description "Optional filter route-map.";
+          }
+        }
+      }
+    }
+  }
+}
