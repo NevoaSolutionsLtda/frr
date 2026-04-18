@@ -63,8 +63,19 @@ const char *txn_req_names[] = {
 /* Global list of all transactions */
 TAILQ_HEAD(mgmt_txn_head, mgmt_txn) txn_txns = TAILQ_HEAD_INITIALIZER(txn_txns);
 
-/* The single instance of config transaction allowed at any time */
-struct mgmt_txn *txn_config_txn;
+/*
+ * Active/finishing slots for CONFIG transactions.
+ *
+ * Only one CONFIG txn may be in SEND_CFG or APPLY_CFG at a time ("active").
+ * After mgmt_ds_copy_dss() succeeds the txn is moved to "finishing" -- it
+ * still owes an FE reply and a teardown decref, but candidate/running are
+ * already consistent and backend is no longer in flight.  Admission only
+ * checks the active slot, so the next CONFIG txn can start SEND_CFG while
+ * the previous one finishes up.  mgmt_txn_cfg.c:txn_finish_commit() is the
+ * one call site that moves a txn from active to finishing.
+ */
+struct mgmt_txn *config_active_txn;
+struct mgmt_txn *config_finishing_txn;
 
 /* Map of Transactions and its ID */
 struct hash *txn_id_tab;
@@ -733,9 +744,12 @@ void txn_decref(struct mgmt_txn *txn, const char *file, int line)
 	_dbg("TXN-DECREF %s txn-id: %Lu refcnt: %d file: %s line: %d",
 	     mgmt_txn_type2str(txn->type), txn->txn_id, txn->refcount, file, line);
 	if (!txn->refcount) {
-		if (txn->type == MGMTD_TXN_TYPE_CONFIG)
-			if (txn_config_txn == txn)
-				txn_config_txn = NULL;
+		if (txn->type == MGMTD_TXN_TYPE_CONFIG) {
+			if (config_active_txn == txn)
+				config_active_txn = NULL;
+			if (config_finishing_txn == txn)
+				config_finishing_txn = NULL;
+		}
 		hash_release(txn_id_tab, txn);
 		TAILQ_REMOVE(&txn_txns, txn, link);
 
@@ -767,8 +781,11 @@ uint64_t mgmt_create_txn(uint64_t session_id, enum mgmt_txn_type type)
 {
 	struct mgmt_txn *txn;
 
-	/* Do not allow multiple (external) config transactions */
-	if (type == MGMTD_TXN_TYPE_CONFIG && txn_config_txn)
+	/*
+	 * Only one CONFIG txn may be active (SEND_CFG / APPLY_CFG) at a time.
+	 * A txn in the finishing slot (post-copy_dss) does not block admission.
+	 */
+	if (type == MGMTD_TXN_TYPE_CONFIG && config_active_txn)
 		return MGMTD_TXN_ID_NONE;
 
 	/* Find existing txn for this session and type */
@@ -779,7 +796,7 @@ uint64_t mgmt_create_txn(uint64_t session_id, enum mgmt_txn_type type)
 	txn = txn_create(type);
 	txn->session_id = session_id;
 	if (type == MGMTD_TXN_TYPE_CONFIG)
-		txn_config_txn = txn;
+		config_active_txn = txn;
 	return txn->txn_id;
 }
 
@@ -800,7 +817,16 @@ void mgmt_destroy_txn(uint64_t *txn_id)
 
 bool mgmt_txn_config_in_progress(void)
 {
-	return txn_config_txn != NULL;
+	/*
+	 * Admission predicate: true iff a CONFIG txn is in SEND_CFG/APPLY_CFG.
+	 * The finishing slot (post-copy_dss, DS txn_locks released) is
+	 * deliberately excluded so another FE session holding the DS lock can
+	 * start its own CONFIG txn concurrently -- this is the whole point of
+	 * B-light.  FE teardown callers (mgmt_fe_adapter.c:782) relied on
+	 * the old "any txn alive" semantics only because DS lock release and
+	 * txn free were coupled; B-light decouples them.
+	 */
+	return config_active_txn != NULL;
 }
 
 int mgmt_txn_handle_be_adapter_connect(struct mgmt_be_client_adapter *adapter, bool connect)

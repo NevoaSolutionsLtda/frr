@@ -78,3 +78,14 @@ extern struct event_loop *mgmt_txn_tm;
 
 extern struct event_loop *mgmt_txn_tm;
 extern struct mgmt_master *mgmt_txn_mm;
+
+/*
+ * CONFIG txn admission slots.  "active" is the txn currently in SEND_CFG or
+ * APPLY_CFG; admission of a new CONFIG txn is blocked only on this slot.
+ * "finishing" is post-copy_dss -- the txn still owes an FE reply and a
+ * decref but candidate/running are consistent and backend is idle, so the
+ * next CONFIG txn can start SEND_CFG alongside.  mgmt_txn_cfg.c is the only
+ * writer of "finishing".
+ */
+extern struct mgmt_txn *config_active_txn;
+extern struct mgmt_txn *config_finishing_txn;
