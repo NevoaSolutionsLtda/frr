@@ -1,10 +1,16 @@
 # CodeRabbit configuration for reinaldosaraiva/frr fork (staging-review base).
 #
 # Purpose: pre-submit review of upstream-submit/* branches before opening the
-# real PR to FRRouting/frr. Rules target NACK categories observed in past PRs.
+# real PR to FRRouting/frr. Rules target NACK categories observed in past PRs
+# and gaps observed in our own runs.
 # Reference PRs: #21538 (wontfix), #21557 (wontfix), #21514 (amended),
 #               #21051 (NACK over-engineered), #21459 (NACK too many changes),
 #               #21296 (NACK NBC list key), #19480 (whitespace rejection).
+# Reference runs: 4i-AJ smoke (caught sprintf + hardcoded -74),
+#                 4i-AK UB-15+15b (caught mstate.ins partial-read carryover),
+#                 4i-AM UB-14 B-light (zero findings — gap exposed: no
+#                 concurrency-invariant instruction, no "demand test"
+#                 instruction, docstring_coverage false-positive on C).
 #
 # This file lives on `staging-review` branch only. Upstream-submit branches
 # stay clean so the config never leaks to FRRouting/frr.
@@ -25,6 +31,14 @@ reviews:
     drafts: true
     base_branches:
       - staging-review
+
+  # Pre-merge checks: `docstrings` is calibrated for Python PEP 257 and
+  # false-positives on every C patch in this tree (validated empirically
+  # on PR #5 UB-14, 2026-04-22 — 20% coverage warning on a 100% C patch).
+  # Disabled here; re-enable per-branch if a pure-Python PR arrives.
+  pre_merge_checks:
+    docstrings:
+      mode: off
 
   path_instructions:
     - path: "lib/**/*.h"
@@ -70,6 +84,48 @@ reviews:
         non-JSON variants. Single output path avoids drift bugs (ref:
         choppsv1 pattern referenced in #21232).
 
+    - path: "mgmtd/mgmt_txn*.[ch]"
+      instructions: |
+        This file carries CONFIG-txn locking, admission gating, and
+        finishing-slot lifecycle logic. Patches here almost always change
+        shared-state semantics even when the diff is small.
+
+        Review MUST explicitly address each of the following before
+        returning "No actionable comments":
+
+        (1) Overlap window. Name every mgmtd global or singleton the old
+            and new txn can touch concurrently after any lock/gate is
+            released early. Cite file:line for each shared symbol.
+            Patches changing `config_active_txn`, `txn_config_txn`,
+            `mgmt_create_txn`, `txn_req_free`, `mgmt_ds_*_lock` are
+            in-scope (ref: UB-14 narrowing, empirical lab regression
+            2026-04-22).
+
+        (2) Refcount integrity under delayed teardown. If a global is
+            cleared before the txn's refcount drops, verify no late
+            backend reply or subscriber callback dereferences the old
+            txn via that global.
+
+        (3) Error cascade. Between any early unlock and the FE reply, if
+            `mgmt_fe_send_*_reply` fails or the session is gone
+            (`-ENOENT`), is cleanup of the pre-cleared DS locks still
+            reached? Before/after behaviour must match on the error path.
+
+        (4) Event-loop yield points. FRR daemons run on a single libevent
+            loop; the only preemption is at yield points. Identify which
+            (if any) of the mutation steps yield, and whether another
+            txn's admission path can observe a half-completed state.
+
+        (5) Test coverage. For any patch that narrows or widens a
+            critical section, releases a global singleton earlier, or
+            otherwise changes the invariant that governs concurrent
+            execution, flag absence of a regression test that exercises
+            the new invariant directly. Aggregate throughput / latency
+            benches do NOT count. An overlap-or-serialisation-observable
+            test (e.g. asymmetric-payload wall-clock — see
+            `tests/topotests/mgmt_config/test_pipelined_commits.py`)
+            does count.
+
     - path: "doc/user/**"
       instructions: |
         Flag any DOC block that exceeds ~30 lines without a compelling
@@ -89,6 +145,34 @@ reviews:
         `strlcat`, `strlcpy`, `inet_ntop`, `ctime_r` (ref: PR #18436,
         Jafaral inline).
 
+        If the commit message claims a new behavioural invariant
+        (pipelining, early unlock, reordered state transitions, narrowed
+        critical section, relaxed ordering), flag absence of a regression
+        test that exercises the invariant itself. Reconciler or micro-
+        benchmark aggregate throughput is NOT sufficient evidence — the
+        test must be structured so a future revert of the patch makes it
+        fail. A positive-invariant assertion (e.g. "B finishes before A
+        when payloads are asymmetric") is the standard; coexistence in
+        running-config alone is not.
+
+  # Static analysis tools. Keep the set narrow and aligned with what FRR
+  # code touches in practice: C/C++, shell, yaml, GitHub Actions. Each
+  # tool here produces signal on its own layer; the LLM review above is
+  # orthogonal and not a substitute.
+  tools:
+    cppcheck:
+      enabled: true
+    clang:
+      enabled: true
+    shellcheck:
+      enabled: true
+    yamllint:
+      enabled: true
+    actionlint:
+      enabled: true
+    markdownlint:
+      enabled: true
+
   path_filters:
     - "!tests/topotests/**/r*/*.conf"
     - "!docs/**/*.rst"
@@ -99,6 +183,12 @@ tone_instructions: |
   Direct, technical, concise. Cite PR numbers or line refs when flagging
   a known pattern. No emoji. Keep inline comments shorter than the diff
   they reference.
+
+# Learnings scope: repo-local so the knowledge accumulated across staging
+# reviews stays with this fork and doesn't leak into an org-wide pool.
+knowledge_base:
+  learnings:
+    scope: "local"
 
 chat:
   auto_reply: false
