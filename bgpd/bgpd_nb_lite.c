@@ -187,6 +187,21 @@ const struct frr_yang_module_info frr_bgpd_lite_info = {
 				.destroy = frr_bgpd_lite_bgp_instance_address_family_redistribute_route_map_destroy,
 			},
 		},
+		/* 19. l2vpn-evpn (presence container) */
+		{
+			.xpath = "/frr-bgpd-lite:bgp/instance/l2vpn-evpn",
+			.cbs = {
+				.create  = frr_bgpd_lite_bgp_instance_l2vpn_evpn_create,
+				.destroy = frr_bgpd_lite_bgp_instance_l2vpn_evpn_destroy,
+			},
+		},
+		/* 20. l2vpn-evpn/advertise-all-vni */
+		{
+			.xpath = "/frr-bgpd-lite:bgp/instance/l2vpn-evpn/advertise-all-vni",
+			.cbs = {
+				.modify = frr_bgpd_lite_bgp_instance_l2vpn_evpn_advertise_all_vni_modify,
+			},
+		},
 		/* sentinel */
 		{
 			.xpath = NULL,

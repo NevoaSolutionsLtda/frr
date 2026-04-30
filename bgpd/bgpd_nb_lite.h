@@ -135,6 +135,16 @@ int frr_bgpd_lite_bgp_instance_address_family_redistribute_route_map_modify(
 int frr_bgpd_lite_bgp_instance_address_family_redistribute_route_map_destroy(
 	struct nb_cb_destroy_args *args);
 
+/* 19. .../l2vpn-evpn (presence container - create / destroy) */
+int frr_bgpd_lite_bgp_instance_l2vpn_evpn_create(
+	struct nb_cb_create_args *args);
+int frr_bgpd_lite_bgp_instance_l2vpn_evpn_destroy(
+	struct nb_cb_destroy_args *args);
+
+/* 20. .../l2vpn-evpn/advertise-all-vni (modify) */
+int frr_bgpd_lite_bgp_instance_l2vpn_evpn_advertise_all_vni_modify(
+	struct nb_cb_modify_args *args);
+
 /* ------------------------------------------------------------------ *
  * State callbacks -- implemented in bgpd_nb_state_lite.c
  *

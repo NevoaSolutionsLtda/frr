@@ -30,12 +30,21 @@ module frr-bgpd-lite {
     "FRR mailing list: dev@lists.frrouting.org";
   description
     "Minimal northbound model for bgpd. Scope: single-AF IPv4-unicast,
-     no peer-group, no VPN/EVPN. Designed to coexist with legacy
+     no peer-group. EVPN advertise-all-vni added in revision 2026-04-29
+     for SONiC fabric pilot. Designed to coexist with legacy
      frr-bgp.yang -- this module owns /frr-bgpd-lite:bgp and nothing
      else. Follows the ospfd-lite precedent (FRR PR #18401).
 
      Staged by MGC Connect PoC (Reinaldo Saraiva). Intended for
      upstream contribution to FRRouting/frr.";
+
+  revision 2026-04-29 {
+    description
+      "Add l2vpn-evpn AF enum + presence container l2vpn-evpn with
+       advertise-all-vni leaf for SONiC EVPN fabric integration.
+       ADR-026; session 4i-CH.";
+    reference "MGC Connect PoC -- session 4i-CH.";
+  }
 
   revision 2026-04-12 {
     description
@@ -66,10 +75,14 @@ module frr-bgpd-lite {
       enum ipv4-unicast {
         description "AFI=1, SAFI=1.";
       }
+      enum l2vpn-evpn {
+        description "AFI=25 (L2VPN), SAFI=70 (EVPN).";
+      }
     }
     description
       "Address-family / subsequent-address-family subset supported
-       by -lite v0.1. Future revisions may add ipv6-unicast.";
+       by -lite. v0.2 (2026-04-29) adds l2vpn-evpn; future revisions
+       may add ipv6-unicast.";
   }
 
   typedef redistribute-protocol {
@@ -222,6 +235,25 @@ module frr-bgpd-lite {
           "Require prefix in IGP/connected before 'network' advertises.";
       }
 
+      /* -------- l2vpn-evpn (presence container) -------- */
+
+      container l2vpn-evpn {
+        presence
+          "Configure l2vpn-evpn address family for this instance.";
+        description
+          "Global per-instance EVPN configuration. Active only when
+           a peer is also activated for the l2vpn-evpn AF.";
+
+        leaf advertise-all-vni {
+          type boolean;
+          default "false";
+          description
+            "Enable EVPN type-2/type-3 advertisement for all configured
+             VNIs. Mirrors vanilla FRR 'address-family l2vpn evpn'
+             'advertise-all-vni'.";
+        }
+      }
+
       /* -------- neighbors -------- */
 
       list neighbor {
@@ -282,6 +314,13 @@ module frr-bgpd-lite {
         key "afi-safi";
         description
           "Global per-AF configuration (network + redistribute).";
+
+        must "afi-safi != 'l2vpn-evpn'" {
+          error-message
+            "Global address-family list does not support l2vpn-evpn; "
+              + "use the instance/l2vpn-evpn presence container for "
+              + "advertise-all-vni.";
+        }
 
         leaf afi-safi {
           type bgp-afi-safi;

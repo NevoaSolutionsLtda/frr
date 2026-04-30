@@ -18961,3 +18961,85 @@ void bgp_route_finish(void)
 		bgp_distance_table[afi][safi] = NULL;
 	}
 }
+
+/* mgc-connect lite-YANG: minimal IPv4-unicast non-EVPN/non-VPN wrapper.
+ * Source: bgpd_nb_config_lite.c (NB callbacks instead of vty). Mirrors
+ * bgp_static_set() vanilla path stripped of: VTY error reporting,
+ * SAFI_MPLS_VPN/EVPN/ENCAP branches, label-index/route-map handling,
+ * backdoor flag (always 0). v0.1 IPv4-unicast only.
+ *
+ * Returns 0 on success, -1 on parse error or non-IPv4 family.
+ */
+int bgp_static_set_simple_ipv4(struct bgp *bgp, const char *ip_str)
+{
+	int ret;
+	struct prefix p;
+	struct bgp_static *bgp_static;
+	struct bgp_dest *dest;
+	struct bgp_table *table;
+
+	ret = str2prefix(ip_str, &p);
+	if (!ret)
+		return -1;
+	if (p.family != AF_INET)
+		return -1;
+	apply_mask(&p);
+
+	table = bgp->static_routes[AFI_IP][SAFI_UNICAST];
+	dest = bgp_node_get(table, &p);
+
+	bgp_static = bgp_dest_get_bgp_static_info(dest);
+	if (bgp_static) {
+		bgp_dest_unlock_node(dest);
+	} else {
+		bgp_static = bgp_static_new();
+		bgp_static->backdoor = 0;
+		bgp_static->valid = 0;
+		bgp_static->igpmetric = 0;
+		bgp_static->igpnexthop.s_addr = INADDR_ANY;
+		bgp_static->label_index = BGP_INVALID_LABEL_INDEX;
+		bgp_static->label = MPLS_INVALID_LABEL;
+		bgp_dest_set_bgp_static_info(dest, bgp_static);
+	}
+
+	bgp_static->valid = 1;
+	bgp_static_update(bgp, &p, bgp_static, AFI_IP, SAFI_UNICAST);
+
+	return 0;
+}
+
+/* Mirrors bgp_static_set(..., negate=true) for IPv4-unicast non-EVPN/VPN.
+ * Returns 0 on success, -1 on parse error, non-IPv4 family, or route-not-found.
+ */
+int bgp_static_unset_simple_ipv4(struct bgp *bgp, const char *ip_str)
+{
+	int ret;
+	struct prefix p;
+	struct bgp_static *bgp_static;
+	struct bgp_dest *dest;
+
+	ret = str2prefix(ip_str, &p);
+	if (!ret)
+		return -1;
+	if (p.family != AF_INET)
+		return -1;
+	apply_mask(&p);
+
+	dest = bgp_node_lookup(bgp->static_routes[AFI_IP][SAFI_UNICAST], &p);
+	if (!dest)
+		return -1;
+
+	bgp_static = bgp_dest_get_bgp_static_info(dest);
+	if (bgp_static) {
+		if (!bgp_static->backdoor)
+			bgp_static_withdraw(bgp, &p, AFI_IP, SAFI_UNICAST, NULL);
+		bgp_static_free(bgp_static);
+	}
+
+	bgp_dest_set_bgp_static_info(dest, NULL);
+	dest = bgp_dest_unlock_node(dest);
+	assert(dest);
+	bgp_dest_unlock_node(dest);
+
+	return 0;
+}
