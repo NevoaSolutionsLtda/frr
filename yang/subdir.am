@@ -101,6 +101,7 @@ dist_yangmodels_DATA += yang/frr-bgp-rpki.yang
 dist_yangmodels_DATA += yang/frr-bgp-bmp.yang
 dist_yangmodels_DATA += yang/frr-bgp-types.yang
 dist_yangmodels_DATA += yang/frr-bgp.yang
+dist_yangmodels_DATA += yang/frr-bgpd-lite.yang
 endif
 
 if OSPFD
