@@ -1696,6 +1696,8 @@ static void bgp_nb_peer_value_dual(struct vty *vty, const char *peer_arg,
 		return;
 	bgp = (struct bgp *)vty->index;
 	if (!bgp)
+		bgp = bgp_get_default();
+	if (!bgp)
 		return;
 	nb_cli_enqueue_change(vty, xpath_rel,
 			      value ? NB_OP_MODIFY : NB_OP_DESTROY, value);

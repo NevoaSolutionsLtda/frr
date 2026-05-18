@@ -132,6 +132,20 @@ int bgp_router_create(struct nb_cb_create_args *args)
 				 "use vtysh `router bgp ASN view NAME`");
 			return NB_ERR_VALIDATION;
 		}
+		/*
+		 * If this is a fresh-creation path (no existing struct bgp for
+		 * this vrf key), require local-as to be present in the same
+		 * transaction. Catching this at validate prevents sibling
+		 * leaf callbacks from starting on a half-built instance.
+		 */
+		vrf_key = yang_dnode_get_string(args->dnode, "../vrf");
+		bgp_name = bgp_nb_vrf_to_name(vrf_key);
+		if (!bgp_lookup_by_name(bgp_name)
+		    && !yang_dnode_exists(args->dnode, "global/local-as")) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "local-as is mandatory when creating a new BGP instance via NB");
+			return NB_ERR_VALIDATION;
+		}
 		return NB_OK;
 
 	case NB_EV_PREPARE:
@@ -150,10 +164,6 @@ int bgp_router_create(struct nb_cb_create_args *args)
 	 * If the instance already exists (legacy DEFUN(router_bgp) ran
 	 * earlier, or a sibling NB write created it during this transaction),
 	 * just associate the existing pointer with this dnode and we're done.
-	 *
-	 * This is the common path for vtysh-driven leaf writes: the user has
-	 * already typed `router bgp ASN`, so the struct bgp is in place and
-	 * `local-as` isn't part of this transaction's dnode tree.
 	 */
 	bgp = bgp_lookup_by_name(bgp_name);
 	if (bgp) {
@@ -162,13 +172,13 @@ int bgp_router_create(struct nb_cb_create_args *args)
 	}
 
 	/*
-	 * Fresh creation path (mgmtd/NETCONF/gRPC). local-as is mandatory in
-	 * YANG so the client must provide it as part of the same transaction.
+	 * Fresh creation. local-as presence was already validated at
+	 * NB_EV_VALIDATE; an internal bug if it's missing now.
 	 */
 	if (!yang_dnode_exists(args->dnode, "global/local-as")) {
 		snprintf(args->errmsg, args->errmsg_len,
-			 "local-as is mandatory when creating a new BGP instance via NB");
-		return NB_ERR_VALIDATION;
+			 "internal error: local-as missing at apply; validate stage skipped?");
+		return NB_ERR;
 	}
 	as = (as_t)yang_dnode_get_uint32(args->dnode, "global/local-as");
 
@@ -1403,11 +1413,9 @@ int bgp_global_med_config_destroy(struct nb_cb_destroy_args *args)
  *   "old"       -> set BGP_FLAG_SOFT_VERSION_CAPABILITY_OLD
  *   "new"       -> set BGP_FLAG_SOFT_VERSION_CAPABILITY_NEW
  *
- * NOTE: bgpd.h:760 has `BGP_FLAG_SOFT_VERSION_CAPABILITY_NEW (1ULL << 45)`
- * colliding with `BGP_FLAG_BESTPATH_USE_IMPORTED_ATTRS (1ULL << 45)` at
- * line 766. This is a pre-existing bgpd bug — out of scope to fix here.
- * The callback uses the macros as defined; semantics on the collision
- * follow whatever the bgpd code already does.
+ * Bit-collision fix: `BGP_FLAG_BESTPATH_USE_IMPORTED_ATTRS` previously
+ * shared bit 45 with `BGP_FLAG_SOFT_VERSION_CAPABILITY_NEW`. Moved to
+ * bit 47 in `bgpd.h` so this callback no longer flips an unrelated flag.
  */
 int bgp_global_default_software_version_capability_modify(
 	struct nb_cb_modify_args *args)
@@ -2980,6 +2988,16 @@ int bgp_global_route_reflector_cluster_id_modify(struct nb_cb_modify_args *args)
 
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		/* Parse-check the cluster-id format up front so a malformed
+		 * value is rejected before apply. */
+		value = yang_dnode_get_string(args->dnode, NULL);
+		if (inet_aton(value, &cluster) == 0) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "malformed route-reflector-cluster-id: %s",
+				 value);
+			return NB_ERR_VALIDATION;
+		}
+		return NB_OK;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 		return NB_OK;
@@ -2991,16 +3009,13 @@ int bgp_global_route_reflector_cluster_id_modify(struct nb_cb_modify_args *args)
 	if (!bgp)
 		return NB_ERR;
 
-	/*
-	 * rr-cluster-id-type accepts either dotted-quad or 32-bit unsigned.
-	 * yang_dnode_get_string preserves the textual form so we can parse
-	 * either via inet_aton (handles dotted-quad and bare decimal).
-	 */
 	value = yang_dnode_get_string(args->dnode, NULL);
 	if (inet_aton(value, &cluster) == 0) {
+		/* Shouldn't happen — validated above. Return NB_ERR (not
+		 * VALIDATION) since apply-stage errors are not validation. */
 		snprintf(args->errmsg, args->errmsg_len,
-			 "malformed route-reflector-cluster-id: %s", value);
-		return NB_ERR_VALIDATION;
+			 "internal: cluster-id reparse failed: %s", value);
+		return NB_ERR;
 	}
 
 	bgp_cluster_id_set(bgp, &cluster);
@@ -3409,6 +3424,32 @@ int bgp_neighbor_create(struct nb_cb_create_args *args)
 
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		/* Parse-check the format-sensitive inputs up front. */
+		remote_addr = yang_dnode_get_string(args->dnode,
+						    "remote-address");
+		if (str2sockunion(remote_addr, &su) < 0) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "invalid neighbor remote-address: %s",
+				 remote_addr);
+			return NB_ERR_VALIDATION;
+		}
+		as_type_str = yang_dnode_get_string(
+			args->dnode, "neighbor-remote-as/remote-as-type");
+		as_type = bgp_nb_yang_as_type(as_type_str);
+		if (as_type == AS_UNSPECIFIED) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "unsupported remote-as-type: %s",
+				 as_type_str);
+			return NB_ERR_VALIDATION;
+		}
+		if (as_type == AS_SPECIFIED &&
+		    !yang_dnode_exists(args->dnode,
+				       "neighbor-remote-as/remote-as")) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "remote-as required when remote-as-type is as-specified");
+			return NB_ERR_VALIDATION;
+		}
+		return NB_OK;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 		return NB_OK;
@@ -3426,8 +3467,9 @@ int bgp_neighbor_create(struct nb_cb_create_args *args)
 	remote_addr = yang_dnode_get_string(args->dnode, "remote-address");
 	if (str2sockunion(remote_addr, &su) < 0) {
 		snprintf(args->errmsg, args->errmsg_len,
-			 "invalid neighbor remote-address: %s", remote_addr);
-		return NB_ERR_VALIDATION;
+			 "internal: remote-address reparse failed: %s",
+			 remote_addr);
+		return NB_ERR;
 	}
 
 	as_type_str = yang_dnode_get_string(args->dnode,
@@ -3435,16 +3477,17 @@ int bgp_neighbor_create(struct nb_cb_create_args *args)
 	as_type = bgp_nb_yang_as_type(as_type_str);
 	if (as_type == AS_UNSPECIFIED) {
 		snprintf(args->errmsg, args->errmsg_len,
-			 "unsupported remote-as-type: %s", as_type_str);
-		return NB_ERR_VALIDATION;
+			 "internal: bad remote-as-type at apply: %s",
+			 as_type_str);
+		return NB_ERR;
 	}
 
 	if (as_type == AS_SPECIFIED) {
 		if (!yang_dnode_exists(args->dnode,
 				       "neighbor-remote-as/remote-as")) {
 			snprintf(args->errmsg, args->errmsg_len,
-				 "remote-as required when remote-as-type is as-specified");
-			return NB_ERR_VALIDATION;
+				 "internal: remote-as missing at apply");
+			return NB_ERR;
 		}
 		as = (as_t)yang_dnode_get_uint32(
 			args->dnode, "neighbor-remote-as/remote-as");
@@ -4091,6 +4134,13 @@ int bgp_neighbor_update_source_ip_modify(struct nb_cb_modify_args *args)
 
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		ip = yang_dnode_get_string(args->dnode, NULL);
+		if (str2sockunion(ip, &su) < 0) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "invalid update-source ip: %s", ip);
+			return NB_ERR_VALIDATION;
+		}
+		return NB_OK;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 		return NB_OK;
@@ -4105,8 +4155,8 @@ int bgp_neighbor_update_source_ip_modify(struct nb_cb_modify_args *args)
 	ip = yang_dnode_get_string(args->dnode, NULL);
 	if (str2sockunion(ip, &su) < 0) {
 		snprintf(args->errmsg, args->errmsg_len,
-			 "invalid update-source ip: %s", ip);
-		return NB_ERR_VALIDATION;
+			 "internal: update-source ip reparse failed: %s", ip);
+		return NB_ERR;
 	}
 
 	peer_update_source_addr_set(peer, &su);
@@ -5346,7 +5396,8 @@ static int peer_group_listen_range_apply(const struct lyd_node *dnode, int af,
 
 	prefix_str = yang_dnode_get_string(dnode, NULL);
 	if (str2prefix(prefix_str, &p) == 0)
-		return NB_ERR_VALIDATION;
+		/* Should have been caught at NB_EV_VALIDATE. */
+		return NB_ERR;
 	p.family = af;
 
 	if (add) {
@@ -5359,8 +5410,28 @@ static int peer_group_listen_range_apply(const struct lyd_node *dnode, int af,
 	return NB_OK;
 }
 
+/* Parse-check the prefix at NB_EV_VALIDATE so a malformed value is rejected
+ * before any sibling apply callback runs. */
+static int peer_group_listen_range_validate(const struct lyd_node *dnode,
+					    char *errmsg, size_t errmsg_len)
+{
+	const char *prefix_str = yang_dnode_get_string(dnode, NULL);
+	struct prefix p = {};
+
+	if (str2prefix(prefix_str, &p) == 0) {
+		snprintf(errmsg, errmsg_len,
+			 "invalid listen-range prefix: %s", prefix_str);
+		return NB_ERR_VALIDATION;
+	}
+	return NB_OK;
+}
+
 int bgp_peer_group_ipv4_listen_range_create(struct nb_cb_create_args *args)
 {
+	if (args->event == NB_EV_VALIDATE)
+		return peer_group_listen_range_validate(args->dnode,
+							args->errmsg,
+							args->errmsg_len);
 	if (args->event != NB_EV_APPLY)
 		return NB_OK;
 	return peer_group_listen_range_apply(args->dnode, AF_INET, true);
@@ -5375,6 +5446,10 @@ int bgp_peer_group_ipv4_listen_range_destroy(struct nb_cb_destroy_args *args)
 
 int bgp_peer_group_ipv6_listen_range_create(struct nb_cb_create_args *args)
 {
+	if (args->event == NB_EV_VALIDATE)
+		return peer_group_listen_range_validate(args->dnode,
+							args->errmsg,
+							args->errmsg_len);
 	if (args->event != NB_EV_APPLY)
 		return NB_OK;
 	return peer_group_listen_range_apply(args->dnode, AF_INET6, true);

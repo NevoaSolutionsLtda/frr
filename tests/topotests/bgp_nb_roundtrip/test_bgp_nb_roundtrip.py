@@ -168,7 +168,10 @@ def test_per_af_route_reflector_client_roundtrip():
 
 def test_local_as_apply_finish_roundtrip():
     """local-as is a multi-leaf apply_finish container — all three leaves
-    must apply atomically."""
+    must apply atomically. We wrap the three writes in a
+    `mgmt begin` / `mgmt commit` bracket so they land in a single
+    transaction and the apply_finish callback fires exactly once with
+    all three leaves populated."""
     tgen = get_topogen()
     if tgen.routers_have_failure():
         pytest.skip(tgen.errors)
@@ -181,9 +184,11 @@ def test_local_as_apply_finish_roundtrip():
     )
     r1.vtysh_cmd(
         f'configure terminal\n'
+        f'mgmt begin\n'
         f'mgmt set-config xpath "{base}/local-as" value 65999\n'
         f'mgmt set-config xpath "{base}/no-prepend" value true\n'
-        f'mgmt set-config xpath "{base}/replace-as" value true'
+        f'mgmt set-config xpath "{base}/replace-as" value true\n'
+        f'mgmt commit'
     )
     output = r1.vtysh_cmd("show running-config bgpd")
     assert "neighbor 10.0.0.2 local-as 65999 no-prepend replace-as" in output, (
