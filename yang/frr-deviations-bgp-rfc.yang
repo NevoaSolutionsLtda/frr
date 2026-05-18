@@ -16,7 +16,7 @@ module frr-deviations-bgp-rfc {
   description
     "Documents the places where FRR's frr-bgp YANG model departs from
      the IETF BGP YANG model (draft-ietf-idr-bgp-model) or from strict
-     RFC semantics. Deviations are intentional — FRR's CLI predates the
+     RFC semantics. Deviations are intentional - FRR's CLI predates the
      IETF model and supports behaviors not directly representable in
      the standard groupings. These deviations do not remove conformance
      for the leaves that are common; they only document the gaps.";
@@ -30,7 +30,7 @@ module frr-deviations-bgp-rfc {
   /* ------------------------------------------------------------------ */
 
   /*
-   * `capability-options/capability-negotiate` has inverted YANG↔internal
+   * `capability-options/capability-negotiate` has inverted YANG<->internal
    * mapping: YANG `true` = peer_flag_unset PEER_FLAG_DONT_CAPABILITY,
    * YANG `false` = peer_flag_set PEER_FLAG_DONT_CAPABILITY. The CLI
    * `neighbor X dont-capability-negotiate` sets YANG `false`.

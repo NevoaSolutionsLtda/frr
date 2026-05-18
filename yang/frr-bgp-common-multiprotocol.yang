@@ -287,7 +287,7 @@ submodule frr-bgp-common-multiprotocol {
           when "../ipv4-unicast = 'true'";
           type string;
           description
-            "Route-map filter applied to IPv4-unicast → EVPN advertisement.";
+            "Route-map filter applied to IPv4-unicast -> EVPN advertisement.";
         }
 
         leaf ipv6-unicast {
@@ -302,7 +302,7 @@ submodule frr-bgp-common-multiprotocol {
           when "../ipv6-unicast = 'true'";
           type string;
           description
-            "Route-map filter applied to IPv6-unicast → EVPN advertisement.";
+            "Route-map filter applied to IPv6-unicast -> EVPN advertisement.";
         }
       }
 

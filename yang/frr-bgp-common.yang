@@ -478,7 +478,7 @@ submodule frr-bgp-common {
       description
         "When set to 'true' BGP speaker requires in and out policy
          for EBGP peers (RFC 8212). Default 'false' matches the FRR CLI
-         default — the legacy `bgp ebgp-requires-policy` command must be
+         default - the legacy `bgp ebgp-requires-policy` command must be
          issued to enable RFC 8212 enforcement.";
     }
 
@@ -649,7 +649,7 @@ submodule frr-bgp-common {
       description
         "When 'true' (the default), BGP allows IPv6 Router Advertisements
          on neighbor interfaces. `no bgp ipv6-auto-ra` flips this to
-         'false'. Per-instance — the global `no bgp ipv6-auto-ra`
+         'false'. Per-instance - the global `no bgp ipv6-auto-ra`
          CONFIG-NODE form sets the bm->flags global bit (kept in legacy
          dispatch path).";
     }

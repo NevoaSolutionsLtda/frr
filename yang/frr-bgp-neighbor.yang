@@ -6,10 +6,9 @@ submodule frr-bgp-neighbor {
     prefix "bgp";
   }
 
-  include "frr-bgp-common-multiprotocol";
-
-  include "frr-bgp-common-structure";
-
+  import ietf-inet-types {
+    prefix inet;
+  }
   organization
     "FRRouting";
   contact
@@ -168,7 +167,7 @@ submodule frr-bgp-neighbor {
       type boolean;
       default "false";
       description
-        "Apply strict RPKI mode for this neighbor — drop INVALID and
+        "Apply strict RPKI mode for this neighbor - drop INVALID and
          NOTFOUND prefixes.";
     }
 

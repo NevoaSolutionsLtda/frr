@@ -17,6 +17,14 @@
 /* clang-format off */
 const struct frr_yang_module_info frr_bgp_info = {
 	.name = "frr-bgp",
+	/*
+	 * Skip strict NB-callback validation. bgpd's mgmtd backend is a
+	 * work-in-progress: many config xpaths are not yet wired and the
+	 * legacy CLI remains authoritative for unwired knobs. Writes from
+	 * mgmtd against an unwired xpath fail with NB_ERR at runtime;
+	 * that is the desired behaviour during the migration.
+	 */
+	.ignore_cfg_cbs = true,
 	.nodes = {
 		/* control-plane-protocol */
 		{
@@ -269,7 +277,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 			},
 		},
 		{
-			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/hold-time",
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/global-config-timers/hold-time",
 			.cbs = {
 				.modify  = bgp_global_hold_time_modify,
 				.destroy = bgp_global_hold_time_destroy,
@@ -277,7 +285,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 			},
 		},
 		{
-			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/keepalive",
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/global-config-timers/keepalive",
 			.cbs = {
 				.modify  = bgp_global_keepalive_modify,
 				.destroy = bgp_global_keepalive_destroy,

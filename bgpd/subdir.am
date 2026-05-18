@@ -249,6 +249,7 @@ nodist_bgpd_bgpd_SOURCES = \
 	yang/frr-bgp-bmp.yang.c \
 	yang/frr-bgp-rpki.yang.c \
 	yang/frr-deviations-bgp-datacenter.yang.c \
+	yang/frr-deviations-bgp-rfc.yang.c \
 	yang/frr-bgp-filter.yang.c \
 	yang/frr-bgp-route-map.yang.c \
 	# end

@@ -13,9 +13,6 @@ submodule frr-bgp-bmp {
   import frr-bgp-types {
     prefix frr-bt;
   }
-
-  include "frr-bgp-common-multiprotocol";
-
   organization
     "FRRouting";
   contact
