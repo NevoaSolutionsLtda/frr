@@ -19467,7 +19467,7 @@ static void bgp_announce_routes_distance_update(struct bgp *bgp,
 	}
 }
 
-DEFPY_YANG (bgp_distance,
+DEFUN (bgp_distance,
        bgp_distance_cmd,
        "distance bgp (1-255) (1-255) (1-255)",
        "Define an administrative distance\n"
@@ -19500,7 +19500,7 @@ DEFPY_YANG (bgp_distance,
 	return CMD_SUCCESS;
 }
 
-DEFPY_YANG (no_bgp_distance,
+DEFUN (no_bgp_distance,
        no_bgp_distance_cmd,
        "no distance bgp [(1-255) (1-255) (1-255)]",
        NO_STR

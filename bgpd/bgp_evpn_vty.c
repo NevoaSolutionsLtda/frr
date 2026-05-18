@@ -1875,7 +1875,7 @@ DEFUN(show_bgp_l2vpn_evpn_com,
 }
 
 /* For testing purpose, static route of EVPN RT-5. */
-DEFPY_YANG(evpnrt5_network,
+DEFUN(evpnrt5_network,
       evpnrt5_network_cmd,
       "network <A.B.C.D/M|X:X::X:X/M> rd ASN:NN_OR_IP-ADDRESS:NN ethtag WORD label WORD esi WORD gwip <A.B.C.D|X:X::X:X> routermac WORD [route-map RMAP_NAME]",
       "Specify a network to announce via BGP\n"
@@ -1914,7 +1914,7 @@ DEFPY_YANG(evpnrt5_network,
 }
 
 /* For testing purpose, static route of EVPN RT-5. */
-DEFPY_YANG(no_evpnrt5_network,
+DEFUN(no_evpnrt5_network,
       no_evpnrt5_network_cmd,
       "no network <A.B.C.D/M|X:X::X:X/M> rd ASN:NN_OR_IP-ADDRESS:NN ethtag WORD label WORD esi WORD gwip <A.B.C.D|X:X::X:X>",
       NO_STR
@@ -6522,7 +6522,7 @@ DEFUN_NOSH (bgp_evpn_vni,
 
 DEFPY_YANG (no_bgp_evpn_vni,
        no_bgp_evpn_vni_cmd,
-       "no vni " CMD_VNI_RANGE,
+       "no vni " CMD_VNI_RANGE "$vnival",
        NO_STR
        "VXLAN Network Identifier\n"
        "VNI number\n")
@@ -6530,6 +6530,8 @@ DEFPY_YANG (no_bgp_evpn_vni,
 	vni_t vni;
 	struct bgp *bgp = VTY_GET_CONTEXT(bgp);
 	struct bgpevpn *vpn;
+
+	(void)vnival;
 
 	if (!bgp)
 		return CMD_WARNING;
