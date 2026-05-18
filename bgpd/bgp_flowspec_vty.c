@@ -474,7 +474,7 @@ DEFUN (debug_bgp_flowspec,
 	return CMD_SUCCESS;
 }
 
-DEFPY_YANG (no_debug_bgp_flowspec,
+DEFUN (no_debug_bgp_flowspec,
        no_debug_bgp_flowspec_cmd,
        "no debug bgp flowspec",
        NO_STR
@@ -574,7 +574,7 @@ static int bgp_fs_local_install_interface(struct bgp *bgp,
 	return CMD_SUCCESS;
 }
 
-DEFPY_YANG (bgp_fs_local_install_ifname,
+DEFUN (bgp_fs_local_install_ifname,
 	bgp_fs_local_install_ifname_cmd,
 	"[no] local-install INTERFACE",
 	NO_STR

@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * bgpd northbound — callback implementations.
+ * BGP northbound — callback implementations.
  *
- * One function per (xpath, callback-kind) pair. All event branches
- * (NB_EV_VALIDATE / NB_EV_PREPARE / NB_EV_APPLY / NB_EV_ABORT) are
- * handled — most do real work only in NB_EV_APPLY.
- *
- * See BGPD_NB_MIGRATION_PLAN.md §3.1 for the canonical worked example
- * and FRRouting/frr#5428 for the migration tracking issue.
+ * Copyright (C) 2026 FRRouting
  */
 
 #include <zebra.h>
@@ -33,7 +28,7 @@
 #include "bgpd/bgp_zebra.h"
 
 /* ------------------------------------------------------------------------ */
-/* Phase 2.0 — control-plane-protocol context (frr-bgp:bgp container)        */
+/* control-plane-protocol context (frr-bgp:bgp container)                    */
 /* ------------------------------------------------------------------------ */
 
 /*
@@ -103,9 +98,9 @@ static struct bgp *bgp_nb_lookup_from_dnode(const struct lyd_node *dnode,
  * (e.g. created earlier via legacy CLI), associates the existing pointer
  * with the dnode and returns NB_OK.
  *
- * Phase 2.0 scope: handles the default and per-VRF cases. View instances
+ * handles the default and per-VRF cases. View instances
  * (`instance-type-view = true`) are not yet supported — returns
- * NB_ERR_VALIDATION when that leaf is set. Phase 2 follow-up wires the
+ * NB_ERR_VALIDATION when that leaf is set. Wiring for the
  * view-type leaf into bgp_get()'s BGP_INSTANCE_TYPE_VIEW path.
  */
 int bgp_router_create(struct nb_cb_create_args *args)
@@ -120,7 +115,7 @@ int bgp_router_create(struct nb_cb_create_args *args)
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 		/*
-		 * Reject view-type instances during Phase 2.0 — we don't
+		 * Reject view-type instances — we don't
 		 * yet plumb the BGP_INSTANCE_TYPE_VIEW path through NB.
 		 * Detect it via the optional instance-type-view leaf.
 		 */
@@ -230,7 +225,7 @@ int bgp_router_destroy(struct nb_cb_destroy_args *args)
 }
 
 /* ------------------------------------------------------------------------ */
-/* Phase 2 — global leaves                                                   */
+/* global leaves */
 /* ------------------------------------------------------------------------ */
 
 /*
@@ -3343,7 +3338,7 @@ int bgp_global_graceful_restart_stale_routes_time_destroy(
 }
 
 /* ------------------------------------------------------------------------ */
-/* Phase 3a — neighbor list + neighbor-remote-as                              */
+/* neighbor list + neighbor-remote-as */
 /* ------------------------------------------------------------------------ */
 
 /*
@@ -4593,7 +4588,7 @@ int bgp_neighbor_capabilities_negotiate_destroy(struct nb_cb_destroy_args *args)
 }
 
 /*
- * Direct-child neighbor boolean flag NB callbacks (Phase 3a batch).
+ * Direct-child neighbor boolean flag NB callbacks.
  * Leaf is at neighbor[remote-address]/<leaf>, depth-to-CPP = 4,
  * neighbor_rel = "..".
  */
@@ -4607,7 +4602,7 @@ int bgp_neighbor_capabilities_negotiate_destroy(struct nb_cb_destroy_args *args)
 		return peer_flag_toggle_destroy(args, (_flag), "..", 4);       \
 	}
 
-/* ---------- Phase 3c — per-AF per-peer flag toggles -------------------- */
+/* per-AF per-peer flag toggles */
 
 /*
  * Per-AF flag leaves live at:
@@ -5072,7 +5067,7 @@ int bgp_neighbor_local_role_destroy(struct nb_cb_destroy_args *args)
  * Internal effect is bgp_neighbor_graceful_restart_*_set / _unset
  * helpers — for now, just set the corresponding PEER_FLAG via toggle
  * template; full peer-reset side effects are deferred to the dual-write
- * CLI path (same Phase 2 GR compromise).
+ * CLI path (same GR compromise).
  */
 int bgp_neighbor_gr_enable_modify(struct nb_cb_modify_args *args)
 {
@@ -5302,7 +5297,7 @@ int bgp_neighbor_ls_remote_link_id_destroy(struct nb_cb_destroy_args *args)
 }
 
 /* ------------------------------------------------------------------------ */
-/* Phase 3b — peer-group list                                                 */
+/* peer-group list */
 /* ------------------------------------------------------------------------ */
 
 /*
@@ -5462,22 +5457,16 @@ int bgp_peer_group_ipv6_listen_range_destroy(struct nb_cb_destroy_args *args)
 	return peer_group_listen_range_apply(args->dnode, AF_INET6, false);
 }
 
-/* --- Phase 3c (address-family): callback implementations go here --- */
 
 /* ------------------------------------------------------------------------ */
-/* Phase 5 — cli_show callbacks                                              */
+/* cli_show callbacks                                                        */
 /*                                                                           */
-/* DESIGN NOTE: bgpd uses a dual-write model where DEFPY_YANG bodies still   */
-/* invoke legacy setters that update the in-memory `struct bgp` /            */
-/* `struct peer`. The legacy `bgp_config_write_*` functions in `bgp_vty.c`   */
-/* serialize that state for `show running-config`. cli_show callbacks here   */
-/* are only required once the legacy write path is removed AND mgmtd becomes */
-/* the sole writer (Phase 7+ work — `FRR_MGMTD_BACKEND` flag flipped on).    */
-/*                                                                           */
-/* These boilerplate cli_show callbacks let mgmtd's `show yang config-data`  */
-/* and `show mgmt yang-config-tree` output match the legacy CLI form even    */
-/* before the legacy write path is removed. They are wired selectively for   */
-/* leaves where the YANG default deviates from the legacy in-memory default. */
+/* bgpd uses a dual-write model: DEFPY_YANG bodies invoke legacy setters     */
+/* that update the in-memory `struct bgp` / `struct peer`, and the legacy   */
+/* `bgp_config_write_*` functions render `show running-config` from that    */
+/* state. These cli_show callbacks render the YANG datastore for mgmtd's    */
+/* `show yang config-data` and become authoritative for `show running-      */
+/* config` once `FRR_MGMTD_BACKEND` is set on bgpd_di.                      */
 /* ------------------------------------------------------------------------ */
 
 /*
@@ -5495,8 +5484,7 @@ static void bgp_nb_show_global_bool(struct vty *vty,
 		vty_out(vty, " no %s\n", keyword);
 }
 
-/* Phase 5 example callbacks (sample wiring — full coverage is a future
- * deliverable; see DESIGN NOTE above). */
+/* cli_show emitters. */
 
 void bgp_global_router_id_cli_show(struct vty *vty,
 				   const struct lyd_node *dnode,
@@ -5586,7 +5574,7 @@ void bgp_neighbor_password_cli_show(struct vty *vty,
 		vty_out(vty, " neighbor %s password %s\n", peer, pwd);
 }
 
-/* ---------- Phase 5 bulk wire-up: generic cli_show emitters --------- */
+/* generic boolean-flag cli_show emitters. */
 
 /* Generic emitter for a `bgp <keyword>` global boolean leaf. */
 #define BGP_GLOBAL_BOOL_CLI_SHOW(_name, _keyword)                              \
@@ -5678,7 +5666,7 @@ BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(disable_addpath_rx, "disable-addpath-rx")
 BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(addpath_tx_all, "addpath-tx-all-paths")
 BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(addpath_tx_bestpath_per_as, "addpath-tx-bestpath-per-AS")
 
-/* ---- Phase 5 batch 2: value-style cli_show emitters ---------------- */
+/* value-style cli_show emitters. */
 
 /* uint global leaf → `bgp <keyword> <value>` */
 #define BGP_GLOBAL_UINT_CLI_SHOW(_name, _keyword)                              \
@@ -5961,7 +5949,7 @@ void bgp_neighbor_capabilities_negotiate_cli_show(struct vty *vty,
 		vty_out(vty, " neighbor %s dont-capability-negotiate\n", peer);
 }
 
-/* Phase 5 batch 3: remaining global boolean+value leaves. */
+/* additional global boolean+value cli_show emitters. */
 
 void bgp_global_always_compare_med_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
@@ -6253,19 +6241,16 @@ void bgp_peer_group_ipv6_listen_range_cli_show(struct vty *vty,
 		yang_dnode_get_string(dnode, NULL), name);
 }
 
-/* Phase 5 final: no-op cli_show for leaves whose parent container
- * cli_show already emits the full CLI block. Wiring this everywhere
- * gives 100% raw .cli_show coverage and documents the intent.
- *
- * The framework calls cli_show in the order leaves appear in the YANG
- * tree; we rely on the parent container's cli_show running first and
- * emitting the entire compound CLI. The leaf-level no-op silences
- * accidental duplicate output that would otherwise occur if a future
- * developer accidentally added an emitter.
+/*
+ * Used for leaves whose parent container's cli_show emits the full
+ * compound CLI block (e.g. timers, local-as, admin-shutdown). Wiring
+ * this against child leaves silences any duplicate emission.
  */
 void bgp_nb_handled_by_parent_cli_show(struct vty *vty,
 				       const struct lyd_node *dnode,
 				       bool show_defaults)
 {
-	(void)vty; (void)dnode; (void)show_defaults;
+	(void)vty;
+	(void)dnode;
+	(void)show_defaults;
 }

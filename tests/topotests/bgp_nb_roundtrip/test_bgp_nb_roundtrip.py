@@ -1,32 +1,14 @@
 # SPDX-License-Identifier: ISC
 """
-test_bgp_nb_roundtrip.py — Phase 6 integration test.
+Verifies the bgpd ↔ mgmtd round-trip: configuration written via mgmtd
+becomes visible in `show running-config bgpd` and vice-versa.
 
-Verifies that configuration written via the management plane (mgmtd)
-becomes visible through the legacy CLI (`show running-config bgpd`) and
-vice-versa. This is the round-trip contract that the Phase 1-3
-DEFPY_YANG conversions are supposed to uphold.
-
-CAVEAT: this scaffold runs only on Linux + a built FRR tree; the
-local-development workflow (`pytest`) requires the standard topotest
-prerequisites. The test is structured as four phases:
-
-  1. set router-id via mgmtd (YANG xpath) and verify the change shows
-     up in `vtysh -c "show running-config bgpd"`
-  2. set the same leaf via the legacy CLI and verify it appears in
-     `vtysh -c "show mgmt yang-config-data XPath ..."`
-  3. exercise a per-AF flag toggle (e.g. `route-reflector-client`) via
-     each side and verify the other side sees it
-  4. exercise the apply_finish container (local-as) via mgmtd and
-     verify all three leaves (local-as, no-prepend, replace-as)
-     appear correctly on the CLI side
-
-Subjects covered:
-  * Phase 1 — backend client registration
-  * Phase 2 — global leaves (router-id)
-  * Phase 3a — neighbor leaves (passive-mode, password)
-  * Phase 3c — per-AF flags (route-reflector-client)
-  * Phase 5 — cli_show callbacks (round-trip via mgmtd reads)
+Coverage:
+  * router-id via mgmtd → legacy CLI
+  * router-id via legacy CLI → mgmtd YANG view
+  * neighbor passive round-trip
+  * per-AF route-reflector-client round-trip
+  * local-as apply_finish atomicity (single mgmt transaction)
 """
 import os
 import sys

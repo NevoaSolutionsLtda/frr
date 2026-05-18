@@ -14,23 +14,15 @@ module frr-deviations-bgp-rfc {
      FRR Development List:  <mailto:dev@lists.frrouting.org>";
 
   description
-    "This module documents the places where FRR's frr-bgp YANG model
-     departs from the IETF BGP YANG model (draft-ietf-idr-bgp-model) or
-     from strict RFC semantics. It captures the Phase 7 deliverable of
-     BGPD_NB_MIGRATION_PLAN.md: deviations + tracking for GitHub issue
-     #5428.
-
-     Deviations are intentional — FRR's CLI predates the IETF model and
-     supports behaviors not directly representable in the standard
-     groupings. Each `deviate` block below has a description that
-     explains the reason. These deviations DO NOT remove conformance
-     for the leaves that ARE common; they only document the gaps.
-
-     Last-reviewed: 2026-05-18 against bgpd master branch
-     (#5428 migration baseline).";
+    "Documents the places where FRR's frr-bgp YANG model departs from
+     the IETF BGP YANG model (draft-ietf-idr-bgp-model) or from strict
+     RFC semantics. Deviations are intentional — FRR's CLI predates the
+     IETF model and supports behaviors not directly representable in
+     the standard groupings. These deviations do not remove conformance
+     for the leaves that are common; they only document the gaps.";
 
   revision 2026-05-18 {
-    description "Initial revision (Phase 7).";
+    description "Initial revision.";
   }
 
   /* ------------------------------------------------------------------ */
@@ -118,9 +110,8 @@ module frr-deviations-bgp-rfc {
     deviate add {
       description
         "YANG-driven write flips the bit only. The legacy CLI also
-         performs an implicit per-peer soft-reset. Full side-effect
-         parity is a follow-up (track in BGPD_NB_MIGRATION_PROGRES.md
-         Phase 5 polish).";
+         performs an implicit per-peer soft-reset; full side-effect
+         parity is a follow-up.";
     }
   }
 
@@ -129,8 +120,8 @@ module frr-deviations-bgp-rfc {
   /* ------------------------------------------------------------------ */
 
   /*
-   * The following bgpd CLI knobs are converted to DEFPY_YANG but do not
-   * (yet) have dedicated YANG leaves; mgmtd cannot drive them:
+   * The following bgpd CLI knobs do not yet have dedicated YANG
+   * leaves; mgmtd cannot drive them:
    *   - `neighbor X capability orf prefix-list <both|send|receive>`
    *   - `neighbor X advertise-map RMAP exist-map RMAP`
    *   - `neighbor X path-attribute discard 1 2 3` (the leaf-list)
@@ -138,8 +129,7 @@ module frr-deviations-bgp-rfc {
    *   - `bgp dampening` family (per-AF)
    *   - `vpnv4/vpnv6 network` (l3vpn injected routes)
    *
-   * These are tracked as Phase 5 polish; CLI-side semantics are
-   * preserved end-to-end by the dual-write helpers, but mgmtd
+   * CLI-side semantics are preserved end-to-end; only the mgmtd
    * write-path is non-functional for these.
    */
 
@@ -148,12 +138,10 @@ module frr-deviations-bgp-rfc {
   /* ------------------------------------------------------------------ */
 
   /*
-   * Operational state (NB read-only nodes like adjacency-rib counters,
-   * peer state-machine state, last error, FSM transitions) is not yet
-   * exposed via YANG. The IETF model has many `config false` containers
-   * for these; FRR continues to use vty `show bgp ...` commands.
-   *
-   * Phase 6 (integration tests) verifies config round-trip only, not
-   * operational-state queries.
+   * Operational state (NB read-only nodes such as adjacency-rib
+   * counters, peer state-machine state, last error, FSM transitions)
+   * is not yet exposed via YANG. The IETF model has many `config
+   * false` containers for these; FRR continues to use vty
+   * `show bgp ...` commands.
    */
 }

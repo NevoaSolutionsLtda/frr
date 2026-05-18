@@ -124,17 +124,10 @@ struct zebra_privs_t bgpd_privs = {
 static struct frr_daemon_info bgpd_di;
 
 /*
- * Northbound / mgmtd integration (FRRouting/frr#5428).
- *
- * bgpd subscribes as an mgmt backend client so that NETCONF / gRPC / mgmtd-CLI
- * writes against bgp xpaths are routed here. During migration most xpaths
- * have no callback registered yet — those writes will fail until each phase
- * of BGPD_NB_MIGRATION_PLAN.md wires its subtree.
- *
- * Note: FRR_MGMTD_BACKEND is intentionally NOT set on bgpd_di. bgpd still
- * parses its own bgpd.conf and the legacy CLI is the authoritative path for
- * unconverted knobs. Phase 7 of the migration plan flips this flag once
- * conversion is feature-complete.
+ * bgpd subscribes as an mgmt backend client so writes against bgp xpaths
+ * arrive here. FRR_MGMTD_BACKEND is intentionally NOT set on bgpd_di:
+ * bgpd still parses its own bgpd.conf and the legacy CLI remains the
+ * authoritative path for any xpath without a registered callback.
  */
 static struct mgmt_be_client *mgmt_be_client;
 
@@ -427,17 +420,11 @@ static const struct frr_yang_module_info *const bgpd_yang_modules[] = {
 };
 
 /*
- * XPath subscriptions for the mgmt backend client.
- *
- * Only list xpaths whose owning callbacks are wired today (or whose write
- * failure on unwired paths is the expected migration signal). Adding an
- * xpath here causes mgmtd to route writes against it to bgpd; if bgpd has
- * no callback for the leaf, the write errors with NB_ERR — that's how the
- * migration plan's phase-by-phase conversion stays observable.
- *
- * Shared modules (frr-host, frr-logging, frr-vrf, frr-interface) are
- * intentionally NOT subscribed here — bgpd reads them via its own legacy
- * config path. Subscribing now would duplicate processing.
+ * XPath subscriptions for the mgmt backend client. Writes against any
+ * xpath listed here are routed to bgpd. Writes to a leaf without a
+ * registered callback error with NB_ERR. Shared modules (frr-host,
+ * frr-logging, frr-vrf, frr-interface) are intentionally not subscribed
+ * — bgpd reads them via its own legacy config path.
  */
 static const char *const bgpd_config_xpaths[] = {
 	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp",

@@ -337,7 +337,7 @@ submodule frr-bgp-neighbor {
              enabled for the neighbour or group.";
         }
 
-        /* Phase 3c — per-AF per-peer flag toggles shared across AFs.
+        /* Per-AF per-peer flag toggles shared across AFs.
          * These boolean leaves map directly to PEER_FLAG_* bits applied
          * per AFI/SAFI via peer_af_flag_set/unset. */
         leaf soft-reconfiguration-inbound {

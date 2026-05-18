@@ -401,7 +401,7 @@ bool config_bgp_aspath_validate(const char *regstr)
 	return false;
 }
 
-DEFPY_YANG(as_path, bgp_as_path_cmd,
+DEFUN(as_path, bgp_as_path_cmd,
       "bgp as-path access-list AS_PATH_FILTER_NAME [seq (0-4294967295)] <deny|permit> LINE...",
       BGP_STR
       "BGP autonomous system path filter\n"
@@ -488,7 +488,7 @@ DEFPY_YANG(as_path, bgp_as_path_cmd,
 	return CMD_SUCCESS;
 }
 
-DEFPY_YANG(no_as_path, no_bgp_as_path_cmd,
+DEFUN(no_as_path, no_bgp_as_path_cmd,
       "no bgp as-path access-list AS_PATH_FILTER_NAME [seq (0-4294967295)] <deny|permit> LINE...",
       NO_STR
       BGP_STR
@@ -571,7 +571,7 @@ DEFPY_YANG(no_as_path, no_bgp_as_path_cmd,
 	return CMD_SUCCESS;
 }
 
-DEFPY_YANG (no_as_path_all,
+DEFUN (no_as_path_all,
        no_bgp_as_path_all_cmd,
        "no bgp as-path access-list AS_PATH_FILTER_NAME",
        NO_STR

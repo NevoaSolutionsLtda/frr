@@ -1,18 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * bgpd northbound — module registration.
+ * BGP northbound — module registration.
  *
- * Registers the `frr-bgp` YANG module with the northbound layer and binds
- * create/modify/destroy callbacks against XPath nodes as each phase of the
- * migration plan (`BGPD_NB_MIGRATION_PLAN.md`) converts them.
- *
- * cli_show callbacks (used by `show running-config` rendering) are
- * registered separately in `frr_bgp_cli_info`, mirroring the staticd
- * `frr_staticd_cli_info` pattern at `staticd/static_vty.c:2091`. Phase 5
- * adds cli_show callbacks; until then `show running-config` is served by
- * the existing legacy `bgp_config_write_*` functions in `bgp_vty.c`.
- *
- * See FRRouting/frr#5428.
+ * Copyright (C) 2026 FRRouting
  */
 
 #include <zebra.h>
@@ -28,7 +18,7 @@
 const struct frr_yang_module_info frr_bgp_info = {
 	.name = "frr-bgp",
 	.nodes = {
-		/* Phase 2.0 — control-plane-protocol context (bgp container). */
+		/* control-plane-protocol */
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp",
 			.cbs = {
@@ -38,7 +28,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 			},
 		},
 
-		/* Phase 2 — global leaves. */
+		/* global */
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/router-id",
 			.cbs = {
@@ -583,7 +573,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 			},
 		},
 
-		/* Phase 3a (neighbor) entries. */
+		/* neighbor */
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor",
 			.cbs = {
@@ -984,7 +974,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 			},
 		},
 
-		/* Phase 3c — per-AF per-peer flag toggles. */
+		/* per-AF per-peer flag toggles */
 #define BGP_NB_AF_XPATH(_leaf)                                                 \
 	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/" \
 	"frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/" _leaf
@@ -1090,7 +1080,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 			   .cli_show = bgp_nb_handled_by_parent_cli_show } },
 #undef BGP_NB_AF_XPATH
 
-		/* Phase 3b (peer-group) entries. */
+		/* peer-group */
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group",
 			.cbs = {
@@ -1116,8 +1106,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 			},
 		},
 
-		/* Phase 3c (address-family) entries go here. */
-
+		
 		{
 			.xpath = NULL,
 		},

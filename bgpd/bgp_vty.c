@@ -1628,11 +1628,11 @@ static int peer_flag_unset_vty(struct vty *vty, const char *ip_str,
 }
 
 /*
- * Phase 3a helper — true if `arg` parses as an IP address (v4/v6),
- * false otherwise (assume peer-group name). DEFPY_YANG conversions
- * use this to decide whether to enqueue an NB change against the
- * `neighbors/neighbor[remote-address]` xpath. Peer-group NB writes
- * are deferred to Phase 3b.
+ * True if `arg` parses as an IP address (v4/v6), false otherwise
+ * (assume peer-group name). Used to decide whether a DEFPY_YANG body
+ * should enqueue an NB change against the
+ * `neighbors/neighbor[remote-address]` xpath. Peer-group writes are
+ * currently not mirrored to the YANG datastore.
  */
 static bool bgp_arg_is_ip_peer(const char *arg)
 {
@@ -1644,11 +1644,11 @@ static bool bgp_arg_is_ip_peer(const char *arg)
 }
 
 /*
- * Convenience wrapper for the common Phase 3a pattern: call the legacy
- * peer_flag_{set,unset}_vty (which correctly handles peer-or-group +
- * inheritance + group-member propagation), then on success and when the
- * arg is an IP peer also enqueue an NB change so mgmtd's view stays
- * consistent. Peer-group writes intentionally bypass NB until Phase 3b.
+ * Boolean peer-flag dual write: call the legacy
+ * peer_flag_{set,unset}_vty (which handles peer-or-group lookup,
+ * inheritance and group-member propagation), then on success and when
+ * the arg is an IP peer also enqueue an NB change so the YANG
+ * datastore stays consistent. Peer-group writes are not mirrored.
  */
 static int bgp_nb_peer_flag_dual(struct vty *vty, const char *peer_arg,
 				 uint64_t flag, bool set, const char *xpath_rel)
@@ -1682,10 +1682,10 @@ static int bgp_nb_peer_flag_dual(struct vty *vty, const char *peer_arg,
 }
 
 /*
- * Phase 3a value-style dual write. Caller has already invoked the legacy
- * setter. We additionally enqueue an NB MODIFY (or DESTROY if value == NULL)
- * against the neighbor xpath so mgmtd sees the leaf value. Peer-group writes
- * are not enqueued (deferred to Phase 3b).
+ * Value-style peer dual write (string/int leaves). Caller has already
+ * invoked the legacy setter; this enqueues an NB MODIFY (or DESTROY if
+ * value == NULL) against the neighbor xpath so the YANG datastore sees
+ * the leaf value. Peer-group writes are not mirrored.
  */
 static void bgp_nb_peer_value_dual(struct vty *vty, const char *peer_arg,
 				   const char *xpath_rel, const char *value)
@@ -1707,9 +1707,9 @@ static void bgp_nb_peer_value_dual(struct vty *vty, const char *peer_arg,
 }
 
 /*
- * Phase 3c per-AF dual-write. Caller has already invoked the legacy
- * peer_af_flag_{set,unset}_vty. We enqueue an NB MODIFY/DESTROY against
- * the per-AF leaf. AFI/SAFI come from the current vty mode
+ * Per-AF dual write. Caller has already invoked the legacy
+ * peer_af_flag_{set,unset}_vty; this enqueues an NB MODIFY/DESTROY
+ * against the per-AF leaf. AFI/SAFI come from the current vty mode
  * (bgp_node_afi/safi). xpath_rel is relative to the afi-safi list entry.
  */
 static const char *bgp_nb_af_yang_name(afi_t afi, safi_t safi)
@@ -1762,7 +1762,7 @@ static void bgp_nb_peer_af_flag_dual(struct vty *vty, const char *peer_arg,
 }
 
 /*
- * Phase 3c per-AF value dual-write (string/int leaves like weight,
+ * Per-AF value dual write (string/int leaves like weight,
  * allowas-in). value=NULL means DESTROY.
  */
 static void bgp_nb_peer_af_value_dual(struct vty *vty, const char *peer_arg,
