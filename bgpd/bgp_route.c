@@ -9655,7 +9655,7 @@ void bgp_config_write_table_map(struct vty *vty, struct bgp *bgp, afi_t afi,
 	}
 }
 
-DEFUN (bgp_table_map,
+DEFPY_YANG (bgp_table_map,
        bgp_table_map_cmd,
        "table-map WORD",
        "BGP table to RIB route download filter\n"
@@ -9665,7 +9665,7 @@ DEFUN (bgp_table_map,
 	return bgp_table_map_set(vty, bgp_node_afi(vty), bgp_node_safi(vty),
 				 argv[idx_word]->arg);
 }
-DEFUN (no_bgp_table_map,
+DEFPY_YANG (no_bgp_table_map,
        no_bgp_table_map_cmd,
        "no table-map WORD",
        NO_STR
@@ -9677,7 +9677,7 @@ DEFUN (no_bgp_table_map,
 				   argv[idx_word]->arg);
 }
 
-DEFPY(bgp_network,
+DEFPY_YANG(bgp_network,
 	bgp_network_cmd,
 	"[no] network \
 	<A.B.C.D/M$prefix|A.B.C.D$address [mask A.B.C.D$netmask]> \
@@ -9714,7 +9714,7 @@ DEFPY(bgp_network,
 			      NULL, NULL, NULL, NULL);
 }
 
-DEFPY(ipv6_bgp_network,
+DEFPY_YANG(ipv6_bgp_network,
 	ipv6_bgp_network_cmd,
 	"[no] network X:X::X:X/M$prefix \
 	[{route-map RMAP_NAME$map_name|label-index (0-1048560)$label_index}]",
@@ -11668,7 +11668,7 @@ static int bgp_aggregate_set(struct vty *vty, const char *prefix_str, afi_t afi,
 	return CMD_SUCCESS;
 }
 
-DEFPY(aggregate_addressv4, aggregate_addressv4_cmd,
+DEFPY_YANG(aggregate_addressv4, aggregate_addressv4_cmd,
       "[no] aggregate-address <A.B.C.D/M$prefix|A.B.C.D$addr A.B.C.D$mask> [{"
       "as-set$as_set_s"
       "|summary-only$summary_only"
@@ -11789,7 +11789,7 @@ void bgp_free_aggregate_info(struct bgp_aggregate *aggregate)
 	bgp_aggregate_free(aggregate);
 }
 
-DEFPY(aggregate_addressv6, aggregate_addressv6_cmd,
+DEFPY_YANG(aggregate_addressv6, aggregate_addressv6_cmd,
       "[no] aggregate-address X:X::X:X/M$prefix [{"
       "as-set$as_set_s"
       "|summary-only$summary_only"
@@ -19467,7 +19467,7 @@ static void bgp_announce_routes_distance_update(struct bgp *bgp,
 	}
 }
 
-DEFUN (bgp_distance,
+DEFPY_YANG (bgp_distance,
        bgp_distance_cmd,
        "distance bgp (1-255) (1-255) (1-255)",
        "Define an administrative distance\n"
@@ -19500,7 +19500,7 @@ DEFUN (bgp_distance,
 	return CMD_SUCCESS;
 }
 
-DEFUN (no_bgp_distance,
+DEFPY_YANG (no_bgp_distance,
        no_bgp_distance_cmd,
        "no distance bgp [(1-255) (1-255) (1-255)]",
        NO_STR
@@ -19529,7 +19529,7 @@ DEFUN (no_bgp_distance,
 }
 
 
-DEFUN (bgp_distance_source,
+DEFPY_YANG (bgp_distance_source,
        bgp_distance_source_cmd,
        "distance (1-255) A.B.C.D/M",
        "Define an administrative distance\n"
@@ -19543,7 +19543,7 @@ DEFUN (bgp_distance_source,
 	return CMD_SUCCESS;
 }
 
-DEFUN (no_bgp_distance_source,
+DEFPY_YANG (no_bgp_distance_source,
        no_bgp_distance_source_cmd,
        "no distance (1-255) A.B.C.D/M",
        NO_STR
@@ -19558,7 +19558,7 @@ DEFUN (no_bgp_distance_source,
 	return CMD_SUCCESS;
 }
 
-DEFUN (bgp_distance_source_access_list,
+DEFPY_YANG (bgp_distance_source_access_list,
        bgp_distance_source_access_list_cmd,
        "distance (1-255) A.B.C.D/M WORD",
        "Define an administrative distance\n"
@@ -19574,7 +19574,7 @@ DEFUN (bgp_distance_source_access_list,
 	return CMD_SUCCESS;
 }
 
-DEFUN (no_bgp_distance_source_access_list,
+DEFPY_YANG (no_bgp_distance_source_access_list,
        no_bgp_distance_source_access_list_cmd,
        "no distance (1-255) A.B.C.D/M WORD",
        NO_STR
@@ -19591,7 +19591,7 @@ DEFUN (no_bgp_distance_source_access_list,
 	return CMD_SUCCESS;
 }
 
-DEFUN (ipv6_bgp_distance_source,
+DEFPY_YANG (ipv6_bgp_distance_source,
        ipv6_bgp_distance_source_cmd,
        "distance (1-255) X:X::X:X/M",
        "Define an administrative distance\n"
@@ -19602,7 +19602,7 @@ DEFUN (ipv6_bgp_distance_source,
 	return CMD_SUCCESS;
 }
 
-DEFUN (no_ipv6_bgp_distance_source,
+DEFPY_YANG (no_ipv6_bgp_distance_source,
        no_ipv6_bgp_distance_source_cmd,
        "no distance (1-255) X:X::X:X/M",
        NO_STR
@@ -19614,7 +19614,7 @@ DEFUN (no_ipv6_bgp_distance_source,
 	return CMD_SUCCESS;
 }
 
-DEFUN (ipv6_bgp_distance_source_access_list,
+DEFPY_YANG (ipv6_bgp_distance_source_access_list,
        ipv6_bgp_distance_source_access_list_cmd,
        "distance (1-255) X:X::X:X/M WORD",
        "Define an administrative distance\n"
@@ -19626,7 +19626,7 @@ DEFUN (ipv6_bgp_distance_source_access_list,
 	return CMD_SUCCESS;
 }
 
-DEFUN (no_ipv6_bgp_distance_source_access_list,
+DEFPY_YANG (no_ipv6_bgp_distance_source_access_list,
        no_ipv6_bgp_distance_source_access_list_cmd,
        "no distance (1-255) X:X::X:X/M WORD",
        NO_STR
@@ -19639,7 +19639,7 @@ DEFUN (no_ipv6_bgp_distance_source_access_list,
 	return CMD_SUCCESS;
 }
 
-DEFUN (bgp_damp_set,
+DEFPY_YANG (bgp_damp_set,
        bgp_damp_set_cmd,
        "bgp dampening [(1-45) [(1-20000) (1-50000) (1-255)]]",
        "BGP Specific commands\n"
@@ -19685,7 +19685,7 @@ DEFUN (bgp_damp_set,
 			       reuse, suppress, max);
 }
 
-DEFUN (bgp_damp_unset,
+DEFPY_YANG (bgp_damp_unset,
        bgp_damp_unset_cmd,
        "no bgp dampening [(1-45) [(1-20000) (1-50000) (1-255)]]",
        NO_STR
