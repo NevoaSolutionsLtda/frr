@@ -691,14 +691,9 @@ DEFPY_YANG (neighbor_bfd_check_controlplane_failure,
        "BFD support\n"
        "Link dataplane status with BGP controlplane\n")
 {
-	const char *no = strmatch(argv[0]->text, "no") ? "no" : NULL;
-	int idx_peer = 0;
+	int idx_peer = no ? 2 : 1;
 	struct peer *peer;
 
-	if (no)
-		idx_peer = 2;
-	else
-		idx_peer = 1;
 	peer = peer_and_group_lookup_vty(vty, argv[idx_peer]->arg);
 	if (!peer)
 		return CMD_WARNING_CONFIG_FAILED;
@@ -708,7 +703,7 @@ DEFPY_YANG (neighbor_bfd_check_controlplane_failure,
 	else
 		bgp_peer_configure_bfd(peer, true);
 
-	peer->bfd_config->cbit = no == NULL;
+	peer->bfd_config->cbit = (no == NULL);
 	bgp_peer_config_apply(peer, peer->group);
 
 	return CMD_SUCCESS;
