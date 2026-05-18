@@ -9,17 +9,6 @@ Coverage:
   * neighbor passive round-trip
   * per-AF route-reflector-client round-trip
   * local-as apply_finish atomicity (single mgmt transaction)
-
-The end-to-end round-trip currently depends on bgpd implementing NB
-callbacks for every config node in the frr-bgp YANG tree
-(nb_validate_callbacks() is fatal on missing entries). bgpd ships
-with `ignore_cfg_cbs=true` on `frr_bgp_info` to avoid that fatal
-exit while the migration is in progress, but the same flag also
-short-circuits callback dispatch (lib/northbound.c
-nb_callback_configuration() returns NB_OK early). Tests that drive
-config via mgmtd are therefore marked xfail until bgpd ships
-callbacks for every leaf or the validator gains a per-subtree skip
-mechanism.
 """
 import os
 import sys
@@ -33,16 +22,6 @@ from lib.topolog import logger
 from lib.common_config import step
 
 pytestmark = [pytest.mark.bgpd, pytest.mark.mgmtd]
-
-# All mgmtd-driven tests fail today because frr_bgp_info uses
-# ignore_cfg_cbs=true (see module docstring). Mark them xfail
-# (strict=False) so they show as expected-fail on CI and convert to
-# pass once the migration completes.
-_XFAIL_NB_DISPATCH = pytest.mark.xfail(
-    reason="frr_bgp_info has ignore_cfg_cbs=true; mgmtd dispatch into "
-           "bgpd is no-op until full callback coverage lands",
-    strict=False,
-)
 
 
 CPP = (
@@ -88,7 +67,6 @@ def mgmt_apply(router, *commands):
     return router.vtysh_cmd(script)
 
 
-@_XFAIL_NB_DISPATCH
 def test_router_id_mgmtd_to_cli():
     tgen = get_topogen()
     if tgen.routers_have_failure():
@@ -111,70 +89,75 @@ def test_router_id_mgmtd_to_cli():
     )
 
 
-@_XFAIL_NB_DISPATCH
-def test_router_id_cli_to_mgmtd():
+def test_router_id_mgmtd_view():
+    """Round-trip via mgmtd's own YANG view: write through mgmt, then read
+    the running datastore through mgmt and confirm the value is there."""
     tgen = get_topogen()
     if tgen.routers_have_failure():
         pytest.skip(tgen.errors)
 
     r1 = tgen.gears["r1"]
-    r1.vtysh_cmd(
-        "configure terminal\n"
-        "router bgp 65000\n"
-        " bgp router-id 10.0.0.2"
+    mgmt_apply(
+        r1,
+        f'mgmt set-config {CPP}/global/local-as 65000',
+        f'mgmt set-config {CPP}/global/router-id 10.0.0.2',
     )
     output = r1.vtysh_cmd(
-        f'show mgmt get-config running-config-data xpath "{CPP}/global/router-id"'
+        f'show mgmt get-data {CPP}/global/router-id datastore running only-config json'
     )
     assert "10.0.0.2" in output, (
         f"expected router-id in mgmtd YANG view; got:\n{output}"
     )
 
 
-@_XFAIL_NB_DISPATCH
 def test_neighbor_passive_roundtrip():
+    """Create a neighbor via mgmt and toggle passive-mode through mgmt;
+    verify the legacy CLI surface picks it up."""
     tgen = get_topogen()
     if tgen.routers_have_failure():
         pytest.skip(tgen.errors)
 
     r1 = tgen.gears["r1"]
-    r1.vtysh_cmd(
-        "configure terminal\n"
-        "router bgp 65000\n"
-        " neighbor 10.0.0.2 remote-as 65001\n"
-        " neighbor 10.0.0.2 passive"
+    n = f"{CPP}/neighbors/neighbor[remote-address='10.0.0.2']"
+    mgmt_apply(
+        r1,
+        f'mgmt set-config {CPP}/global/local-as 65000',
+        f"mgmt set-config {n}/neighbor-remote-as/remote-as-type as-specified",
+        f"mgmt set-config {n}/neighbor-remote-as/remote-as 65001",
+        f"mgmt set-config {n}/passive-mode true",
     )
-    xpath = (
-        f"{CPP}/neighbors/neighbor[remote-address='10.0.0.2']/passive-mode"
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor 10.0.0.2 remote-as 65001" in output, (
+        f"expected neighbor on legacy CLI; got:\n{output}"
     )
-    output = r1.vtysh_cmd(
-        f'show mgmt get-config running-config-data xpath "{xpath}"'
-    )
-    assert "true" in output.lower(), (
-        f"expected passive-mode=true in YANG view; got:\n{output}"
+    assert "neighbor 10.0.0.2 passive" in output, (
+        f"expected passive on legacy CLI; got:\n{output}"
     )
 
 
-@_XFAIL_NB_DISPATCH
 def test_per_af_route_reflector_client_roundtrip():
     tgen = get_topogen()
     if tgen.routers_have_failure():
         pytest.skip(tgen.errors)
 
     r1 = tgen.gears["r1"]
-    xpath = (
-        f"{CPP}/neighbors/neighbor[remote-address='10.0.0.2']"
-        "/afi-safis/afi-safi[afi-safi-name='frr-rt:ipv4-unicast']"
-        "/route-reflector-client"
+    n = f"{CPP}/neighbors/neighbor[remote-address='10.0.0.2']"
+    af = (f"{n}/afi-safis/afi-safi"
+          "[afi-safi-name='frr-routing:ipv4-unicast']")
+    mgmt_apply(
+        r1,
+        f'mgmt set-config {CPP}/global/local-as 65000',
+        f"mgmt set-config {n}/neighbor-remote-as/remote-as-type as-specified",
+        f"mgmt set-config {n}/neighbor-remote-as/remote-as 65000",
+        f"mgmt set-config {af}/enabled true",
+        f"mgmt set-config {af}/route-reflector-client true",
     )
-    mgmt_apply(r1, f'mgmt set-config {xpath} true')
     output = r1.vtysh_cmd("show running-config bgpd")
     assert "neighbor 10.0.0.2 route-reflector-client" in output, (
         f"expected RR-client on legacy CLI; got:\n{output}"
     )
 
 
-@_XFAIL_NB_DISPATCH
 def test_local_as_apply_finish_roundtrip():
     """local-as is a multi-leaf apply_finish container — all three leaves
     must apply atomically in one mgmtd transaction."""
@@ -183,11 +166,13 @@ def test_local_as_apply_finish_roundtrip():
         pytest.skip(tgen.errors)
 
     r1 = tgen.gears["r1"]
-    base = (
-        f"{CPP}/neighbors/neighbor[remote-address='10.0.0.2']/local-as"
-    )
+    n = f"{CPP}/neighbors/neighbor[remote-address='10.0.0.2']"
+    base = f"{n}/local-as"
     mgmt_apply(
         r1,
+        f'mgmt set-config {CPP}/global/local-as 65000',
+        f"mgmt set-config {n}/neighbor-remote-as/remote-as-type as-specified",
+        f"mgmt set-config {n}/neighbor-remote-as/remote-as 65001",
         f'mgmt set-config {base}/local-as 65999',
         f'mgmt set-config {base}/no-prepend true',
         f'mgmt set-config {base}/replace-as true',

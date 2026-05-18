@@ -13,19 +13,14 @@
 
 #include "bgpd/bgpd.h"
 #include "bgpd/bgp_nb.h"
+#include "bgpd/bgp_nb_stubs.h"
 
 /* clang-format off */
 const struct frr_yang_module_info frr_bgp_info = {
 	.name = "frr-bgp",
-	/*
-	 * Skip strict NB-callback validation. bgpd's mgmtd backend is a
-	 * work-in-progress: many config xpaths are not yet wired and the
-	 * legacy CLI remains authoritative for unwired knobs. Writes from
-	 * mgmtd against an unwired xpath fail with NB_ERR at runtime;
-	 * that is the desired behaviour during the migration.
-	 */
-	.ignore_cfg_cbs = true,
 	.nodes = {
+#include "bgpd/bgp_nb_stubs_table.inc"
+
 		/* control-plane-protocol */
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp",
@@ -271,6 +266,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/tcp-keepalive",
 			.cbs = {
+				.create       = bgp_nb_stub_create,
 				.apply_finish = bgp_global_tcp_keepalive_apply_finish,
 				.destroy      = bgp_global_tcp_keepalive_destroy,
 				.cli_show = bgp_global_tcp_keepalive_cli_show,
@@ -327,6 +323,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/administrative-shutdown",
 			.cbs = {
+				.create       = bgp_nb_stub_create,
 				.apply_finish = bgp_global_administrative_shutdown_apply_finish,
 				.destroy      = bgp_global_administrative_shutdown_destroy,
 				.cli_show = bgp_global_administrative_shutdown_cli_show,
@@ -423,6 +420,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/suppress-fib-pending",
 			.cbs = {
+				.create       = bgp_nb_stub_create,
 				.apply_finish = bgp_global_suppress_fib_pending_apply_finish,
 				.destroy      = bgp_global_suppress_fib_pending_destroy,
 				.cli_show = bgp_global_suppress_fib_pending_cli_show,
@@ -587,6 +585,9 @@ const struct frr_yang_module_info frr_bgp_info = {
 			.cbs = {
 				.create  = bgp_neighbor_create,
 				.destroy = bgp_neighbor_destroy,
+				.get_next     = bgp_nb_stub_get_next,
+				.get_keys     = bgp_nb_stub_get_keys,
+				.lookup_entry = bgp_nb_stub_lookup_entry,
 				.cli_show = bgp_nb_handled_by_parent_cli_show,
 			},
 		},
@@ -1094,6 +1095,9 @@ const struct frr_yang_module_info frr_bgp_info = {
 			.cbs = {
 				.create  = bgp_peer_group_create,
 				.destroy = bgp_peer_group_destroy,
+				.get_next     = bgp_nb_stub_get_next,
+				.get_keys     = bgp_nb_stub_get_keys,
+				.lookup_entry = bgp_nb_stub_lookup_entry,
 				.cli_show = bgp_peer_group_cli_show,
 			},
 		},
@@ -1114,7 +1118,6 @@ const struct frr_yang_module_info frr_bgp_info = {
 			},
 		},
 
-		
 		{
 			.xpath = NULL,
 		},
