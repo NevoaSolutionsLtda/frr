@@ -113,13 +113,13 @@ int bgp_global_bestpath_use_imported_attributes_destroy(
 	struct nb_cb_destroy_args *args);
 int bgp_global_dynamic_neighbors_limit_modify(struct nb_cb_modify_args *args);
 int bgp_global_dynamic_neighbors_limit_destroy(struct nb_cb_destroy_args *args);
-int bgp_global_med_config_apply_finish(struct nb_cb_apply_finish_args *args);
+void bgp_global_med_config_apply_finish(struct nb_cb_apply_finish_args *args);
 int bgp_global_med_config_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_default_software_version_capability_modify(
 	struct nb_cb_modify_args *args);
 int bgp_global_default_software_version_capability_destroy(
 	struct nb_cb_destroy_args *args);
-int bgp_global_tcp_keepalive_apply_finish(struct nb_cb_apply_finish_args *args);
+void bgp_global_tcp_keepalive_apply_finish(struct nb_cb_apply_finish_args *args);
 int bgp_global_tcp_keepalive_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_hold_time_modify(struct nb_cb_modify_args *args);
 int bgp_global_hold_time_destroy(struct nb_cb_destroy_args *args);
@@ -137,7 +137,7 @@ int bgp_global_graceful_restart_selection_deferral_time_modify(
 	struct nb_cb_modify_args *args);
 int bgp_global_graceful_restart_selection_deferral_time_destroy(
 	struct nb_cb_destroy_args *args);
-int bgp_global_administrative_shutdown_apply_finish(
+void bgp_global_administrative_shutdown_apply_finish(
 	struct nb_cb_apply_finish_args *args);
 int bgp_global_administrative_shutdown_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_enforce_first_as_global_modify(struct nb_cb_modify_args *args);
@@ -165,7 +165,7 @@ int bgp_global_peer_type_multipath_relax_destroy(
 	struct nb_cb_destroy_args *args);
 int bgp_global_graceful_shutdown_enable_modify(struct nb_cb_modify_args *args);
 int bgp_global_graceful_shutdown_enable_destroy(struct nb_cb_destroy_args *args);
-int bgp_global_suppress_fib_pending_apply_finish(
+void bgp_global_suppress_fib_pending_apply_finish(
 	struct nb_cb_apply_finish_args *args);
 int bgp_global_suppress_fib_pending_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_advertisement_delay_global_modify(
@@ -270,9 +270,9 @@ int bgp_neighbor_timers_advertise_interval_modify(
 	struct nb_cb_modify_args *args);
 int bgp_neighbor_timers_advertise_interval_destroy(
 	struct nb_cb_destroy_args *args);
-int bgp_neighbor_local_as_apply_finish(struct nb_cb_apply_finish_args *args);
+void bgp_neighbor_local_as_apply_finish(struct nb_cb_apply_finish_args *args);
 int bgp_neighbor_local_as_destroy(struct nb_cb_destroy_args *args);
-int bgp_neighbor_bfd_options_apply_finish(struct nb_cb_apply_finish_args *args);
+void bgp_neighbor_bfd_options_apply_finish(struct nb_cb_apply_finish_args *args);
 int bgp_neighbor_bfd_options_destroy(struct nb_cb_destroy_args *args);
 int bgp_neighbor_capabilities_dynamic_modify(struct nb_cb_modify_args *args);
 int bgp_neighbor_capabilities_dynamic_destroy(struct nb_cb_destroy_args *args);
@@ -308,14 +308,14 @@ _BGP_NB_PEER_FLAG_DECL(peer_graceful_shutdown);
 
 int bgp_neighbor_timers_delayopen_modify(struct nb_cb_modify_args *args);
 int bgp_neighbor_timers_delayopen_destroy(struct nb_cb_destroy_args *args);
-int bgp_neighbor_shutdown_rtt_apply_finish(
+void bgp_neighbor_shutdown_rtt_apply_finish(
 	struct nb_cb_apply_finish_args *args);
 int bgp_neighbor_shutdown_rtt_destroy(struct nb_cb_destroy_args *args);
 int bgp_neighbor_tcp_mss_modify(struct nb_cb_modify_args *args);
 int bgp_neighbor_tcp_mss_destroy(struct nb_cb_destroy_args *args);
 int bgp_neighbor_port_modify(struct nb_cb_modify_args *args);
 int bgp_neighbor_port_destroy(struct nb_cb_destroy_args *args);
-int bgp_neighbor_local_role_apply_finish(struct nb_cb_apply_finish_args *args);
+void bgp_neighbor_local_role_apply_finish(struct nb_cb_apply_finish_args *args);
 int bgp_neighbor_local_role_destroy(struct nb_cb_destroy_args *args);
 int bgp_neighbor_gr_enable_modify(struct nb_cb_modify_args *args);
 int bgp_neighbor_gr_enable_destroy(struct nb_cb_destroy_args *args);
@@ -323,7 +323,7 @@ int bgp_neighbor_gr_helper_modify(struct nb_cb_modify_args *args);
 int bgp_neighbor_gr_helper_destroy(struct nb_cb_destroy_args *args);
 int bgp_neighbor_gr_disable_modify(struct nb_cb_modify_args *args);
 int bgp_neighbor_gr_disable_destroy(struct nb_cb_destroy_args *args);
-int bgp_neighbor_timers_apply_finish(struct nb_cb_apply_finish_args *args);
+void bgp_neighbor_timers_apply_finish(struct nb_cb_apply_finish_args *args);
 int bgp_neighbor_timers_destroy(struct nb_cb_destroy_args *args);
 int bgp_neighbor_oad_modify(struct nb_cb_modify_args *args);
 int bgp_neighbor_oad_destroy(struct nb_cb_destroy_args *args);

@@ -19,6 +19,7 @@
 #include "bgpd/bgp_addpath.h"
 #include "bgpd/bgp_bfd.h"
 #include "bgpd/bgp_conditional_adv.h"
+#include "bgpd/bgp_fsm.h"
 #include "bgpd/bgp_ls.h"
 #include "bgpd/bgp_open.h"
 #include "bgpd/bgp_packet.h"
@@ -83,7 +84,7 @@ static struct bgp *bgp_nb_lookup_from_dnode(const struct lyd_node *dnode,
 		strlcat(vrf_xpath, "../", sizeof(vrf_xpath));
 	strlcat(vrf_xpath, "vrf", sizeof(vrf_xpath));
 
-	vrf_key = yang_dnode_get_string(dnode, vrf_xpath);
+	vrf_key = yang_dnode_get_string(dnode, "%s", vrf_xpath);
 	return bgp_lookup_by_name(bgp_nb_vrf_to_name(vrf_key));
 }
 
@@ -428,9 +429,9 @@ int bgp_global_show_nexthop_hostname_destroy(struct nb_cb_destroy_args *args)
 
 /*
  * Boolean flag-toggle with bestpath recompute side-effect. Same shape as
- * `bgp_global_flag_toggle_modify` but also calls
- * `bgp_recalculate_all_bestpaths()` after the flag change. Used by every
- * leaf under `route-selection-options/*` (which all influence bestpath).
+ * bgp_global_flag_toggle_modify but also calls
+ * bgp_recalculate_all_bestpaths() after the flag change. Used for any
+ * leaf under route-selection-options that influences bestpath.
  */
 static int bgp_global_flag_bestpath_modify(struct nb_cb_modify_args *args,
 					    uint64_t flag, unsigned int depth)
@@ -1341,13 +1342,13 @@ int bgp_global_dynamic_neighbors_limit_destroy(struct nb_cb_destroy_args *args)
  *
  * Destroy clears admin/onstartup and resets values to defaults.
  */
-int bgp_global_med_config_apply_finish(struct nb_cb_apply_finish_args *args)
+void bgp_global_med_config_apply_finish(struct nb_cb_apply_finish_args *args)
 {
 	struct bgp *bgp;
 
 	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
 	if (!bgp)
-		return NB_ERR;
+		return;
 
 	bgp->v_maxmed_admin = yang_dnode_exists(args->dnode,
 						 "enable-med-admin")
@@ -1367,7 +1368,7 @@ int bgp_global_med_config_apply_finish(struct nb_cb_apply_finish_args *args)
 		: BGP_MAXMED_VALUE_DEFAULT;
 
 	bgp_maxmed_update(bgp);
-	return NB_OK;
+	return;
 }
 
 int bgp_global_med_config_destroy(struct nb_cb_destroy_args *args)
@@ -1472,20 +1473,20 @@ int bgp_global_default_software_version_capability_destroy(
  * apply_finish reads the three child leaves and calls
  * bgp_tcp_keepalive_set() atomically. Destroy calls _unset.
  */
-int bgp_global_tcp_keepalive_apply_finish(struct nb_cb_apply_finish_args *args)
+void bgp_global_tcp_keepalive_apply_finish(struct nb_cb_apply_finish_args *args)
 {
 	struct bgp *bgp;
 
 	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
 	if (!bgp)
-		return NB_ERR;
+		return;
 
 	bgp_tcp_keepalive_set(bgp,
 			      yang_dnode_get_uint16(args->dnode, "idle"),
 			      yang_dnode_get_uint16(args->dnode, "interval"),
 			      (uint16_t)yang_dnode_get_uint8(args->dnode,
 							      "probes"));
-	return NB_OK;
+	return;
 }
 
 int bgp_global_tcp_keepalive_destroy(struct nb_cb_destroy_args *args)
@@ -1779,7 +1780,7 @@ int bgp_global_graceful_restart_selection_deferral_time_destroy(
  * are written. Calls bgp_shutdown_enable(bgp, message_or_null). Destroy
  * calls bgp_shutdown_disable.
  */
-int bgp_global_administrative_shutdown_apply_finish(
+void bgp_global_administrative_shutdown_apply_finish(
 	struct nb_cb_apply_finish_args *args)
 {
 	struct bgp *bgp;
@@ -1787,13 +1788,13 @@ int bgp_global_administrative_shutdown_apply_finish(
 
 	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
 	if (!bgp)
-		return NB_ERR;
+		return;
 
 	if (yang_dnode_exists(args->dnode, "message"))
 		msg = yang_dnode_get_string(args->dnode, "message");
 
 	bgp_shutdown_enable(bgp, msg);
-	return NB_OK;
+	return;
 }
 
 int bgp_global_administrative_shutdown_destroy(struct nb_cb_destroy_args *args)
@@ -2306,7 +2307,7 @@ int bgp_global_graceful_shutdown_enable_destroy(
  * apply_finish reads adv-delay (default 1000ms) and calls
  * bgp_suppress_fib_pending_set(bgp, true, delay). Destroy unsets.
  */
-int bgp_global_suppress_fib_pending_apply_finish(
+void bgp_global_suppress_fib_pending_apply_finish(
 	struct nb_cb_apply_finish_args *args)
 {
 	struct bgp *bgp;
@@ -2314,12 +2315,12 @@ int bgp_global_suppress_fib_pending_apply_finish(
 
 	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
 	if (!bgp)
-		return NB_ERR;
+		return;
 
 	if (yang_dnode_exists(args->dnode, "adv-delay"))
 		delay = yang_dnode_get_uint16(args->dnode, "adv-delay");
 	bgp_suppress_fib_pending_set(bgp, true, delay);
-	return NB_OK;
+	return;
 }
 
 int bgp_global_suppress_fib_pending_destroy(struct nb_cb_destroy_args *args)
@@ -3364,7 +3365,7 @@ static struct bgp *bgp_nb_lookup_neighbor_su(const struct lyd_node *dnode,
 	if (!bgp)
 		return NULL;
 
-	remote_addr = yang_dnode_get_string(dnode, neighbor_xpath);
+	remote_addr = yang_dnode_get_string(dnode, "%s", neighbor_xpath);
 	if (str2sockunion(remote_addr, su) < 0)
 		return NULL;
 
@@ -3657,7 +3658,7 @@ static struct peer *bgp_nb_lookup_peer(const struct lyd_node *dnode,
 
 	snprintf(xpath_buf, sizeof(xpath_buf), "%s/remote-address",
 		 neighbor_rel_xpath);
-	remote_addr = yang_dnode_get_string(dnode, xpath_buf);
+	remote_addr = yang_dnode_get_string(dnode, "%s", xpath_buf);
 	if (str2sockunion(remote_addr, &su) < 0)
 		return NULL;
 
@@ -4348,7 +4349,7 @@ int bgp_neighbor_timers_advertise_interval_destroy(
  * the container — fires once after all leaves in the transaction are
  * committed.
  */
-int bgp_neighbor_local_as_apply_finish(struct nb_cb_apply_finish_args *args)
+void bgp_neighbor_local_as_apply_finish(struct nb_cb_apply_finish_args *args)
 {
 	struct peer *peer;
 	as_t as = 0;
@@ -4358,7 +4359,7 @@ int bgp_neighbor_local_as_apply_finish(struct nb_cb_apply_finish_args *args)
 
 	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
 	if (!peer)
-		return NB_ERR;
+		return;
 
 	if (yang_dnode_exists(args->dnode, "local-as")) {
 		as = (as_t)yang_dnode_get_uint32(args->dnode, "local-as");
@@ -4375,11 +4376,11 @@ int bgp_neighbor_local_as_apply_finish(struct nb_cb_apply_finish_args *args)
 		 * the per-leaf no_prepend/replace_as modifiers are meaningful
 		 * only when local-as is set.
 		 */
-		return NB_OK;
+		return;
 	}
 
 	peer_local_as_set(peer, as, no_prepend, replace_as, false, as_buf);
-	return NB_OK;
+	return;
 }
 
 int bgp_neighbor_local_as_destroy(struct nb_cb_destroy_args *args)
@@ -4411,7 +4412,7 @@ int bgp_neighbor_local_as_destroy(struct nb_cb_destroy_args *args)
  * BFD accordingly, then writes detect-multiplier / min-rx / min-tx into
  * peer->bfd_config and calls bgp_peer_config_apply() once.
  */
-int bgp_neighbor_bfd_options_apply_finish(
+void bgp_neighbor_bfd_options_apply_finish(
 	struct nb_cb_apply_finish_args *args)
 {
 	struct peer *peer;
@@ -4419,14 +4420,14 @@ int bgp_neighbor_bfd_options_apply_finish(
 
 	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
 	if (!peer)
-		return NB_ERR;
+		return;
 
 	enable = yang_dnode_exists(args->dnode, "enable") &&
 		 yang_dnode_get_bool(args->dnode, "enable");
 
 	if (!enable) {
 		bgp_peer_remove_bfd_config(peer);
-		return NB_OK;
+		return;
 	}
 
 	bgp_peer_configure_bfd(peer, true);
@@ -4444,7 +4445,7 @@ int bgp_neighbor_bfd_options_apply_finish(
 			yang_dnode_get_bool(args->dnode, "check-cp-failure");
 
 	bgp_peer_config_apply(peer, NULL);
-	return NB_OK;
+	return;
 }
 
 int bgp_neighbor_bfd_options_destroy(struct nb_cb_destroy_args *args)
@@ -4727,9 +4728,6 @@ BGP_NEIGHBOR_AF_FLAG_CB(send_large_community, PEER_FLAG_SEND_LARGE_COMMUNITY)
 BGP_NEIGHBOR_AF_FLAG_CB(graceful_shutdown, PEER_FLAG_GRACEFUL_SHUTDOWN)
 BGP_NEIGHBOR_AF_FLAG_CB(accept_own, PEER_FLAG_ACCEPT_OWN)
 BGP_NEIGHBOR_AF_FLAG_CB(disable_addpath_rx, PEER_FLAG_DISABLE_ADDPATH_RX)
-BGP_NEIGHBOR_AF_FLAG_CB(addpath_tx_all, PEER_FLAG_ADDPATH_TX_ALL_PATHS)
-BGP_NEIGHBOR_AF_FLAG_CB(addpath_tx_bestpath_per_as,
-			PEER_FLAG_ADDPATH_TX_BESTPATH_PER_AS)
 BGP_NEIGHBOR_AF_FLAG_CB(encapsulation_srv6,
 			PEER_FLAG_CONFIG_ENCAPSULATION_SRV6)
 BGP_NEIGHBOR_AF_FLAG_CB(encapsulation_mpls,
@@ -4740,6 +4738,65 @@ BGP_NEIGHBOR_AF_FLAG_CB(attr_unchanged_next_hop,
 			PEER_FLAG_NEXTHOP_UNCHANGED)
 BGP_NEIGHBOR_AF_FLAG_CB(attr_unchanged_med,
 			PEER_FLAG_MED_UNCHANGED)
+
+/*
+ * addpath-tx-all-paths and addpath-tx-bestpath-per-as drive
+ * bgp_addpath_set_peer_type with an enum strategy, not a peer flag bit.
+ */
+static int bgp_neighbor_af_addpath_strat_modify(struct nb_cb_modify_args *args,
+						enum bgp_addpath_strat strat)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+
+	if (args->event != NB_EV_APPLY)
+		return NB_OK;
+	if (bgp_nb_peer_af_lookup(args->dnode, &peer, &afi, &safi) < 0)
+		return NB_ERR;
+	if (yang_dnode_get_bool(args->dnode, NULL))
+		bgp_addpath_set_peer_type(peer, afi, safi, strat, 0);
+	else
+		bgp_addpath_set_peer_type(peer, afi, safi, BGP_ADDPATH_NONE, 0);
+	return NB_OK;
+}
+
+static int bgp_neighbor_af_addpath_strat_destroy(struct nb_cb_destroy_args *args,
+						 enum bgp_addpath_strat strat)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+
+	if (args->event != NB_EV_APPLY)
+		return NB_OK;
+	if (bgp_nb_peer_af_lookup(args->dnode, &peer, &afi, &safi) < 0)
+		return NB_OK;
+	if (peer->addpath_type[afi][safi] == strat)
+		bgp_addpath_set_peer_type(peer, afi, safi, BGP_ADDPATH_NONE, 0);
+	return NB_OK;
+}
+
+int bgp_neighbor_af_addpath_tx_all_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_neighbor_af_addpath_strat_modify(args, BGP_ADDPATH_ALL);
+}
+int bgp_neighbor_af_addpath_tx_all_destroy(struct nb_cb_destroy_args *args)
+{
+	return bgp_neighbor_af_addpath_strat_destroy(args, BGP_ADDPATH_ALL);
+}
+int bgp_neighbor_af_addpath_tx_bestpath_per_as_modify(
+	struct nb_cb_modify_args *args)
+{
+	return bgp_neighbor_af_addpath_strat_modify(args,
+						    BGP_ADDPATH_BEST_PER_AS);
+}
+int bgp_neighbor_af_addpath_tx_bestpath_per_as_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	return bgp_neighbor_af_addpath_strat_destroy(args,
+						     BGP_ADDPATH_BEST_PER_AS);
+}
 
 /*
  * Per-AF activate/deactivate. enabled=true → peer_activate, =false →
@@ -4868,14 +4925,14 @@ int bgp_neighbor_timers_delayopen_destroy(struct nb_cb_destroy_args *args)
  * XPath:
  *   .../neighbors/neighbor[remote-address]/shutdown-rtt (apply_finish)
  */
-int bgp_neighbor_shutdown_rtt_apply_finish(
+void bgp_neighbor_shutdown_rtt_apply_finish(
 	struct nb_cb_apply_finish_args *args)
 {
 	struct peer *peer;
 
 	peer = bgp_nb_lookup_peer(args->dnode, "..", 5);
 	if (!peer)
-		return -1;
+		return;
 	if (yang_dnode_exists(args->dnode, "./rtt"))
 		peer->rtt_expected = yang_dnode_get_uint16(args->dnode,
 							   "./rtt");
@@ -4883,7 +4940,7 @@ int bgp_neighbor_shutdown_rtt_apply_finish(
 		peer->rtt_keepalive_conf = yang_dnode_get_uint8(args->dnode,
 								"./count");
 	peer_flag_set(peer, PEER_FLAG_RTT_SHUTDOWN);
-	return 0;
+	return;
 }
 
 int bgp_neighbor_shutdown_rtt_destroy(struct nb_cb_destroy_args *args)
@@ -5003,7 +5060,7 @@ int bgp_neighbor_port_destroy(struct nb_cb_destroy_args *args)
  * strict_mode). Use apply_finish on the container so role and strict-mode
  * are applied atomically.
  */
-int bgp_neighbor_local_role_apply_finish(struct nb_cb_apply_finish_args *args)
+void bgp_neighbor_local_role_apply_finish(struct nb_cb_apply_finish_args *args)
 {
 	struct peer *peer;
 	const char *role_str;
@@ -5012,7 +5069,7 @@ int bgp_neighbor_local_role_apply_finish(struct nb_cb_apply_finish_args *args)
 
 	peer = bgp_nb_lookup_peer(args->dnode, "..", 5);
 	if (!peer)
-		return -1;
+		return;
 
 	if (yang_dnode_exists(args->dnode, "./role")) {
 		role_str = yang_dnode_get_string(args->dnode, "./role");
@@ -5034,7 +5091,7 @@ int bgp_neighbor_local_role_apply_finish(struct nb_cb_apply_finish_args *args)
 							  "./strict-mode");
 		peer_role_set(peer, role, strict_mode);
 	}
-	return 0;
+	return;
 }
 
 int bgp_neighbor_local_role_destroy(struct nb_cb_destroy_args *args)
@@ -5109,7 +5166,7 @@ int bgp_neighbor_gr_disable_destroy(struct nb_cb_destroy_args *args)
  * keepalive + hold-time are paired (peer_timers_set). Use apply_finish
  * so both leaves are applied atomically when either changes.
  */
-int bgp_neighbor_timers_apply_finish(struct nb_cb_apply_finish_args *args)
+void bgp_neighbor_timers_apply_finish(struct nb_cb_apply_finish_args *args)
 {
 	struct peer *peer;
 	uint32_t keepalive = 0, holdtime = 0;
@@ -5117,7 +5174,7 @@ int bgp_neighbor_timers_apply_finish(struct nb_cb_apply_finish_args *args)
 
 	peer = bgp_nb_lookup_peer(args->dnode, "..", 5);
 	if (!peer)
-		return -1;
+		return;
 
 	if (yang_dnode_exists(args->dnode, "./keepalive")) {
 		keepalive = yang_dnode_get_uint16(args->dnode, "./keepalive");
@@ -5129,7 +5186,7 @@ int bgp_neighbor_timers_apply_finish(struct nb_cb_apply_finish_args *args)
 	}
 	if (have_k && have_h)
 		peer_timers_set(peer, keepalive, holdtime);
-	return 0;
+	return;
 }
 
 int bgp_neighbor_timers_destroy(struct nb_cb_destroy_args *args)
@@ -5951,40 +6008,12 @@ void bgp_neighbor_capabilities_negotiate_cli_show(struct vty *vty,
 
 /* additional global boolean+value cli_show emitters. */
 
-void bgp_global_always_compare_med_cli_show(struct vty *vty,
-	const struct lyd_node *dnode, bool show_defaults)
-{
-	if (yang_dnode_get_bool(dnode, NULL))
-		vty_out(vty, " bgp always-compare-med\n");
-}
-
-void bgp_global_reject_as_sets_cli_show2(struct vty *vty,
-	const struct lyd_node *dnode, bool show_defaults)
-{
-	if (yang_dnode_get_bool(dnode, NULL))
-		vty_out(vty, " bgp reject-as-sets\n");
-}
-
-void bgp_global_suppress_duplicates_cli_show2(struct vty *vty,
-	const struct lyd_node *dnode, bool show_defaults)
-{
-	if (yang_dnode_get_bool(dnode, NULL))
-		vty_out(vty, " bgp suppress-duplicates\n");
-}
-
 void bgp_global_fast_external_failover_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
-	/* INVERTED: see frr-deviations-bgp-rfc.yang. */
+	/* Inverted: see frr-deviations-bgp-rfc.yang. */
 	if (!yang_dnode_get_bool(dnode, NULL))
 		vty_out(vty, " no bgp fast-external-failover\n");
-}
-
-void bgp_global_deterministic_med_cli_show2(struct vty *vty,
-	const struct lyd_node *dnode, bool show_defaults)
-{
-	if (yang_dnode_get_bool(dnode, NULL))
-		vty_out(vty, " bgp deterministic-med\n");
 }
 
 void bgp_global_labeled_unicast_explicit_null_cli_show(struct vty *vty,
