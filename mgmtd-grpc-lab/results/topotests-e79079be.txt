@@ -1,0 +1,22 @@
+topotest run against lamestllama/frr-ospf-native-yang @ e79079be
+container: podman, debian bookworm, privileged, host kernel with
+mpls_router/mpls_iptunnel/mpls_gso loaded; build flags:
+--enable-grpc --enable-mgmtd --enable-mgmtd-test-be-client
+
+== grpc_basic
+2 passed, 3 skipped, 1 failed
+FAILED grpc_basic/test_basic_grpc.py::test_get_config
+  > $: expected has key 'frr-logging:logging' which is not present in output
+
+== mgmtd_grpc_rpc
+11 passed
+
+== mgmtd_grpc_notif
+15 passed
+
+notes:
+- commit/execute/subscribe verified working, including concurrent
+  execute and cancellation.
+- environment prerequisites that are easy to miss: gdb installed,
+  /usr/lib/frr exposing daemons+modules (installed tree is /usr/local),
+  mpls modules on the host.

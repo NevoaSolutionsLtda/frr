@@ -1,0 +1,15 @@
+legacy per-daemon gRPC on mgmtd-converted daemons, stock frr-10.5.3
+container: zebra + mgmtd + staticd -M grpc:50095
+
+commit-set of a static route over the per-daemon gRPC endpoint returns
+success (no error) and the route appears nowhere:
+- show running-config: absent
+- show ip route: absent
+get-config /frr-staticd:staticd over the same endpoint fails with:
+  StatusCode.INVALID_ARGUMENT "Data path not found"
+the identical change via vtysh CLI works and installs in the RIB.
+
+reading: on converted daemons the legacy per-daemon gRPC tree is not the
+source of truth mgmtd reads from; writes through it are a silent no-op.
+related field report: Shailesh Sahu on #yang-mgmtd (2026-07-15) saw the
+milder variant (route in running-config but not RIB) on 10.5.3.
