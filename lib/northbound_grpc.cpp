@@ -1067,8 +1067,8 @@ grpc::Status HandleUnaryCreateCandidate(
  * Locking:
  *   - RpcStateBase::cmux protects the SubscribeRpcState::sub pointer and RPC
  *     state transitions coordinated with the completion-queue pthread.
- *   - Subscription::mtx protects pending, write_in_flight, timer handles,
- *     cancelled and the mgmtd unsubscribe handle.
+ *   - Subscription::mtx protects pending, side_buffer, write_in_flight,
+ *     timer handles, cancelled and the mgmtd unsubscribe handle.
  *
  *   gRPC's per-stream Write must be serialised by the caller; that is
  *   enforced by write_in_flight: the notification callback only posts a new
@@ -1194,6 +1194,14 @@ struct Subscription {
 	/* gRPC write-serialisation. */
 	std::deque<frr::SubscribeResponse> pending;
 	bool write_in_flight;
+
+	/*
+	 * Deltas held back while a STREAM initial snapshot collects, so the
+	 * baseline reaches the client before any notification (mtx).  The
+	 * buffer shares the pending-queue budget: together they never exceed
+	 * the slow-consumer limit.
+	 */
+	std::deque<frr::SubscribeResponse> side_buffer;
 
 	bool cancelled;
 	bool main_released;
@@ -1379,6 +1387,7 @@ static void subscription_release_main_resources(struct Subscription *sub)
 		sub->cancelled = true;
 		mgmt_notify_handle = sub->mgmt_notify_handle;
 		sub->mgmt_notify_handle = NULL;
+		sub->side_buffer.clear();
 		if (sub->write_in_flight) {
 			if (sub->pending.size() > 1)
 				sub->pending.erase(std::next(sub->pending.begin()),
@@ -1598,6 +1607,7 @@ void SubscribeRpcState::close_subscription(grpc::Status status)
 	}
 
 	sub->finish_status = status;
+	sub->side_buffer.clear();
 	if (sub->write_in_flight) {
 		sub->finish_after_write = true;
 		if (sub->pending.size() > 1)
@@ -1877,6 +1887,25 @@ void SubscribeRpcState::snapshot_oper_done(int error, const char *errmsg,
 		sync.mutable_sync_response();
 		ok = tag->enqueue_response(std::move(sync), false);
 	}
+	if (ok && snap->sync_response) {
+		/*
+		 * Drain the deltas held back during the collection.  The
+		 * contract is at-least-once post-baseline: an event whose
+		 * effect the baseline already contains may still be
+		 * delivered.
+		 */
+		std::deque<frr::SubscribeResponse> buffered;
+
+		pthread_mutex_lock(&sub->mtx);
+		buffered.swap(sub->side_buffer);
+		pthread_mutex_unlock(&sub->mtx);
+		for (auto &resp : buffered) {
+			if (!tag->enqueue_response(std::move(resp), true)) {
+				ok = false;
+				break;
+			}
+		}
+	}
 	if (ok && snap->sample) {
 		/* Re-arms coalesced ticks skipped during the collection. */
 		tag->schedule_sample_timer();
@@ -2018,6 +2047,33 @@ void SubscribeRpcState::heartbeat_timer_event(struct event *event)
 
 void SubscribeRpcState::enqueue_notification(frr::SubscribeResponse &&resp)
 {
+	/* Caller must hold cmux; sub is dereferenced below. */
+	if (sub && sub->snapshot && sub->snapshot->sync_response) {
+		bool overflow;
+
+		/*
+		 * A STREAM initial snapshot is still collecting: hold the
+		 * notification back so the baseline reaches the client before
+		 * any delta.  The completion flush drains the buffer right
+		 * after sync_response.  Held deltas count against the same
+		 * pending limit -- a consumer that cannot absorb the baseline
+		 * closes just like a slow one.
+		 */
+		pthread_mutex_lock(&sub->mtx);
+		overflow = !sub->cancelled &&
+			   sub->pending.size() + sub->side_buffer.size() >=
+				   grpc_subscribe_max_pending;
+		if (!overflow && !sub->cancelled)
+			sub->side_buffer.push_back(std::move(resp));
+		pthread_mutex_unlock(&sub->mtx);
+
+		if (overflow)
+			close_subscription(
+				grpc::Status(grpc::StatusCode::OUT_OF_RANGE,
+					     "Subscribe stream pending queue limit exceeded"));
+		return;
+	}
+
 	enqueue_response(std::move(resp), true);
 }
 
@@ -2189,19 +2245,40 @@ CallState SubscribeRpcState::run_mainthread(struct event *event)
 			}
 
 			if (mode == frr::SubscribeRequest::STREAM) {
-				grpc::Status status = enqueue_snapshot(true);
-				if (!status.ok()) {
-					if (subscription_finish_deferred()) {
-						accepted_stream = true;
-						do_request(service, cq, false);
-						return MORE;
-					}
-					if (!sub)
-						return FINISH;
+				char snap_errmsg[BUFSIZ] = { 0 };
+				int ret;
+
+				ret = snapshot_collect_async(true, false, snap_errmsg,
+							     sizeof(snap_errmsg));
+				if (ret && ret != -EOPNOTSUPP) {
 					deregister_subscription();
-					finish_from_event_thread(status);
+					finish_from_event_thread(
+						status_from_errno(ret, snap_errmsg));
 					return FINISH;
 				}
+				if (ret == -EOPNOTSUPP) {
+					/* Synchronous local read (no dispatcher,
+					 * or a CONFIG snapshot).
+					 */
+					grpc::Status status = enqueue_snapshot(true);
+
+					if (!status.ok()) {
+						if (subscription_finish_deferred()) {
+							accepted_stream = true;
+							do_request(service, cq, false);
+							return MORE;
+						}
+						if (!sub)
+							return FINISH;
+						deregister_subscription();
+						finish_from_event_thread(status);
+						return FINISH;
+					}
+				}
+				/* ret == 0: collection in flight; notifications
+				 * side-buffer until the flush emits the baseline
+				 * and sync_response.
+				 */
 			}
 		}
 
