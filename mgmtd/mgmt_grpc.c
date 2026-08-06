@@ -618,7 +618,7 @@ static void mgmt_grpc_oper_event(struct event *event)
 	err = yang_resolve_snode_xpath(ly_native_ctx, req->xpath, &snodes, &simple_xpath);
 	darr_free(snodes);
 	if (err) {
-		mgmt_grpc_oper_complete(req, -EINVAL, "Data path does not resolve", NULL);
+		mgmt_grpc_oper_complete(req, -EINVAL, "Data path not found", NULL);
 		mgmt_grpc_oper_req_put(req);
 		return;
 	}
