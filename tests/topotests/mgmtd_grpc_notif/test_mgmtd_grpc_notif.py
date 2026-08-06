@@ -460,6 +460,10 @@ def test_commit_without_changes_emits_no_config_change(tgen):
     r1 = tgen.gears["r1"]
     received = {}
 
+    # Seed the known baseline instead of relying on the previous test's
+    # cleanup having restored it.
+    _set_auth(r1, "foo")
+
     def listener():
         received["raw"] = _run_expect_error(
             r1,

@@ -688,6 +688,11 @@ static void txn_finish_commit(struct txn_req_commit *ccreq, enum mgmt_result res
 	/*
 	 * Notify front-end subscribers of the config change (RFC 6470) once
 	 * the changes have been fully accepted into the running datastore.
+	 *
+	 * Rollbacks do not emit: the rollback path builds its own change
+	 * list and never goes through txn_get_config_changes(), so
+	 * cfg_edits stays empty.  Extending coverage to rollbacks is a
+	 * deliberate follow-up, not an accident of this condition.
 	 */
 	if (result == MGMTD_SUCCESS && accept_changes && ccreq->cfg_edits)
 		txn_send_cfg_change_notify(ccreq);
@@ -1177,8 +1182,11 @@ static int txn_get_config_changes(struct txn_req_commit *ccreq, struct nb_config
 		struct nb_config_cb *chg;
 
 		RB_FOREACH (chg, nb_config_cbs, cfg_chgs) {
-			char *target = lyd_path(chg->dnode, LYD_PATH_STD, NULL, 0);
+			char *target;
 
+			if (!chg->dnode)
+				continue;
+			target = lyd_path(chg->dnode, LYD_PATH_STD, NULL, 0);
 			if (!target)
 				continue;
 			*darr_append(ccreq->cfg_edits) =
