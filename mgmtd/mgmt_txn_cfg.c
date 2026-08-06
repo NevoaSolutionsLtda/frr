@@ -527,7 +527,12 @@ static const char *txn_cfg_edit_operation_name(enum nb_cb_operation operation)
 		return "delete";
 	case NB_CB_MOVE:
 	default:
-		/* NETCONF has no move operation; merge is the closest. */
+		/*
+		 * nc:edit-operation-type has no move value: a NETCONF client
+		 * reorders a user-ordered list with edit-config
+		 * operation="merge" plus yang:insert attributes (RFC 7950
+		 * section 15.1), so merge is the operation a move performs.
+		 */
 		return "merge";
 	}
 }
@@ -549,7 +554,13 @@ static void txn_send_cfg_change_notify(struct txn_req_commit *ccreq)
 	if (err != LY_SUCCESS)
 		goto ly_error;
 
-	/* The change originates in mgmtd itself, not a NETCONF session. */
+	/*
+	 * changed-by is reported as "server": the by-user case requires a
+	 * mandatory username and mgmtd front-end sessions carry no
+	 * authenticated user identity (and their uint64 session ids do not
+	 * fit the RFC's uint32 session-id-or-zero-type).  Fabricating a
+	 * username would be worse than the honest server origin.
+	 */
 	err = lyd_new_path(notif, NULL, "changed-by/server", NULL, 0, NULL);
 	if (err != LY_SUCCESS)
 		goto ly_error;
