@@ -906,9 +906,15 @@ grpc::Status HandleUnaryCreateCandidate(
  *
  * Modes:
  *   ON_CHANGE  -- implemented here.
- *   STREAM     -- send initial operational-state snapshot, then notifications.
- *   SAMPLE     -- periodically send operational-state snapshots.
+ *   STREAM     -- send initial snapshot, then notifications.
+ *   SAMPLE     -- periodically send snapshots.
  *   POLL       -- requires a client-streaming request shape; unimplemented.
+ *
+ * STREAM/SAMPLE snapshots serve operational state by default;
+ * SubscribeRequest.snapshot_type selects CONFIG or ALL with the Get()
+ * data-type semantics.  Snapshot reads run on the main thread (initial
+ * snapshot in run_mainthread(), periodic ones in sample_timer_event()), so
+ * the config datastore access needs no additional synchronisation.
  */
 
 struct Subscription;
@@ -947,7 +953,7 @@ class SubscribeRpcState : public RpcStateBase {
 	void close_subscription(grpc::Status status);
 	bool enqueue_response(frr::SubscribeResponse &&resp, bool resets_heartbeat,
 			      grpc::Status *status = NULL);
-	grpc::Status enqueue_state_snapshot(bool sync_response);
+	grpc::Status enqueue_snapshot(bool sync_response);
 	bool subscription_finish_deferred(void);
 	void schedule_sample_timer(void);
 	void schedule_heartbeat_timer(void);
@@ -971,6 +977,9 @@ struct Subscription {
 	std::list<std::string> selectors;
 	frr::Encoding encoding;
 	LYD_FORMAT lyd_format;
+
+	/* Snapshot data type for STREAM/SAMPLE (Get() semantics). */
+	frr::GetRequest::DataType snapshot_type;
 
 	/* gRPC write-serialisation. */
 	std::deque<frr::SubscribeResponse> pending;
@@ -1434,7 +1443,7 @@ bool SubscribeRpcState::enqueue_response(frr::SubscribeResponse &&resp, bool res
 	return true;
 }
 
-grpc::Status SubscribeRpcState::enqueue_state_snapshot(bool sync_response)
+grpc::Status SubscribeRpcState::enqueue_snapshot(bool sync_response)
 {
 	std::vector<frr::SubscribeResponse> responses;
 
@@ -1442,10 +1451,15 @@ grpc::Status SubscribeRpcState::enqueue_state_snapshot(bool sync_response)
 	for (const auto &path : sub->selectors) {
 		frr::SubscribeResponse resp;
 		auto *update = resp.mutable_update();
+		grpc::Status status;
 
 		update->set_encoding(sub->encoding);
 		update->set_path(path);
-		grpc::Status status = get_state_snapshot_path(update, path, sub->lyd_format, false);
+		if (sub->snapshot_type == frr::GetRequest_DataType_STATE)
+			status = get_state_snapshot_path(update, path, sub->lyd_format, false);
+		else
+			status = get_path(update, path, sub->snapshot_type, sub->lyd_format,
+					  false);
 		if (!status.ok())
 			return status;
 
@@ -1532,7 +1546,7 @@ void SubscribeRpcState::sample_timer_event(struct event *event)
 	cancelled = tag->sub->cancelled;
 	pthread_mutex_unlock(&tag->sub->mtx);
 	if (!cancelled) {
-		grpc::Status status = tag->enqueue_state_snapshot(false);
+		grpc::Status status = tag->enqueue_snapshot(false);
 		if (!status.ok()) {
 			if (tag->subscription_finish_deferred()) {
 				pthread_mutex_unlock(&tag->cmux);
@@ -1640,6 +1654,21 @@ CallState SubscribeRpcState::run_mainthread(struct event *event)
 			return FINISH;
 		}
 
+		if (request.has_snapshot_type()) {
+			if (!frr::GetRequest_DataType_IsValid(request.snapshot_type())) {
+				finish_from_event_thread(grpc::Status(
+					grpc::StatusCode::INVALID_ARGUMENT,
+					"snapshot_type must be ALL, CONFIG or STATE"));
+				return FINISH;
+			}
+			if (mode == frr::SubscribeRequest::ON_CHANGE) {
+				finish_from_event_thread(grpc::Status(
+					grpc::StatusCode::INVALID_ARGUMENT,
+					"snapshot_type is only valid for STREAM and SAMPLE subscriptions"));
+				return FINISH;
+			}
+		}
+
 		sub = new Subscription();
 		pthread_mutex_init(&sub->mtx, NULL);
 		sub->tag = this;
@@ -1661,11 +1690,18 @@ CallState SubscribeRpcState::run_mainthread(struct event *event)
 		sub->heartbeat_timer = NULL;
 		sub->sample_interval_ms = request.sample_interval_ms();
 		sub->heartbeat_interval_ms = request.heartbeat_interval_ms();
+		/*
+		 * Explicit presence matters: DataType.ALL == 0, so an absent
+		 * field must keep the pre-extension STATE behavior.
+		 */
+		sub->snapshot_type = request.has_snapshot_type()
+					     ? request.snapshot_type()
+					     : frr::GetRequest_DataType_STATE;
 		for (const auto &p : request.path())
 			sub->selectors.push_back(p);
 
 		if (mode == frr::SubscribeRequest::SAMPLE) {
-			grpc::Status status = enqueue_state_snapshot(false);
+			grpc::Status status = enqueue_snapshot(false);
 			if (!status.ok()) {
 				if (subscription_finish_deferred()) {
 					accepted_stream = true;
@@ -1709,7 +1745,7 @@ CallState SubscribeRpcState::run_mainthread(struct event *event)
 			}
 
 			if (mode == frr::SubscribeRequest::STREAM) {
-				grpc::Status status = enqueue_state_snapshot(true);
+				grpc::Status status = enqueue_snapshot(true);
 				if (!status.ok()) {
 					if (subscription_finish_deferred()) {
 						accepted_stream = true;

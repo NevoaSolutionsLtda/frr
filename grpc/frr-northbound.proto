@@ -90,6 +90,10 @@ service Northbound {
   //                 sample_interval_ms cadence and push the result.
   //   POLL       -- reserved for a future client-streaming Subscribe shape.
   //
+  // STREAM and SAMPLE snapshots serve operational state by default; the
+  // optional snapshot_type field selects CONFIG or ALL (config merged with
+  // state) with the Get() data-type semantics.
+  //
   // Client cancellation closes the stream; server cleans up selectors.
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse) {}
 }
@@ -436,6 +440,14 @@ message SubscribeRequest {
   // update has flowed within the heartbeat window.  Zero disables.  Server
   // enforces the same minimum interval as SAMPLE.
   uint32 heartbeat_interval_ms = 5;
+
+  // STREAM/SAMPLE-only: which data elements the initial or periodic
+  // snapshot reads serve, with the GetRequest.DataType semantics (CONFIG
+  // reads the running datastore, ALL merges config and state).  Explicit
+  // field presence is required because DataType.ALL == 0: when the field
+  // is absent the snapshot serves STATE, matching the pre-extension
+  // behavior.  Rejected with INVALID_ARGUMENT on ON_CHANGE subscriptions.
+  optional GetRequest.DataType snapshot_type = 6;
 }
 
 message SubscribeResponse {
