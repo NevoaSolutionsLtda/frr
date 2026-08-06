@@ -180,6 +180,12 @@ extern void mgmt_fe_show_be_notify_selectors(struct vty *vty);
 extern struct mgmt_commit_stats *
 mgmt_fe_get_session_commit_stats(uint64_t session_id);
 
+/*
+ * Fetch the client name of the front-end adapter owning a session, or NULL
+ * when the session cannot be resolved.
+ */
+const char *mgmt_fe_session_client_name(uint64_t session_id);
+
 extern void mgmt_fe_adapter_status_write(struct vty *vty, bool detail);
 extern void mgmt_fe_adapter_perf_measurement(struct vty *vty, bool config);
 extern void mgmt_fe_adapter_reset_perf_stats(struct vty *vty);

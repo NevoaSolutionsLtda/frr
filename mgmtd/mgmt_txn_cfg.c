@@ -84,10 +84,14 @@ struct txn_req_commit {
 	 * Client identity reported as changed-by in the RFC 6470
 	 * netconf-config-change notification, captured when the commit
 	 * request is created so a client disconnecting mid-commit cannot
-	 * lose it.  NULL attributes the change to the server (internal
-	 * commits: backend init sync, rollback).
+	 * lose it.  NULL attributes the change to the server (backend init
+	 * sync, rollback without a resolvable initiator).  by_session_id is
+	 * the session reported alongside the username: the transaction's
+	 * own session for front-end commits, the initiating session for
+	 * rollbacks (whose transaction is internal and carries none).
 	 */
 	char *by_user;
+	uint64_t by_session_id;
 
 	struct mgmt_commit_stats *cmt_stats;
 };
@@ -569,10 +573,11 @@ static void txn_send_cfg_change_notify(struct txn_req_commit *ccreq)
 	 * the client name captured when the commit request was created; the
 	 * name is a client program identity (front-end adapter or gRPC
 	 * bridge), the closest thing to a username mgmtd has without
-	 * session authentication.  Internal commits (backend init sync,
-	 * rollback) report the server origin.  Note that mgmtd's own boot
-	 * config load rides the vty front-end client and is attributed to
-	 * its self-describing "vty-mgmtd-<pid>" name, not the server.
+	 * session authentication.  Backend init sync commits report the
+	 * server origin, and so do rollbacks whose initiating session
+	 * cannot be resolved.  Note that mgmtd's own boot config load
+	 * rides the vty front-end client and is attributed to its
+	 * self-describing "vty-mgmtd-<pid>" name, not the server.
 	 *
 	 * session-id-or-zero-type is uint32 while mgmtd session ids are
 	 * uint64: ids that do not fit report 0, the value the RFC reserves
@@ -580,7 +585,7 @@ static void txn_send_cfg_change_notify(struct txn_req_commit *ccreq)
 	 * at UINT64_MAX / 2, so gRPC commits always report 0 by design.
 	 */
 	if (ccreq->by_user) {
-		uint64_t session_id = as_txn_req(ccreq)->txn->session_id;
+		uint64_t session_id = ccreq->by_session_id;
 		uint32_t rfc_session_id = session_id <= UINT32_MAX ? (uint32_t)session_id : 0;
 		char session_id_str[16];
 
@@ -718,11 +723,8 @@ static void txn_finish_commit(struct txn_req_commit *ccreq, enum mgmt_result res
 	/*
 	 * Notify front-end subscribers of the config change (RFC 6470) once
 	 * the changes have been fully accepted into the running datastore.
-	 *
-	 * Rollbacks do not emit: the rollback path builds its own change
-	 * list and never goes through txn_get_config_changes(), so
-	 * cfg_edits stays empty.  Extending coverage to rollbacks is a
-	 * deliberate follow-up, not an accident of this condition.
+	 * Rollbacks emit too: the rollback trigger captures its own edit
+	 * list from the diff it builds.
 	 */
 	if (result == MGMTD_SUCCESS && accept_changes && ccreq->cfg_edits)
 		txn_send_cfg_change_notify(ccreq);
@@ -1140,6 +1142,28 @@ int txn_cfg_be_client_connect(struct mgmt_be_client_adapter *adapter)
 /* ================================================ */
 
 /*
+ * Capture a compact edit list from a commit diff for the netconf-config-change
+ * notification emitted when the commit finishes -- the change list itself is
+ * consumed and freed once the CFG_REQs are sent.
+ */
+static void txn_cfg_capture_edits(struct txn_req_commit *ccreq, struct nb_config_cbs *cfg_chgs)
+{
+	struct nb_config_cb *chg;
+
+	RB_FOREACH (chg, nb_config_cbs, cfg_chgs) {
+		char *target;
+
+		if (!chg->dnode)
+			continue;
+		target = lyd_path(chg->dnode, LYD_PATH_STD, NULL, 0);
+		if (!target)
+			continue;
+		*darr_append(ccreq->cfg_edits) =
+			(struct txn_cfg_edit){ .target = target, .operation = chg->operation };
+	}
+}
+
+/*
  * Prepare and send config changes by comparing the source and destination
  * datastores.
  */
@@ -1203,27 +1227,9 @@ static int txn_get_config_changes(struct txn_req_commit *ccreq, struct nb_config
 					    "No changes found to be committed!");
 	}
 
-	/*
-	 * Capture a compact edit list now for the netconf-config-change
-	 * notification emitted when the commit finishes -- the change list
-	 * itself is consumed and freed once the CFG_REQs are sent.
-	 */
-	if (!ccreq->validate_only && !ccreq->init) {
-		struct nb_config_cb *chg;
-
-		RB_FOREACH (chg, nb_config_cbs, cfg_chgs) {
-			char *target;
-
-			if (!chg->dnode)
-				continue;
-			target = lyd_path(chg->dnode, LYD_PATH_STD, NULL, 0);
-			if (!target)
-				continue;
-			*darr_append(ccreq->cfg_edits) =
-				(struct txn_cfg_edit){ .target = target,
-						       .operation = chg->operation };
-		}
-	}
+	/* Only capture for commits that can emit: not validate-only, not init. */
+	if (!ccreq->validate_only && !ccreq->init)
+		txn_cfg_capture_edits(ccreq, cfg_chgs);
 	return 0;
 }
 
@@ -1276,6 +1282,7 @@ void mgmt_txn_send_commit_config_notify(uint64_t txn_id, uint64_t req_id, const 
 	ccreq->edit = edit;
 	if (user)
 		ccreq->by_user = XSTRDUP(MTYPE_MGMTD_TXN_REQ, user);
+	ccreq->by_session_id = txn->session_id;
 	ccreq->done = done;
 	ccreq->done_arg = arg;
 	ccreq->cmt_stats = mgmt_fe_get_session_commit_stats(txn->session_id);
@@ -1324,7 +1331,8 @@ bool mgmt_txn_cancel_commit_config_notify(uint64_t txn_id, uint64_t req_id, int 
  * adapter init case.
  */
 int mgmt_txn_rollback_trigger_cfg_apply(struct mgmt_ds_ctx *src_ds_ctx,
-					struct mgmt_ds_ctx *dst_ds_ctx)
+					struct mgmt_ds_ctx *dst_ds_ctx, const char *user,
+					uint64_t session_id)
 {
 	static struct mgmt_commit_stats dummy_stats = { 0 };
 
@@ -1373,6 +1381,16 @@ int mgmt_txn_rollback_trigger_cfg_apply(struct mgmt_ds_ctx *src_ds_ctx,
 	ccreq->abort = false;
 	ccreq->rollback = true;
 	ccreq->cmt_stats = &dummy_stats;
+	if (user)
+		ccreq->by_user = XSTRDUP(MTYPE_MGMTD_TXN_REQ, user);
+	ccreq->by_session_id = session_id;
+
+	/*
+	 * Capture the edit list for the netconf-config-change notification:
+	 * the rollback commit bypasses txn_get_config_changes(), so the
+	 * capture rides the diff computed above.
+	 */
+	txn_cfg_capture_edits(ccreq, &changes);
 
 	/*
 	 * Send the changes.

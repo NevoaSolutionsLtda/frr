@@ -205,10 +205,14 @@ extern void mgmt_txn_send_notify_selectors(uint64_t req_id, uint64_t session_id,
 /*
  * Trigger rollback config apply.
  *
- * Creates a new transaction and commit request for rollback.
+ * Creates a new transaction and commit request for rollback.  @user is the
+ * client identity of the rollback initiator reported as changed-by in the
+ * RFC 6470 netconf-config-change notification and @session_id its front-end
+ * session; a NULL @user attributes the change to the server instead.
  */
 extern int mgmt_txn_rollback_trigger_cfg_apply(struct mgmt_ds_ctx *src_ds_ctx,
-					       struct mgmt_ds_ctx *dst_ds_ctx);
+					       struct mgmt_ds_ctx *dst_ds_ctx, const char *user,
+					       uint64_t session_id);
 
 /* ---------------------------------------- */
 /* Txn API for Backend messages and events. */
