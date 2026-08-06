@@ -79,10 +79,31 @@ struct mgmt_grpc_config_req {
 	LIST_ENTRY(mgmt_grpc_config_req) link;
 };
 
+struct mgmt_grpc_oper_req {
+	pthread_mutex_t mtx;
+	unsigned int refcnt;
+	bool done;
+	bool dispatched;
+	uint64_t txn_id;
+	uint64_t req_id;
+
+	char *xpath;
+	bool include_config;
+	uint32_t timeout_ms;
+	struct event *event;
+	int error;
+	char *errstr;
+	nb_oper_get_dispatch_done_cb done_cb;
+	void *done_arg;
+
+	LIST_ENTRY(mgmt_grpc_oper_req) link;
+};
+
 static uint64_t mgmt_grpc_session_id = MGMT_GRPC_SESSION_ID_BASE;
 static uint64_t mgmt_grpc_req_id;
 static LIST_HEAD(mgmt_grpc_rpc_reqs, mgmt_grpc_rpc_req) mgmt_grpc_rpc_reqs;
 static LIST_HEAD(mgmt_grpc_config_reqs, mgmt_grpc_config_req) mgmt_grpc_config_reqs;
+static LIST_HEAD(mgmt_grpc_oper_reqs, mgmt_grpc_oper_req) mgmt_grpc_oper_reqs;
 
 static void mgmt_grpc_rpc_req_put(struct mgmt_grpc_rpc_req *req)
 {
@@ -496,6 +517,179 @@ static int mgmt_grpc_config_commit_dispatch_async(const struct nb_config *candid
 	return 0;
 }
 
+static void mgmt_grpc_oper_req_put(struct mgmt_grpc_oper_req *req)
+{
+	bool destroy;
+
+	pthread_mutex_lock(&req->mtx);
+	assert(req->refcnt);
+	destroy = --req->refcnt == 0;
+	pthread_mutex_unlock(&req->mtx);
+
+	if (!destroy)
+		return;
+
+	event_cancel(&req->event);
+	LIST_REMOVE(req, link);
+	darr_free(req->errstr);
+	XFREE(MTYPE_MGMTD_GRPC_OPER, req->xpath);
+	pthread_mutex_destroy(&req->mtx);
+	XFREE(MTYPE_MGMTD_GRPC_OPER, req);
+}
+
+static void mgmt_grpc_oper_complete(struct mgmt_grpc_oper_req *req, int error, const char *errstr,
+				    const struct lyd_node *result)
+{
+	nb_oper_get_dispatch_done_cb done_cb = NULL;
+	void *done_arg = NULL;
+	int cb_error = 0;
+	const char *cb_errstr = NULL;
+
+	pthread_mutex_lock(&req->mtx);
+
+	if (req->done)
+		goto done;
+
+	req->error = error;
+	if (errstr)
+		darr_in_strdup(req->errstr, errstr);
+	req->done = true;
+	done_cb = req->done_cb;
+	done_arg = req->done_arg;
+	cb_error = req->error;
+	cb_errstr = req->errstr;
+
+done:
+	pthread_mutex_unlock(&req->mtx);
+
+	/*
+	 * The request keeps cb_errstr alive until the callback returns.  The
+	 * result tree stays owned by the transaction and is borrowed for the
+	 * duration of the callback, matching the lib seam contract.
+	 */
+	if (done_cb)
+		done_cb(cb_error, cb_errstr, result, done_arg);
+}
+
+static bool mgmt_grpc_oper_is_done(struct mgmt_grpc_oper_req *req)
+{
+	bool done;
+
+	pthread_mutex_lock(&req->mtx);
+	done = req->done;
+	pthread_mutex_unlock(&req->mtx);
+
+	return done;
+}
+
+static void mgmt_grpc_oper_done(uint64_t txn_id, uint64_t req_id, int error, const char *errstr,
+				const struct lyd_node *result, void *arg)
+{
+	struct mgmt_grpc_oper_req *req = arg;
+
+	_dbg("oper get done txn-id=%" PRIu64 " req-id=%" PRIu64 " error=%d", txn_id, req_id,
+	     error);
+
+	mgmt_grpc_oper_complete(req, error, errstr, result);
+	mgmt_grpc_oper_req_put(req);
+}
+
+static void mgmt_grpc_oper_event(struct event *event)
+{
+	struct mgmt_grpc_oper_req *req = EVENT_ARG(event);
+	const struct lysc_node **snodes = NULL;
+	struct lyd_node *ylib = NULL;
+	bool simple_xpath = false;
+	uint64_t session_id;
+	uint64_t txn_id;
+	uint64_t req_id;
+	uint64_t clients;
+	uint8_t flags;
+	LY_ERR err;
+	int ret;
+
+	req->event = NULL;
+
+	if (mgmt_grpc_oper_is_done(req)) {
+		mgmt_grpc_oper_req_put(req);
+		return;
+	}
+
+	err = yang_resolve_snode_xpath(ly_native_ctx, req->xpath, &snodes, &simple_xpath);
+	darr_free(snodes);
+	if (err) {
+		mgmt_grpc_oper_complete(req, -EINVAL, "Data path does not resolve", NULL);
+		mgmt_grpc_oper_req_put(req);
+		return;
+	}
+
+	clients = mgmt_be_interested_clients(req->xpath, MGMT_BE_XPATH_SUBSCR_TYPE_OPER,
+					     "GET-DATA");
+
+	session_id = mgmt_grpc_next_session_id();
+	txn_id = mgmt_create_txn(session_id, MGMTD_TXN_TYPE_SHOW);
+	if (txn_id == MGMTD_TXN_ID_NONE) {
+		_log_err("failed to create oper get txn for xpath=%s", req->xpath);
+		mgmt_grpc_oper_complete(req, -EINPROGRESS, "Failed to create show transaction",
+					NULL);
+		mgmt_grpc_oper_req_put(req);
+		return;
+	}
+
+	req_id = mgmt_grpc_next_req_id();
+	_dbg("created show txn-id=%" PRIu64 " req-id=%" PRIu64 " for xpath=%s", txn_id, req_id,
+	     req->xpath);
+	req->dispatched = true;
+	req->txn_id = txn_id;
+	req->req_id = req_id;
+
+	flags = GET_DATA_FLAG_STATE;
+	if (req->include_config)
+		flags |= GET_DATA_FLAG_CONFIG;
+
+	/*
+	 * The request may complete synchronously inside the call below (no
+	 * interested backend); req must not be dereferenced after it.
+	 */
+	ret = mgmt_txn_send_get_tree_cb(txn_id, req_id, clients, MGMTD_DS_OPERATIONAL, LYD_JSON,
+					flags, 0, simple_xpath, &ylib, req->xpath, req->timeout_ms,
+					mgmt_grpc_oper_done, req);
+	if (ret) {
+		mgmt_destroy_txn(&txn_id);
+		mgmt_grpc_oper_complete(req, -EINPROGRESS, "Failed to start get-tree", NULL);
+		mgmt_grpc_oper_req_put(req);
+	}
+}
+
+static int mgmt_grpc_oper_get_dispatch_async(const char *xpath, bool include_config,
+					     uint32_t timeout_ms,
+					     nb_oper_get_dispatch_done_cb done, void *arg,
+					     char *errmsg, size_t errmsg_len)
+{
+	struct mgmt_grpc_oper_req *req;
+
+	_dbg("dispatching async gRPC oper get xpath=%s", xpath);
+
+	req = XCALLOC(MTYPE_MGMTD_GRPC_OPER, sizeof(*req));
+	pthread_mutex_init(&req->mtx, NULL);
+	req->refcnt = 1;
+	req->done_cb = done;
+	req->done_arg = arg;
+	req->include_config = include_config;
+	req->timeout_ms = timeout_ms;
+	req->xpath = XSTRDUP(MTYPE_MGMTD_GRPC_OPER, xpath);
+	LIST_INSERT_HEAD(&mgmt_grpc_oper_reqs, req, link);
+
+	/*
+	 * No per-req timeout here: the show transaction created in
+	 * mgmt_grpc_oper_event carries the request deadline and calls
+	 * mgmt_grpc_oper_done (which calls put) on expiry, bounding the req
+	 * lifetime without an extra timer.
+	 */
+	event_add_event(mm->master, mgmt_grpc_oper_event, req, 0, &req->event);
+	return 0;
+}
+
 static int mgmt_grpc_config_get_dispatch(const char *xpath, struct lyd_node **result, char *errmsg,
 					 size_t errmsg_len)
 {
@@ -574,10 +768,12 @@ void mgmt_grpc_init(void)
 {
 	LIST_INIT(&mgmt_grpc_rpc_reqs);
 	LIST_INIT(&mgmt_grpc_config_reqs);
+	LIST_INIT(&mgmt_grpc_oper_reqs);
 	nb_config_get_dispatch_set(mgmt_grpc_config_get_dispatch);
 	nb_config_root_borrow_dispatch_set(mgmt_grpc_config_root_borrow_dispatch);
 	nb_config_commit_dispatch_async_set(mgmt_grpc_config_commit_dispatch_async);
 	nb_rpc_dispatch_async_set(mgmt_grpc_rpc_dispatch_async);
+	nb_oper_get_dispatch_async_set(mgmt_grpc_oper_get_dispatch_async);
 	nb_notification_data_subscribe_set(mgmt_fe_adapter_notify_subscribe);
 	nb_notification_data_unsubscribe_set(mgmt_fe_adapter_notify_unsubscribe);
 }
@@ -586,6 +782,7 @@ void mgmt_grpc_terminate(void)
 {
 	struct mgmt_grpc_rpc_req *req, *next;
 	struct mgmt_grpc_config_req *cfg_req, *cfg_next;
+	struct mgmt_grpc_oper_req *oper_req, *oper_next;
 
 	LIST_FOREACH_SAFE (req, &mgmt_grpc_rpc_reqs, link, next) {
 		if (req->dispatched) {
@@ -626,9 +823,28 @@ void mgmt_grpc_terminate(void)
 		mgmt_grpc_config_req_put(cfg_req);
 	}
 
+	LIST_FOREACH_SAFE (oper_req, &mgmt_grpc_oper_reqs, link, oper_next) {
+		if (oper_req->dispatched) {
+			if (mgmt_txn_cancel_get_tree_notify(oper_req->txn_id, oper_req->req_id,
+							    -ECANCELED, "gRPC oper get cancelled"))
+				continue;
+		}
+
+		/*
+		 * mgmtd runs this list and oper completion on the main thread.
+		 * A request whose transaction already completed was removed
+		 * and put by mgmt_grpc_oper_done, so reaching this fallback
+		 * means there is still exactly one list-held reference to
+		 * complete locally.
+		 */
+		mgmt_grpc_oper_complete(oper_req, -ECANCELED, "gRPC oper get cancelled", NULL);
+		mgmt_grpc_oper_req_put(oper_req);
+	}
+
 	nb_grpc_terminate_call();
 	nb_notification_data_subscribe_set(NULL);
 	nb_notification_data_unsubscribe_set(NULL);
+	nb_oper_get_dispatch_async_set(NULL);
 	nb_rpc_dispatch_async_set(NULL);
 	nb_config_commit_dispatch_async_set(NULL);
 	nb_config_root_borrow_dispatch_set(NULL);

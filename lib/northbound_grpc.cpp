@@ -35,6 +35,9 @@
 #define GRPC_SUBSCRIBE_MIN_INTERVAL_MS	   100
 #define GRPC_SUBSCRIBE_DEFAULT_MAX_PENDING 128
 
+/* Deadline handed to the async oper-get dispatcher for Get() reads. */
+#define GRPC_GET_OPER_TIMEOUT_MS 10000
+
 
 // ------------------------------------------------------
 //                 File Local Variables
@@ -785,46 +788,143 @@ grpc::Status HandleUnaryGetCapabilities(
 	return grpc::Status::OK;
 }
 
-// Define the context variable type for this streaming handler
-typedef std::list<std::string> GetContextType;
+static grpc::Status status_from_errno(int error, const char *errmsg);
 
-bool HandleStreamingGet(
-	StreamRpcState<frr::GetRequest, frr::GetResponse, GetContextType> *tag)
+/*
+ * Get streaming RPC.
+ *
+ * One GetResponse is written per requested path.  CONFIG reads and local
+ * operational state stay synchronous on the main thread.  When the daemon
+ * registers an async oper-get dispatcher (mgmtd bridging to its backends),
+ * STATE and ALL reads of a path dispatch to the backend machinery instead:
+ * run_mainthread() returns MORE with no completion-queue operation
+ * outstanding, and the dispatcher's done callback -- invoked on the main
+ * thread -- writes the response, whose completion drives the next path.
+ *
+ * Threading: run_mainthread() and oper_done() both run on the main thread;
+ * cmux guards async_pending/cancelled/reposted against the completion-queue
+ * pthread (handle_cq_error() on stream failure or shutdown).
+ */
+class GetRpcState : public RpcStateBase
+{
+      public:
+	GetRpcState() : RpcStateBase("Get"), async_responder(&ctx) {}
+
+	void do_request(::frr::Northbound::AsyncService *service,
+			::grpc::ServerCompletionQueue *cq, bool no_copy) override
+	{
+		grpc_debug("%s, posting a request for: %s", __func__, name);
+		auto copy = no_copy ? this : new GetRpcState();
+
+		copy->service = service;
+		copy->cq = cq;
+		service->RequestGet(&copy->ctx, &copy->request, &copy->async_responder, cq, cq,
+				    copy);
+	}
+
+	CallState run_mainthread(struct event *event) override;
+
+	bool handle_cq_error(void) override
+	{
+		bool keep_until_async_done = false;
+		bool repost = false;
+
+		pthread_mutex_lock(&cmux);
+		cancelled = true;
+		if (async_pending) {
+			keep_until_async_done = true;
+			repost = !reposted && grpc_is_running();
+			if (repost)
+				reposted = true;
+		}
+		pthread_mutex_unlock(&cmux);
+
+		if (repost)
+			do_request(service, cq, false);
+
+		return !keep_until_async_done;
+	}
+
+	bool repost_on_cq_error(void) const override
+	{
+		/*
+		 * A mid-stream failure also consumes the only pending tag for
+		 * this RPC type: the next listener is otherwise only posted
+		 * when the stream reaches FINISH.
+		 */
+		return !reposted;
+	}
+
+	frr::GetRequest request;
+	grpc::ServerAsyncWriter<frr::GetResponse> async_responder;
+
+      private:
+	static void oper_done(int error, const char *errmsg, const struct lyd_node *result,
+			      void *arg);
+
+	::frr::Northbound::AsyncService *service = NULL;
+	::grpc::ServerCompletionQueue *cq = NULL;
+	std::list<std::string> paths;
+	bool async_pending = false;
+	bool cancelled = false;
+	bool reposted = false;
+};
+
+CallState GetRpcState::run_mainthread(struct event *event)
 {
 	grpc_debug("%s: entered", __func__);
 
-	auto mypathps = &tag->context;
-	if (tag->is_initial_process()) {
-		// Fill our context container first time through
+	if (is_initial_process()) {
 		grpc_debug("%s: initialize streaming state", __func__);
-		auto paths = tag->request.path();
-		for (const std::string &path : paths) {
-			mypathps->push_back(std::string(path));
-		}
-		if (mypathps->empty())
-			mypathps->push_back("/");
+		for (const std::string &path : request.path())
+			paths.push_back(std::string(path));
+		if (paths.empty())
+			paths.push_back("/");
 	}
 
 	// Request: DataType type = 1;
-	int type = tag->request.type();
+	int type = request.type();
 	// Request: Encoding encoding = 2;
-	frr::Encoding encoding = tag->request.encoding();
+	frr::Encoding encoding = request.encoding();
 	LYD_FORMAT lyd_format;
 	// Request: bool with_defaults = 3;
-	bool with_defaults = tag->request.with_defaults();
+	bool with_defaults = request.with_defaults();
 
-	if (mypathps->empty()) {
-		tag->async_responder.Finish(grpc::Status::OK, tag);
-		return false;
+	if (paths.empty()) {
+		async_responder.Finish(grpc::Status::OK, this);
+		return FINISH;
 	}
 
 	frr::GetResponse response;
 	grpc::Status status;
 
 	if (!encoding2lyd_format(encoding, &lyd_format)) {
-		tag->async_responder.WriteAndFinish(response, grpc::WriteOptions(),
-						    invalid_encoding_status(encoding), tag);
-		return false;
+		async_responder.WriteAndFinish(response, grpc::WriteOptions(),
+					       invalid_encoding_status(encoding), this);
+		return FINISH;
+	}
+
+	const std::string &path = paths.back();
+
+	if (type == frr::GetRequest_DataType_STATE || type == frr::GetRequest_DataType_ALL) {
+		char errmsg[BUFSIZ] = { 0 };
+		int ret;
+
+		ret = nb_oper_get_dispatch_async(path.c_str(),
+						 type == frr::GetRequest_DataType_ALL,
+						 GRPC_GET_OPER_TIMEOUT_MS, oper_done, this,
+						 errmsg, sizeof(errmsg));
+		if (!ret) {
+			/* run_mainthread() runs with cmux held. */
+			async_pending = true;
+			return MORE;
+		}
+		if (ret != -EOPNOTSUPP) {
+			async_responder.WriteAndFinish(response, grpc::WriteOptions(),
+						       status_from_errno(ret, errmsg), this);
+			return FINISH;
+		}
+		/* No dispatcher registered: fall back to the local read. */
 	}
 
 	// Response: int64 timestamp = 1;
@@ -832,29 +932,98 @@ bool HandleStreamingGet(
 
 	// Response: DataTree data = 2;
 	auto *data = response.mutable_data();
-	data->set_encoding(tag->request.encoding());
-	data->set_path(mypathps->back());
+	data->set_encoding(encoding);
+	data->set_path(path);
 	if (type == frr::GetRequest_DataType_STATE)
-		status = get_state_snapshot_path(data, mypathps->back().c_str(), lyd_format,
-						 with_defaults);
+		status = get_state_snapshot_path(data, path.c_str(), lyd_format, with_defaults);
 	else
-		status = get_path(data, mypathps->back().c_str(), type, lyd_format, with_defaults);
+		status = get_path(data, path.c_str(), type, lyd_format, with_defaults);
 
 	if (!status.ok()) {
-		tag->async_responder.WriteAndFinish(
-			response, grpc::WriteOptions(), status, tag);
-		return false;
+		async_responder.WriteAndFinish(response, grpc::WriteOptions(), status, this);
+		return FINISH;
 	}
 
-	mypathps->pop_back();
-	if (mypathps->empty()) {
-		tag->async_responder.WriteAndFinish(
-			response, grpc::WriteOptions(), grpc::Status::OK, tag);
-		return false;
-	} else {
-		tag->async_responder.Write(response, tag);
-		return true;
+	paths.pop_back();
+	if (paths.empty()) {
+		async_responder.WriteAndFinish(response, grpc::WriteOptions(), grpc::Status::OK,
+					       this);
+		return FINISH;
 	}
+	async_responder.Write(response, this);
+	return MORE;
+}
+
+void GetRpcState::oper_done(int error, const char *errmsg, const struct lyd_node *result,
+			    void *arg)
+{
+	auto *tag = static_cast<GetRpcState *>(arg);
+	frr::GetResponse response;
+	grpc::Status status = status_from_errno(error, errmsg);
+	bool running = grpc_is_running();
+	bool repost = false;
+	bool finish;
+
+	grpc_debug("%s: entered, error %d", __func__, error);
+
+	if (status.ok()) {
+		LYD_FORMAT lyd_format = LYD_JSON;
+
+		(void)encoding2lyd_format(tag->request.encoding(), &lyd_format);
+		response.set_timestamp(time(NULL));
+
+		auto *data = response.mutable_data();
+		data->set_encoding(tag->request.encoding());
+		data->set_path(tag->paths.back());
+		if (result) {
+			LY_ERR err = data_tree_from_dnode(data, result, lyd_format,
+							  tag->request.with_defaults());
+			if (err)
+				status = grpc::Status(grpc::StatusCode::INTERNAL,
+						      "Failed to dump data");
+		} else {
+			/* Valid path with no data: empty result, not an error. */
+			data->set_data("");
+		}
+	}
+
+	pthread_mutex_lock(&tag->cmux);
+	tag->async_pending = false;
+	if (tag->cancelled || !running) {
+		/*
+		 * The client went away or gRPC is shutting down; there is no
+		 * completion-queue operation outstanding, so this callback is
+		 * the final owner of the tag.
+		 */
+		repost = !tag->reposted && running;
+		if (repost)
+			tag->reposted = true;
+		pthread_mutex_unlock(&tag->cmux);
+
+		if (repost)
+			tag->do_request(tag->service, tag->cq, false);
+		delete tag;
+		return;
+	}
+
+	if (status.ok())
+		tag->paths.pop_back();
+	finish = !status.ok() || tag->paths.empty();
+	if (finish) {
+		tag->state = FINISH;
+		repost = !tag->reposted;
+		if (repost)
+			tag->reposted = true;
+	}
+	pthread_mutex_unlock(&tag->cmux);
+
+	if (repost)
+		tag->do_request(tag->service, tag->cq, false);
+
+	if (finish)
+		tag->async_responder.WriteAndFinish(response, grpc::WriteOptions(), status, tag);
+	else
+		tag->async_responder.Write(response, tag);
 }
 
 grpc::Status HandleUnaryCreateCandidate(
@@ -2854,7 +3023,10 @@ static void *grpc_pthread_start(void *arg)
 	}
 
 	/* Schedule streaming RPC handlers */
-	REQUEST_NEWRPC_STREAMING(Get);
+	{
+		auto _rpcState = new GetRpcState();
+		_rpcState->do_request(&service, cq.get(), true);
+	}
 	REQUEST_NEWRPC_STREAMING(ListTransactions);
 	{
 		auto _rpcState = new SubscribeRpcState();
