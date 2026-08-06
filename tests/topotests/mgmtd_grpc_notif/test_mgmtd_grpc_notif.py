@@ -571,6 +571,10 @@ def test_vty_commit_attributes_config_change_to_session(tgen):
     r1 = tgen.gears["r1"]
     received = {}
 
+    # Seed the known baseline instead of relying on the previous test's
+    # cleanup having restored it.
+    _set_auth(r1, "foo")
+
     def listener():
         received["raw"] = _run_listen_with_path(
             r1, "/ietf-netconf-notifications:netconf-config-change", timeout=30
