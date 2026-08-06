@@ -1087,9 +1087,10 @@ grpc::Status HandleUnaryCreateCandidate(
  * dispatcher (mgmtd bridging to its backends), STATE and ALL snapshots
  * collect through it: one selector at a time on the main thread, with the
  * built updates flushed in a single pass at completion (SubscribeSnapshot).
- * CONFIG snapshots and daemon-local frontends keep the synchronous
- * main-thread read, so the config datastore access needs no additional
- * synchronisation.
+ * Heartbeats keep flowing while a collection is in flight, so they can
+ * precede the baseline on the wire.  CONFIG snapshots and daemon-local
+ * frontends keep the synchronous main-thread read, so the config datastore
+ * access needs no additional synchronisation.
  */
 
 struct Subscription;
@@ -1166,6 +1167,7 @@ struct SubscribeSnapshot {
 	bool sample;	     /* SAMPLE flow: tolerate timeouts, re-arm the tick */
 	bool sync_response;  /* STREAM initial: emit sync_response at flush */
 	bool include_config; /* ALL snapshot_type: dispatcher merges config */
+	bool partial;	     /* at least one selector read timed out */
 	uint32_t timeout_ms;
 	std::list<std::string> paths;
 	std::vector<frr::SubscribeResponse> responses;
@@ -1190,6 +1192,14 @@ struct Subscription {
 	 * its own completion callback.
 	 */
 	struct SubscribeSnapshot *snapshot;
+
+	/*
+	 * Edge trigger for the sampling partial-data warning (main thread
+	 * only): warn once per stall episode, re-armed by the first fully
+	 * healthy collection, so a stalled backend is not a per-tick log
+	 * flood any client can sustain.
+	 */
+	bool sample_partial_logged;
 
 	/* gRPC write-serialisation. */
 	std::deque<frr::SubscribeResponse> pending;
@@ -1754,6 +1764,7 @@ int SubscribeRpcState::snapshot_collect_async(bool sync_response, bool sample,
 	snap->sample = sample;
 	snap->sync_response = sync_response;
 	snap->include_config = sub->snapshot_type == frr::GetRequest_DataType_ALL;
+	snap->partial = false;
 	snap->timeout_ms = timeout_ms;
 	snap->paths = sub->selectors;
 
@@ -1819,9 +1830,13 @@ void SubscribeRpcState::snapshot_oper_done(int error, const char *errmsg,
 		 * the baseline, and a silently holed baseline corrupts the
 		 * client.
 		 */
-		flog_warn(EC_LIB_GRPC_INIT,
-			  "%s: sample snapshot for %s timed out; delivering partial data",
-			  __func__, snap->paths.front().c_str());
+		if (!sub->sample_partial_logged) {
+			sub->sample_partial_logged = true;
+			flog_warn(EC_LIB_GRPC_INIT,
+				  "%s: sample snapshot for %s timed out; delivering partial data",
+				  __func__, snap->paths.front().c_str());
+		}
+		snap->partial = true;
 		error = 0;
 	}
 
@@ -1907,6 +1922,9 @@ void SubscribeRpcState::snapshot_oper_done(int error, const char *errmsg,
 		}
 	}
 	if (ok && snap->sample) {
+		/* A fully healthy collection re-arms the stall warning. */
+		if (!snap->partial)
+			sub->sample_partial_logged = false;
 		/* Re-arms coalesced ticks skipped during the collection. */
 		tag->schedule_sample_timer();
 	}
@@ -1980,9 +1998,11 @@ void SubscribeRpcState::sample_timer_event(struct event *event)
 
 		if (tag->sub->snapshot) {
 			/*
-			 * The previous snapshot is still collecting: coalesce
-			 * this tick.  The completion re-arms the timer, so
-			 * skipped ticks never pile up behind a slow backend.
+			 * Defensive: the timer is consumed at tick start and
+			 * only re-armed by the completion flush or the sync
+			 * fallback, so it cannot be pending mid-collection
+			 * today.  Kept because an arming path that missed
+			 * this guard would start concurrent collections.
 			 */
 			pthread_mutex_unlock(&tag->cmux);
 			return;
@@ -2168,6 +2188,7 @@ CallState SubscribeRpcState::run_mainthread(struct event *event)
 		sub->finish_after_write = false;
 		sub->mgmt_notify_handle = NULL;
 		sub->snapshot = NULL;
+		sub->sample_partial_logged = false;
 		sub->sample_timer = NULL;
 		sub->heartbeat_timer = NULL;
 		sub->sample_interval_ms = request.sample_interval_ms();

@@ -442,7 +442,7 @@ def test_sample_explicit_state_type_matches_default(tgen):
     assert all("frr-backend:clients" in response["data"] for response in responses)
 
 
-def test_sample_snapshot_type_absent_keeps_state_semantics(tgen):
+def test_sample_state_default_serves_backend_state_without_config(tgen):
     r1 = tgen.gears["r1"]
 
     # Without snapshot_type the snapshot serves STATE.  mgmtd now
