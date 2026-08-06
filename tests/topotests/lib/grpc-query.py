@@ -96,6 +96,19 @@ class GRPCClient:
             return "\n".join(responses)
         return result
 
+    def get_paths(self, xpaths, encoding, gtype):
+        """One Get request with several paths; one response is streamed per path."""
+        request = frr_northbound_pb2.GetRequest()
+        for xpath in xpaths:
+            request.path.append(xpath)
+        request.type = gtype
+        request.encoding = encoding
+        responses = []
+        for r in self.stub.Get(request):
+            logging.debug('GRPC Get path: "%s" value: %s', request.path, r)
+            responses.append(f"{r.data.path}\n{r.data.data}")
+        return "\n===RESPONSE===\n".join(responses)
+
     def execute(self, xpath, input_values):
         request = frr_northbound_pb2.ExecuteRequest()
         request.path = xpath
@@ -461,6 +474,17 @@ def main(*args):
             logging.debug("Get State XPath: %s", xpath)
             print(c.get(xpath, encoding, gtype=frr_northbound_pb2.GetRequest.STATE))
             # for _ in range(0, 1):
+        elif action.startswith("get-state-paths,"):
+            # Get and print state for several paths in one request
+            _, xpaths = action.split(",", 1)
+            logging.debug("Get State XPaths: %s", xpaths)
+            print(
+                c.get_paths(
+                    xpaths.split(";"),
+                    encoding,
+                    gtype=frr_northbound_pb2.GetRequest.STATE,
+                )
+            )
         elif action.startswith("exec,"):
             # Execute an RPC. Input arguments are path=value pairs.
             parts = raw_action.split(",")

@@ -196,3 +196,49 @@ def test_get_config_regression(tgen):
     byname = interfaces_by_name(output)
     addrs = byname["r1-eth0"]["frr-zebra:zebra"]["ipv4-addrs"]
     assert any(a["ip"] == "192.0.2.1" for a in addrs)
+
+
+def test_get_root_all(tgen):
+    r1 = tgen.gears["r1"]
+
+    step("A root Get(ALL) dumps merged config and backend state")
+    check_backend_oper_served(r1)
+
+    output = run_grpc_client(r1, "GET,/")
+    out_json = json.loads(output)
+    interfaces = out_json["frr-interface:lib"]["interface"]
+    byname = {i["name"]: i for i in interfaces}
+    assert "r1-eth0" in byname
+
+    # State merged from the zebra backend.
+    assert "if-index" in byname["r1-eth0"]["state"]
+
+    # Config merged from the running datastore.
+    addrs = byname["r1-eth0"]["frr-zebra:zebra"]["ipv4-addrs"]
+    assert any(a["ip"] == "192.0.2.1" for a in addrs)
+
+
+def test_get_state_multiple_paths(tgen):
+    r1 = tgen.gears["r1"]
+
+    step("One Get(STATE) request with two paths streams one response per path")
+    check_backend_oper_served(r1)
+
+    output = run_grpc_client(
+        r1, "GET-STATE-PATHS,/frr-vrf:lib;/frr-interface:lib"
+    )
+    responses = output.split("===RESPONSE===")
+    assert len(responses) == 2
+    assert '"if-index"' in output
+    assert "frr-vrf:lib" in output
+
+
+def test_get_state_mgmtd_local_backend(tgen):
+    r1 = tgen.gears["r1"]
+
+    step("mgmtd-local oper state flows through the in-process backend client")
+    output = run_grpc_client(r1, "GET-STATE,/frr-backend:clients")
+    out_json = json.loads(output)
+    clients = out_json["frr-backend:clients"]["client"]
+    names = {c["name"] for c in clients}
+    assert "zebra" in names

@@ -850,9 +850,11 @@ class GetRpcState : public RpcStateBase
 		/*
 		 * A mid-stream failure also consumes the only pending tag for
 		 * this RPC type: the next listener is otherwise only posted
-		 * when the stream reaches FINISH.
+		 * when the stream reaches FINISH.  A tag already in FINISH had
+		 * its listener reposted (by run() or by oper_done()), so a
+		 * failed final write must not post a second one.
 		 */
-		return !reposted;
+		return !reposted && state != FINISH;
 	}
 
 	frr::GetRequest request;

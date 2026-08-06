@@ -599,6 +599,7 @@ static void mgmt_grpc_oper_event(struct event *event)
 	struct mgmt_grpc_oper_req *req = EVENT_ARG(event);
 	const struct lysc_node **snodes = NULL;
 	struct lyd_node *ylib = NULL;
+	const char *xpath = req->xpath;
 	bool simple_xpath = false;
 	uint64_t session_id;
 	uint64_t txn_id;
@@ -616,6 +617,14 @@ static void mgmt_grpc_oper_event(struct event *event)
 	}
 
 	/*
+	 * A bare "/" does not resolve through the xpath machinery (the
+	 * backend adapter and oper walk special-case wild roots); use the
+	 * equivalent "/*" form the frontend get-data path already serves.
+	 */
+	if (!strcmp(xpath, "/"))
+		xpath = "/*";
+
+	/*
 	 * Reference discipline on the error paths below: complete() only fires
 	 * the lib-side done callback (which never touches the request's
 	 * refcount); the transaction-side mgmt_grpc_oper_done (complete + put)
@@ -623,7 +632,7 @@ static void mgmt_grpc_oper_event(struct event *event)
 	 * each error branch still holds the single list reference and pairs
 	 * one complete() with one put().
 	 */
-	err = yang_resolve_snode_xpath(ly_native_ctx, req->xpath, &snodes, &simple_xpath);
+	err = yang_resolve_snode_xpath(ly_native_ctx, xpath, &snodes, &simple_xpath);
 	darr_free(snodes);
 	if (err) {
 		mgmt_grpc_oper_complete(req, -EINVAL, "Data path not found", NULL);
@@ -631,8 +640,7 @@ static void mgmt_grpc_oper_event(struct event *event)
 		return;
 	}
 
-	clients = mgmt_be_interested_clients(req->xpath, MGMT_BE_XPATH_SUBSCR_TYPE_OPER,
-					     "GET-DATA");
+	clients = mgmt_be_interested_clients(xpath, MGMT_BE_XPATH_SUBSCR_TYPE_OPER, "GET-DATA");
 
 	session_id = mgmt_grpc_next_session_id();
 	txn_id = mgmt_create_txn(session_id, MGMTD_TXN_TYPE_SHOW);
@@ -646,7 +654,7 @@ static void mgmt_grpc_oper_event(struct event *event)
 
 	req_id = mgmt_grpc_next_req_id();
 	_dbg("created show txn-id=%" PRIu64 " req-id=%" PRIu64 " for xpath=%s", txn_id, req_id,
-	     req->xpath);
+	     xpath);
 	req->dispatched = true;
 	req->txn_id = txn_id;
 	req->req_id = req_id;
@@ -660,7 +668,7 @@ static void mgmt_grpc_oper_event(struct event *event)
 	 * interested backend); req must not be dereferenced after it.
 	 */
 	ret = mgmt_txn_send_get_tree_cb(txn_id, req_id, clients, MGMTD_DS_OPERATIONAL, LYD_JSON,
-					flags, 0, simple_xpath, &ylib, req->xpath, req->timeout_ms,
+					flags, 0, simple_xpath, &ylib, xpath, req->timeout_ms,
 					mgmt_grpc_oper_done, req);
 	if (ret) {
 		mgmt_destroy_txn(&txn_id);

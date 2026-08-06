@@ -189,14 +189,23 @@ static void txn_get_tree_data_done(struct txn_req_get_tree *get_tree)
 
 	if (get_tree->done) {
 		uint64_t txn_id = txn->txn_id;
+		int error;
+
+		/* Positive values are LY_ERR from a merge step; the callback
+		 * contract is errno.
+		 */
+		if (ret != NB_OK)
+			error = errno_from_nb_error(ret);
+		else if (get_tree->partial_error > 0)
+			error = -EINVAL;
+		else
+			error = get_tree->partial_error;
 
 		/* get_tree->done is synchronous: txn_req_free() below releases
 		 * txn_req->err_info and get_tree->client_results.
 		 */
-		get_tree->done(txn_id, req_id,
-			       ret != NB_OK ? errno_from_nb_error(ret) : get_tree->partial_error,
-			       txn_req->err_info, ret == NB_OK ? result : NULL,
-			       get_tree->done_arg);
+		get_tree->done(txn_id, req_id, error, txn_req->err_info,
+			       ret == NB_OK ? result : NULL, get_tree->done_arg);
 		mgmt_destroy_txn(&txn_id);
 	} else if (ret == NB_OK) {
 		mgmt_fe_adapter_send_tree_data(txn->session_id, txn->txn_id, txn_req->req_id,
