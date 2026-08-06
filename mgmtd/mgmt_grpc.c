@@ -24,6 +24,16 @@
 #define _dbg(fmt, ...)	   DEBUGD(&mgmt_debug_fe, "GRPC: %s: " fmt, __func__, ##__VA_ARGS__)
 #define _log_err(fmt, ...) zlog_err("%s: ERROR: " fmt, __func__, ##__VA_ARGS__)
 
+/*
+ * changed-by identity for gRPC-originated commits in the RFC 6470
+ * netconf-config-change notification.  The gRPC service performs no
+ * authentication, so the bridge itself is the closest client identity;
+ * the synthetic session ids handed out below start at UINT64_MAX / 2
+ * and thus always report as session-id 0 (the value the RFC reserves
+ * for non-NETCONF sessions).
+ */
+#define MGMT_GRPC_CHANGED_BY_USER "grpc"
+
 struct mgmt_grpc_rpc_req {
 	/*
 	 * mgmtd normally completes these requests on mm->master.  The mutex
@@ -431,10 +441,10 @@ static int mgmt_grpc_config_start_commit(struct mgmt_grpc_config_req *req, char 
 
 	_dbg("created config txn-id=%" PRIu64 " req-id=%" PRIu64 " validate-only=%u", txn_id,
 	     req_id, validate_only);
-	mgmt_txn_send_commit_config_notify(txn_id, req_id, MGMTD_DS_CANDIDATE, can_ds,
-					   MGMTD_DS_RUNNING, run_ds, validate_only,
-					   false /*abort*/, false /*implicit*/, false /*unlock*/,
-					   NULL, mgmt_grpc_config_done, req);
+	mgmt_txn_send_commit_config_notify(txn_id, req_id, MGMT_GRPC_CHANGED_BY_USER,
+					   MGMTD_DS_CANDIDATE, can_ds, MGMTD_DS_RUNNING, run_ds,
+					   validate_only, false /*abort*/, false /*implicit*/,
+					   false /*unlock*/, NULL, mgmt_grpc_config_done, req);
 	return 0;
 }
 

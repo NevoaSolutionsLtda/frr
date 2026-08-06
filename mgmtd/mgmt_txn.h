@@ -116,6 +116,9 @@ extern void mgmt_destroy_txn(uint64_t *txn_id);
  * mgmt_txn_send_commit_config_req() - Send commit-config to apply the config changes.
  * @txn_id: Unique transaction identifier.
  * @req_id: Unique transaction request identifier.
+ * @user: Client identity reported as changed-by in the RFC 6470
+ *	  netconf-config-change notification, NULL to attribute the
+ *	  change to the server (copied, need not outlive the call).
  * @src_ds_id: Source datastore ID.
  * @src_ds_hndl: Source Datastore handle.
  * @validate_only: TRUE if commit request needs to be validated only, FALSE otherwise.
@@ -125,16 +128,18 @@ extern void mgmt_destroy_txn(uint64_t *txn_id);
  * @edit: Additional info when triggered from native edit request.
  */
 extern void
-mgmt_txn_send_commit_config_req(uint64_t txn_id, uint64_t req_id, enum mgmt_ds_id src_ds_id,
-				struct mgmt_ds_ctx *src_ds_ctx, enum mgmt_ds_id dst_ds_id,
-				struct mgmt_ds_ctx *dst_ds_ctx, bool validate_only, bool abort,
-				bool implicit, bool unlock, struct mgmt_edit_req *edit);
+mgmt_txn_send_commit_config_req(uint64_t txn_id, uint64_t req_id, const char *user,
+				enum mgmt_ds_id src_ds_id, struct mgmt_ds_ctx *src_ds_ctx,
+				enum mgmt_ds_id dst_ds_id, struct mgmt_ds_ctx *dst_ds_ctx,
+				bool validate_only, bool abort, bool implicit, bool unlock,
+				struct mgmt_edit_req *edit);
 extern void
-mgmt_txn_send_commit_config_notify(uint64_t txn_id, uint64_t req_id, enum mgmt_ds_id src_ds_id,
-				   struct mgmt_ds_ctx *src_ds_ctx, enum mgmt_ds_id dst_ds_id,
-				   struct mgmt_ds_ctx *dst_ds_ctx, bool validate_only, bool abort,
-				   bool implicit, bool unlock, struct mgmt_edit_req *edit,
-				   mgmt_txn_commit_done_cb done, void *arg);
+mgmt_txn_send_commit_config_notify(uint64_t txn_id, uint64_t req_id, const char *user,
+				   enum mgmt_ds_id src_ds_id, struct mgmt_ds_ctx *src_ds_ctx,
+				   enum mgmt_ds_id dst_ds_id, struct mgmt_ds_ctx *dst_ds_ctx,
+				   bool validate_only, bool abort, bool implicit, bool unlock,
+				   struct mgmt_edit_req *edit, mgmt_txn_commit_done_cb done,
+				   void *arg);
 extern bool mgmt_txn_cancel_commit_config_notify(uint64_t txn_id, uint64_t req_id, int error,
 						 const char *errstr);
 

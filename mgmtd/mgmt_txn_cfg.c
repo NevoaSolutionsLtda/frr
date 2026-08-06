@@ -80,6 +80,15 @@ struct txn_req_commit {
 	 */
 	struct txn_cfg_edit *cfg_edits;
 
+	/*
+	 * Client identity reported as changed-by in the RFC 6470
+	 * netconf-config-change notification, captured when the commit
+	 * request is created so a client disconnecting mid-commit cannot
+	 * lose it.  NULL attributes the change to the server (internal
+	 * commits: backend init sync, rollback).
+	 */
+	char *by_user;
+
 	struct mgmt_commit_stats *cmt_stats;
 };
 #define as_commit(txn_req)                                                                        \
@@ -146,6 +155,7 @@ void txn_cfg_cleanup(struct txn_req *txn_req)
 	darr_foreach_p (ccreq->cfg_edits, cfg_edit)
 		free(cfg_edit->target);
 	darr_free(ccreq->cfg_edits);
+	XFREE(MTYPE_MGMTD_TXN_REQ, ccreq->by_user);
 
 	/* If we (still) had an internal nb transaction, abort it */
 	if (ccreq->mgmtd_nb_txn) {
@@ -555,13 +565,33 @@ static void txn_send_cfg_change_notify(struct txn_req_commit *ccreq)
 		goto ly_error;
 
 	/*
-	 * changed-by is reported as "server": the by-user case requires a
-	 * mandatory username and mgmtd front-end sessions carry no
-	 * authenticated user identity (and their uint64 session ids do not
-	 * fit the RFC's uint32 session-id-or-zero-type).  Fabricating a
-	 * username would be worse than the honest server origin.
+	 * Commits carrying a client identity report changed-by/by-user with
+	 * the client name captured when the commit request was created; the
+	 * name is a client program identity (front-end adapter or gRPC
+	 * bridge), the closest thing to a username mgmtd has without
+	 * session authentication.  Internal commits (backend init sync,
+	 * rollback) report the server origin.  Note that mgmtd's own boot
+	 * config load rides the vty front-end client and is attributed to
+	 * its self-describing "vty-mgmtd-<pid>" name, not the server.
+	 *
+	 * session-id-or-zero-type is uint32 while mgmtd session ids are
+	 * uint64: ids that do not fit report 0, the value the RFC reserves
+	 * for non-NETCONF sessions.  The synthetic gRPC session ids start
+	 * at UINT64_MAX / 2, so gRPC commits always report 0 by design.
 	 */
-	err = lyd_new_path(notif, NULL, "changed-by/server", NULL, 0, NULL);
+	if (ccreq->by_user) {
+		uint64_t session_id = as_txn_req(ccreq)->txn->session_id;
+		uint32_t rfc_session_id = session_id <= UINT32_MAX ? (uint32_t)session_id : 0;
+		char session_id_str[16];
+
+		snprintfrr(session_id_str, sizeof(session_id_str), "%u", rfc_session_id);
+		err = lyd_new_path(notif, NULL, "changed-by/username", ccreq->by_user, 0, NULL);
+		if (err != LY_SUCCESS)
+			goto ly_error;
+		err = lyd_new_path(notif, NULL, "changed-by/session-id", session_id_str, 0, NULL);
+	} else {
+		err = lyd_new_path(notif, NULL, "changed-by/server", NULL, 0, NULL);
+	}
 	if (err != LY_SUCCESS)
 		goto ly_error;
 
@@ -1200,11 +1230,14 @@ static int txn_get_config_changes(struct txn_req_commit *ccreq, struct nb_config
 /**
  * mgmt_txn_send_commit_config_notify() - Send a commit config request.
  * @txn_id: A config TXN which must exist.
+ * @user: Client identity reported as changed-by in the RFC 6470
+ *	  netconf-config-change notification, NULL to attribute the
+ *	  change to the server (copied, need not outlive the call).
  *
  * The optional callback is called when the mgmtd config transaction reaches
  * the same completion point that would normally send a frontend reply.
  */
-void mgmt_txn_send_commit_config_notify(uint64_t txn_id, uint64_t req_id,
+void mgmt_txn_send_commit_config_notify(uint64_t txn_id, uint64_t req_id, const char *user,
 					enum mgmt_ds_id src_ds_id,
 					struct mgmt_ds_ctx *src_ds_ctx,
 					enum mgmt_ds_id dst_ds_id,
@@ -1241,6 +1274,8 @@ void mgmt_txn_send_commit_config_notify(uint64_t txn_id, uint64_t req_id,
 	ccreq->implicit = implicit;  /* this is only true iff edit */
 	ccreq->unlock_info = unlock; /* this is true for implicit commit in front-end */
 	ccreq->edit = edit;
+	if (user)
+		ccreq->by_user = XSTRDUP(MTYPE_MGMTD_TXN_REQ, user);
 	ccreq->done = done;
 	ccreq->done_arg = arg;
 	ccreq->cmt_stats = mgmt_fe_get_session_commit_stats(txn->session_id);
@@ -1254,12 +1289,13 @@ void mgmt_txn_send_commit_config_notify(uint64_t txn_id, uint64_t req_id,
 		txn_finish_commit(ccreq, ccreq->req.error, ccreq->req.err_info);
 }
 
-void mgmt_txn_send_commit_config_req(uint64_t txn_id, uint64_t req_id, enum mgmt_ds_id src_ds_id,
-				     struct mgmt_ds_ctx *src_ds_ctx, enum mgmt_ds_id dst_ds_id,
-				     struct mgmt_ds_ctx *dst_ds_ctx, bool validate_only, bool abort,
-				     bool implicit, bool unlock, struct mgmt_edit_req *edit)
+void mgmt_txn_send_commit_config_req(uint64_t txn_id, uint64_t req_id, const char *user,
+				     enum mgmt_ds_id src_ds_id, struct mgmt_ds_ctx *src_ds_ctx,
+				     enum mgmt_ds_id dst_ds_id, struct mgmt_ds_ctx *dst_ds_ctx,
+				     bool validate_only, bool abort, bool implicit, bool unlock,
+				     struct mgmt_edit_req *edit)
 {
-	mgmt_txn_send_commit_config_notify(txn_id, req_id, src_ds_id, src_ds_ctx, dst_ds_id,
+	mgmt_txn_send_commit_config_notify(txn_id, req_id, user, src_ds_id, src_ds_ctx, dst_ds_id,
 					   dst_ds_ctx, validate_only, abort, implicit, unlock, edit,
 					   NULL, NULL);
 }
