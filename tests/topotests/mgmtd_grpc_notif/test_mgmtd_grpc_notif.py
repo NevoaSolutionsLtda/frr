@@ -445,11 +445,31 @@ def test_sample_explicit_state_type_matches_default(tgen):
 def test_sample_snapshot_type_absent_keeps_state_semantics(tgen):
     r1 = tgen.gears["r1"]
 
-    # Without snapshot_type the snapshot serves STATE, and a config-only
-    # path has no operational data: the pre-extension error is preserved.
-    assert "INVALID_ARGUMENT" in _run_sample_expect_error(
-        r1, "/frr-interface:lib", 200, "INVALID_ARGUMENT"
-    )
+    # Without snapshot_type the snapshot serves STATE.  mgmtd now
+    # dispatches backend operational state into SAMPLE snapshots, so a
+    # config-owning path streams the zebra-owned state subtree -- but it
+    # must not include config, which only an explicit ALL request merges.
+    raw = _run_sample_count(
+        r1,
+        "/frr-interface:lib",
+        interval_ms=200,
+        count=3,
+        timeout=5,
+    ).strip()
+
+    responses = json.loads(raw.splitlines()[-1])
+    assert len(responses) >= 3
+    for response in responses:
+        assert response["path"] == "/frr-interface:lib"
+        data = json.loads(response["data"])
+        interfaces = data["frr-interface:lib"]["interface"]
+        eth0 = [entry for entry in interfaces if entry["name"] == "r1-eth0"]
+        assert eth0, f"interface state missing from snapshot: {data}"
+        assert "if-index" in eth0[0]["state"], f"no state in snapshot: {eth0[0]}"
+        rip = eth0[0].get("frr-ripd:rip", {})
+        assert (
+            "authentication-password" not in rip
+        ), f"config leaked into a STATE snapshot: {eth0[0]}"
 
 
 def test_on_change_rejects_snapshot_type(tgen):
