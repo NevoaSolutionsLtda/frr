@@ -544,7 +544,14 @@ def test_commit_emits_netconf_config_change(tgen):
     ), f"unexpected notification path: {update}"
     data = json.loads(update["data"])
     change = data["ietf-netconf-notifications:netconf-config-change"]
-    assert "server" in change["changed-by"], f"changed-by is not server: {change}"
+    changed_by = change["changed-by"]
+    # gRPC commits are attributed to the bridge identity: the service
+    # performs no authentication and the synthetic gRPC session ids do
+    # not fit the RFC 6470 uint32 session-id, which reserves 0 for
+    # non-NETCONF sessions.
+    assert changed_by.get("username") == "grpc", f"changed-by is not grpc: {change}"
+    assert changed_by.get("session-id") == 0, f"session-id is not 0: {change}"
+    assert "server" not in changed_by, f"unexpected server attribution: {change}"
     assert change.get("datastore", "running") == "running"
     edits = change["edit"]
     assert edits, f"netconf-config-change carried no edits: {change}"
@@ -558,6 +565,43 @@ def test_commit_emits_netconf_config_change(tgen):
     assert matching[0]["operation"] == "replace", f"unexpected operation: {matching}"
 
     _commit_auth(r1, "foo")
+
+
+def test_vty_commit_attributes_config_change_to_session(tgen):
+    r1 = tgen.gears["r1"]
+    received = {}
+
+    def listener():
+        received["raw"] = _run_listen_with_path(
+            r1, "/ietf-netconf-notifications:netconf-config-change", timeout=30
+        )
+
+    t = threading.Thread(target=listener, daemon=True)
+    t.start()
+    time.sleep(2)
+
+    _set_auth(r1, "bar")
+
+    t.join(timeout=35)
+    assert not t.is_alive(), "Subscribe listener did not return in time"
+
+    raw = received.get("raw", "").strip()
+    assert raw, "Subscribe stream returned no netconf-config-change"
+
+    update = json.loads(raw.splitlines()[-1])
+    data = json.loads(update["data"])
+    change = data["ietf-netconf-notifications:netconf-config-change"]
+    changed_by = change["changed-by"]
+    # vtysh commits ride mgmtd's vty front-end client, whose adapter is
+    # named "vty-<progname>-<pid>", and their real front-end session ids
+    # fit the RFC 6470 uint32 session-id: this is the control proving
+    # native sessions are attributed distinctly from the gRPC bridge.
+    username = changed_by.get("username", "")
+    assert username.startswith("vty-mgmtd-"), f"unexpected username: {change}"
+    assert changed_by.get("session-id", 0) != 0, f"session-id is 0: {change}"
+    assert "server" not in changed_by, f"unexpected server attribution: {change}"
+
+    _set_auth(r1, "foo")
 
 
 def test_commit_without_changes_emits_no_config_change(tgen):
