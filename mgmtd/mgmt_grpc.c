@@ -615,6 +615,14 @@ static void mgmt_grpc_oper_event(struct event *event)
 		return;
 	}
 
+	/*
+	 * Reference discipline on the error paths below: complete() only fires
+	 * the lib-side done callback (which never touches the request's
+	 * refcount); the transaction-side mgmt_grpc_oper_done (complete + put)
+	 * runs only after mgmt_txn_send_get_tree_cb() accepts the request.  So
+	 * each error branch still holds the single list reference and pairs
+	 * one complete() with one put().
+	 */
 	err = yang_resolve_snode_xpath(ly_native_ctx, req->xpath, &snodes, &simple_xpath);
 	darr_free(snodes);
 	if (err) {
