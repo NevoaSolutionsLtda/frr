@@ -264,11 +264,17 @@ class GRPCClient:
 
         return "OK"
 
-    def subscribe_sample_count(self, xpath, interval_ms, count, encoding, timeout):
+    def subscribe_sample_count(
+        self, xpath, interval_ms, count, encoding, timeout, snapshot_type=None
+    ):
         request = frr_northbound_pb2.SubscribeRequest()
         request.mode = frr_northbound_pb2.SubscribeRequest.SAMPLE
         request.response_encoding = encoding
         request.sample_interval_ms = interval_ms
+        if snapshot_type is not None:
+            request.snapshot_type = getattr(
+                frr_northbound_pb2.GetRequest, snapshot_type
+            )
         request.path.append(xpath)
 
         responses = []
@@ -284,7 +290,9 @@ class GRPCClient:
                     return json.dumps(responses)
         return json.dumps(responses)
 
-    def subscribe_expect_error(self, mode, xpath, expected, encoding, timeout):
+    def subscribe_expect_error(
+        self, mode, xpath, expected, encoding, timeout, snapshot_type=None
+    ):
         request = frr_northbound_pb2.SubscribeRequest()
         request.mode = getattr(frr_northbound_pb2.SubscribeRequest, mode)
         request.response_encoding = encoding
@@ -292,6 +300,10 @@ class GRPCClient:
             request.path.append(xpath)
         if mode == "SAMPLE":
             request.sample_interval_ms = 100
+        if snapshot_type is not None:
+            request.snapshot_type = getattr(
+                frr_northbound_pb2.GetRequest, snapshot_type
+            )
 
         try:
             list(self.stub.Subscribe(request, timeout=timeout))
@@ -530,11 +542,37 @@ def main(*args):
                     xpath, int(interval_ms), int(count), encoding, float(timeout)
                 )
             )
+        elif action.startswith("subscribe-sample-count-typed,"):
+            _, xpath, interval_ms, count, snapshot_type, timeout = raw_action.split(
+                ",", 5
+            )
+            print(
+                c.subscribe_sample_count(
+                    xpath,
+                    int(interval_ms),
+                    int(count),
+                    encoding,
+                    float(timeout),
+                    snapshot_type=snapshot_type,
+                )
+            )
         elif action.startswith("subscribe-expect-error,"):
             _, mode, xpath, expected, timeout = raw_action.split(",", 4)
             print(
                 c.subscribe_expect_error(
                     mode, xpath, expected, encoding, float(timeout)
+                )
+            )
+        elif action.startswith("subscribe-typed-expect-error,"):
+            _, mode, xpath, snapshot_type, expected, timeout = raw_action.split(",", 5)
+            print(
+                c.subscribe_expect_error(
+                    mode,
+                    xpath,
+                    expected,
+                    encoding,
+                    float(timeout),
+                    snapshot_type=snapshot_type,
                 )
             )
         elif action.startswith("subscribe-sample-expect-error,"):

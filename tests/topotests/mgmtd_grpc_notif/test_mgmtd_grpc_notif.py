@@ -162,6 +162,24 @@ def _run_sample_count(r, xpath, interval_ms=200, count=3, timeout=5):
     return r.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
 
 
+def _run_sample_count_typed(
+    r, xpath, snapshot_type, interval_ms=200, count=3, timeout=5
+):
+    cmd = (
+        "SUBSCRIBE-SAMPLE-COUNT-TYPED,"
+        f"{xpath},{interval_ms},{count},{snapshot_type},{timeout}\n"
+    )
+    return r.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
+
+
+def _run_typed_expect_error(r, mode, xpath, snapshot_type, expected, timeout=5):
+    cmd = (
+        "SUBSCRIBE-TYPED-EXPECT-ERROR,"
+        f"{mode},{xpath},{snapshot_type},{expected},{timeout}\n"
+    )
+    return r.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
+
+
 def _run_expect_error(r, mode, xpath, expected, timeout=5):
     cmd = f"SUBSCRIBE-EXPECT-ERROR,{mode},{xpath},{expected},{timeout}\n"
     return r.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
@@ -169,8 +187,7 @@ def _run_expect_error(r, mode, xpath, expected, timeout=5):
 
 def _run_sample_expect_error(r, xpath, interval_ms, expected, timeout=5):
     cmd = (
-        "SUBSCRIBE-SAMPLE-EXPECT-ERROR,"
-        f"{xpath},{interval_ms},{expected},{timeout}\n"
+        "SUBSCRIBE-SAMPLE-EXPECT-ERROR," f"{xpath},{interval_ms},{expected},{timeout}\n"
     )
     return r.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
 
@@ -348,6 +365,95 @@ def test_sample_sends_periodic_state(tgen):
     assert all("frr-backend:clients" in response["data"] for response in responses)
 
 
+def _assert_config_snapshot_responses(responses, xpath):
+    assert len(responses) >= 3
+    assert all(response["path"] == xpath for response in responses)
+    for response in responses:
+        data = json.loads(response["data"])
+        interfaces = data["frr-interface:lib"]["interface"]
+        eth0 = [entry for entry in interfaces if entry["name"] == "r1-eth0"]
+        assert eth0, f"interface config missing from snapshot: {data}"
+        rip = eth0[0].get("frr-ripd:rip", {})
+        assert (
+            "authentication-password" in rip
+        ), f"rip config missing from snapshot: {eth0[0]}"
+
+
+def test_sample_config_snapshot_streams_config_subtree(tgen):
+    r1 = tgen.gears["r1"]
+
+    # CONFIG snapshots read the mgmtd-local running datastore, the same
+    # path Get(CONFIG) serves.
+    raw = _run_sample_count_typed(
+        r1,
+        "/frr-interface:lib",
+        "CONFIG",
+        interval_ms=200,
+        count=3,
+        timeout=5,
+    ).strip()
+
+    _assert_config_snapshot_responses(
+        json.loads(raw.splitlines()[-1]), "/frr-interface:lib"
+    )
+
+
+def test_sample_all_snapshot_serves_config(tgen):
+    r1 = tgen.gears["r1"]
+
+    # DataType.ALL == 0: this request differs from the untyped one only by
+    # explicit field presence.  It must serve config (merged with state)
+    # instead of failing like the STATE default does on a config path.
+    raw = _run_sample_count_typed(
+        r1,
+        "/frr-interface:lib",
+        "ALL",
+        interval_ms=200,
+        count=3,
+        timeout=5,
+    ).strip()
+
+    _assert_config_snapshot_responses(
+        json.loads(raw.splitlines()[-1]), "/frr-interface:lib"
+    )
+
+
+def test_sample_explicit_state_type_matches_default(tgen):
+    r1 = tgen.gears["r1"]
+
+    raw = _run_sample_count_typed(
+        r1,
+        "/frr-backend:clients",
+        "STATE",
+        interval_ms=200,
+        count=3,
+        timeout=5,
+    ).strip()
+
+    responses = json.loads(raw.splitlines()[-1])
+    assert len(responses) >= 3
+    assert all(response["path"] == "/frr-backend:clients" for response in responses)
+    assert all("frr-backend:clients" in response["data"] for response in responses)
+
+
+def test_sample_snapshot_type_absent_keeps_state_semantics(tgen):
+    r1 = tgen.gears["r1"]
+
+    # Without snapshot_type the snapshot serves STATE, and a config-only
+    # path has no operational data: the pre-extension error is preserved.
+    assert "INVALID_ARGUMENT" in _run_sample_expect_error(
+        r1, "/frr-interface:lib", 200, "INVALID_ARGUMENT"
+    )
+
+
+def test_on_change_rejects_snapshot_type(tgen):
+    r1 = tgen.gears["r1"]
+
+    assert "INVALID_ARGUMENT" in _run_typed_expect_error(
+        r1, "ON_CHANGE", "/frr-ripd", "CONFIG", "INVALID_ARGUMENT"
+    )
+
+
 def test_stream_closes_when_pending_queue_limit_is_hit(tgen):
     r1 = tgen.gears["r1"]
 
@@ -380,9 +486,7 @@ def test_subscribe_client_cancel_cleans_up_stream(tgen):
 def test_subscribe_rejects_unsupported_modes(tgen, mode):
     r1 = tgen.gears["r1"]
 
-    assert "UNIMPLEMENTED" in _run_expect_error(
-        r1, mode, "/frr-ripd", "UNIMPLEMENTED"
-    )
+    assert "UNIMPLEMENTED" in _run_expect_error(r1, mode, "/frr-ripd", "UNIMPLEMENTED")
 
 
 def test_subscribe_rejects_unknown_encoding(tgen):
