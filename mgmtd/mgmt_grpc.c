@@ -617,11 +617,12 @@ static void mgmt_grpc_oper_event(struct event *event)
 	}
 
 	/*
-	 * A bare "/" does not resolve through the xpath machinery (the
-	 * backend adapter and oper walk special-case wild roots); use the
-	 * equivalent "/*" form the frontend get-data path already serves.
+	 * A bare "/" (or an empty path, which the gRPC layer treats as root)
+	 * does not resolve through the xpath machinery (the backend adapter
+	 * and oper walk special-case wild roots); use the equivalent "/*"
+	 * form the frontend get-data path already serves.
 	 */
-	if (!strcmp(xpath, "/"))
+	if (!xpath[0] || !strcmp(xpath, "/"))
 		xpath = "/*";
 
 	/*

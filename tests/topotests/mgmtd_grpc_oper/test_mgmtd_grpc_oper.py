@@ -218,6 +218,16 @@ def test_get_root_all(tgen):
     assert any(a["ip"] == "192.0.2.1" for a in addrs)
 
 
+def test_get_state_empty_string_path(tgen):
+    r1 = tgen.gears["r1"]
+
+    step("An explicit empty-string path reads the root like s018 did")
+    check_backend_oper_served(r1)
+
+    output = run_grpc_client(r1, "GET-STATE,")
+    assert '"if-index"' in output
+
+
 def test_get_state_multiple_paths(tgen):
     r1 = tgen.gears["r1"]
 
