@@ -116,6 +116,12 @@ def _set_auth(router, key):
     router.net.cmd_raises("vtysh", stdin=conf)
 
 
+def _rollback(router, args):
+    "Run a mgmt rollback command through vtysh's config node."
+    conf = f"conf t\nmgmt rollback {args}\n"
+    return router.net.cmd_raises("vtysh", stdin=conf)
+
+
 def _commit_auth(router, key):
     "Set rip authentication string through mgmtd gRPC."
     path = (
@@ -640,6 +646,103 @@ def test_commit_without_changes_emits_no_config_change(tgen):
     )
     assert rc != 0, "no-change commit unexpectedly succeeded"
     assert "No changes found" in err, f"unexpected commit error: {err}"
+
+    t.join(timeout=10)
+    assert not t.is_alive(), "no-change Subscribe listener did not time out"
+    assert "DEADLINE_EXCEEDED" in received.get("raw", "")
+
+
+def test_rollback_emits_netconf_config_change_with_initiator(tgen):
+    r1 = tgen.gears["r1"]
+    received = {}
+
+    # Two known commits through the gRPC bridge so the rollback diff is
+    # deterministic: the rollback target snapshots "s018base" while
+    # running holds "s018new".  vtysh per-command implicit commits skip
+    # the commit history, so the records must come from explicit commits.
+    _commit_auth(r1, "s018base")
+    _commit_auth(r1, "s018new")
+
+    def listener():
+        received["raw"] = _run_listen_with_path(
+            r1, "/ietf-netconf-notifications:netconf-config-change", timeout=30
+        )
+
+    t = threading.Thread(target=listener, daemon=True)
+    t.start()
+    time.sleep(2)
+
+    _rollback(r1, "last")
+
+    t.join(timeout=35)
+    assert not t.is_alive(), "Subscribe listener did not return in time"
+
+    raw = received.get("raw", "").strip()
+    assert raw, "Subscribe stream returned no netconf-config-change"
+
+    update = json.loads(raw.splitlines()[-1])
+    data = json.loads(update["data"])
+    change = data["ietf-netconf-notifications:netconf-config-change"]
+    changed_by = change["changed-by"]
+    # The rollback initiator is the vty session that ran the command: it
+    # rides mgmtd's vty front-end client like any vtysh commit, so the
+    # event reports that client name and the initiating session id even
+    # though the rollback transaction itself is internal.
+    username = changed_by.get("username", "")
+    assert username.startswith("vty-mgmtd-"), f"unexpected username: {change}"
+    assert changed_by.get("session-id", 0) != 0, f"session-id is 0: {change}"
+    assert "server" not in changed_by, f"unexpected server attribution: {change}"
+    edits = change["edit"]
+    assert edits, f"netconf-config-change carried no edits: {change}"
+    matching = [
+        edit
+        for edit in edits
+        if edit["target"].endswith("/frr-ripd:rip/authentication-password")
+        and "interface[name='r1-eth0']" in edit["target"]
+    ]
+    assert matching, f"expected edit target missing: {edits}"
+    assert matching[0]["operation"] == "replace", f"unexpected operation: {matching}"
+
+    # The rollback must have restored the target snapshot's value.
+    out = r1.net.cmd_raises("vtysh", stdin="show running-config\n")
+    assert "ip rip authentication string s018base" in out
+
+    _set_auth(r1, "foo")
+
+
+def test_rollback_without_changes_emits_no_config_change(tgen):
+    r1 = tgen.gears["r1"]
+    received = {}
+
+    # Seed a history record whose snapshot matches the running config:
+    # rolling back to it yields an empty diff, the command fails before a
+    # transaction exists, and no notification may be emitted.
+    _commit_auth(r1, "s018nc")
+    out = r1.net.cmd_raises("vtysh", stdin="show mgmt commit-history\n")
+    newest = None
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[0] == "0":
+            newest = fields[1]
+            break
+    assert newest, f"could not find newest commit id: {out}"
+
+    def listener():
+        received["raw"] = _run_expect_error(
+            r1,
+            "ON_CHANGE",
+            "/ietf-netconf-notifications:netconf-config-change",
+            "DEADLINE_EXCEEDED",
+        )
+
+    t = threading.Thread(target=listener, daemon=True)
+    t.start()
+    time.sleep(1)
+
+    out = _rollback(r1, f"commit-id {newest}")
+    assert (
+        "Error with creating commit apply txn" in out
+    ), f"unexpected rollback output: {out}"
 
     t.join(timeout=10)
     assert not t.is_alive(), "no-change Subscribe listener did not time out"
