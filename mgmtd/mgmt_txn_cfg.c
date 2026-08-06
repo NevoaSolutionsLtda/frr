@@ -25,6 +25,12 @@ static const char *const mgmt_commit_phase_name[] = {
 	[MGMTD_COMMIT_PHASE_FINISH] = "FINISH",
 };
 
+/* One RFC 6470 netconf-config-change edit record captured from the diff. */
+struct txn_cfg_edit {
+	char *target; /* lyd_path() of the changed node, free()d */
+	enum nb_cb_operation operation;
+};
+
 struct txn_req_commit {
 	struct txn_req req;
 	enum mgmt_ds_id src_ds_id;
@@ -67,6 +73,12 @@ struct txn_req_commit {
 	uint64_t clients_wait; /* set when cfg_req sent */
 
 	char *info_msgs; /* darr: collected info messages from backends */
+
+	/*
+	 * darr: edits captured from the commit diff for the RFC 6470
+	 * netconf-config-change notification sent when the commit finishes.
+	 */
+	struct txn_cfg_edit *cfg_edits;
 
 	struct mgmt_commit_stats *cmt_stats;
 };
@@ -122,6 +134,7 @@ void txn_cfg_cleanup(struct txn_req *txn_req)
 	struct txn_req_commit *ccreq = as_commit(txn_req);
 	struct mgmt_be_client_adapter *adapter;
 	enum mgmt_commit_phase phase;
+	struct txn_cfg_edit *cfg_edit;
 	mgmt_be_client_id_t id;
 	uint64_t txn_id = txn_req->txn->txn_id;
 	uint64_t clients;
@@ -130,6 +143,9 @@ void txn_cfg_cleanup(struct txn_req *txn_req)
 
 	XFREE(MTYPE_MGMTD_TXN_REQ, ccreq->edit);
 	darr_free(ccreq->info_msgs);
+	darr_foreach_p (ccreq->cfg_edits, cfg_edit)
+		free(cfg_edit->target);
+	darr_free(ccreq->cfg_edits);
 
 	/* If we (still) had an internal nb transaction, abort it */
 	if (ccreq->mgmtd_nb_txn) {
@@ -497,6 +513,107 @@ static void txn_cfg_send_cfg_apply(struct txn_req_commit *ccreq)
 /* FINISH phase */
 /* ------------ */
 
+#define NETCONF_CONFIG_CHANGE_XPATH "/ietf-netconf-notifications:netconf-config-change"
+
+/* Map a northbound diff operation to an RFC 6470 edit operation. */
+static const char *txn_cfg_edit_operation_name(enum nb_cb_operation operation)
+{
+	switch (operation) {
+	case NB_CB_CREATE:
+		return "create";
+	case NB_CB_MODIFY:
+		return "replace";
+	case NB_CB_DESTROY:
+		return "delete";
+	case NB_CB_MOVE:
+	default:
+		/* NETCONF has no move operation; merge is the closest. */
+		return "merge";
+	}
+}
+
+/*
+ * Send an RFC 6470 netconf-config-change notification to all interested
+ * front-end sessions (native selectors and in-process gRPC Subscribe)
+ * after a successful commit has been accepted into the running datastore.
+ */
+static void txn_send_cfg_change_notify(struct txn_req_commit *ccreq)
+{
+	struct mgmt_msg_notify_data *msg;
+	struct lyd_node *notif = NULL;
+	struct txn_cfg_edit *cfg_edit;
+	uint8_t **darrp;
+	LY_ERR err;
+
+	err = lyd_new_path(NULL, ly_native_ctx, NETCONF_CONFIG_CHANGE_XPATH, NULL, 0, &notif);
+	if (err != LY_SUCCESS)
+		goto ly_error;
+
+	/* The change originates in mgmtd itself, not a NETCONF session. */
+	err = lyd_new_path(notif, NULL, "changed-by/server", NULL, 0, NULL);
+	if (err != LY_SUCCESS)
+		goto ly_error;
+
+	err = lyd_new_path(notif, NULL, "datastore", "running", 0, NULL);
+	if (err != LY_SUCCESS)
+		goto ly_error;
+
+	darr_foreach_p (ccreq->cfg_edits, cfg_edit) {
+		struct lyd_node *entry;
+
+		err = lyd_new_list(notif, NULL, "edit", 0, &entry);
+		if (err != LY_SUCCESS)
+			goto ly_error;
+		err = lyd_new_term(entry, NULL, "target", cfg_edit->target, 0, NULL);
+		if (err != LY_SUCCESS)
+			goto ly_error;
+		err = lyd_new_term(entry, NULL, "operation",
+				   txn_cfg_edit_operation_name(cfg_edit->operation), 0, NULL);
+		if (err != LY_SUCCESS)
+			goto ly_error;
+	}
+
+	/*
+	 * NOTE: the notification is not validated: the edit targets are
+	 * instance-identifiers with require-instance true, which would need
+	 * the running data tree resolved; receivers parse notifications with
+	 * LYD_PARSE_ONLY and never validate them.
+	 */
+
+	msg = mgmt_msg_native_alloc_msg(struct mgmt_msg_notify_data, 0, MTYPE_MSG_NATIVE_NOTIFY);
+	msg->code = MGMT_MSG_CODE_NOTIFY;
+	msg->result_type = LYD_JSON;
+	msg->refer_id = MGMTD_SESSION_ID_NONE;
+	msg->op = NOTIFY_OP_NOTIFICATION;
+
+	mgmt_msg_native_xpath_encode(msg, NETCONF_CONFIG_CHANGE_XPATH);
+
+	darrp = mgmt_msg_native_get_darrp(msg);
+	err = yang_print_tree_append(darrp, notif, LYD_JSON,
+				     (LYD_PRINT_SHRINK | LYD_PRINT_WD_EXPLICIT |
+				      LYD_PRINT_WITHSIBLINGS));
+	if (err != LY_SUCCESS) {
+		mgmt_msg_native_free_msg(msg);
+		goto ly_error;
+	}
+
+	/*
+	 * from_id names a backend adapter; this notification originates in
+	 * mgmtd itself, so pass the "no backend" sentinel (the receiver does
+	 * not currently use the parameter).
+	 */
+	mgmt_fe_adapter_send_notify(MGMTD_BE_CLIENT_ID_MAX, msg,
+				    mgmt_msg_native_get_msg_len(msg));
+	mgmt_msg_native_free_msg(msg);
+	lyd_free_all(notif);
+	return;
+
+ly_error:
+	_log_err("%s: failed to build netconf-config-change notification: %s", __func__,
+		 ly_errmsg(ly_native_ctx));
+	lyd_free_all(notif);
+}
+
 /*
  * Finish processing a commit-config request.
  *
@@ -556,6 +673,13 @@ static void txn_finish_commit(struct txn_req_commit *ccreq, enum mgmt_result res
 		mgmt_ds_txn_unlock(ccreq->dst_ds_ctx, txn->txn_id);
 		ccreq->txn_lock = false;
 	}
+
+	/*
+	 * Notify front-end subscribers of the config change (RFC 6470) once
+	 * the changes have been fully accepted into the running datastore.
+	 */
+	if (result == MGMTD_SUCCESS && accept_changes && ccreq->cfg_edits)
+		txn_send_cfg_change_notify(ccreq);
 
 	/*
 	 * For internal txns do lock cleanup, for front-end session send replies.
@@ -1031,6 +1155,25 @@ static int txn_get_config_changes(struct txn_req_commit *ccreq, struct nb_config
 	if (RB_EMPTY(nb_config_cbs, cfg_chgs)) {
 		return txn_set_config_error(txn_req, MGMTD_NO_CFG_CHANGES,
 					    "No changes found to be committed!");
+	}
+
+	/*
+	 * Capture a compact edit list now for the netconf-config-change
+	 * notification emitted when the commit finishes -- the change list
+	 * itself is consumed and freed once the CFG_REQs are sent.
+	 */
+	if (!ccreq->validate_only && !ccreq->init) {
+		struct nb_config_cb *chg;
+
+		RB_FOREACH (chg, nb_config_cbs, cfg_chgs) {
+			char *target = lyd_path(chg->dnode, LYD_PATH_STD, NULL, 0);
+
+			if (!target)
+				continue;
+			*darr_append(ccreq->cfg_edits) =
+				(struct txn_cfg_edit){ .target = target,
+						       .operation = chg->operation };
+		}
 	}
 	return 0;
 }

@@ -413,6 +413,83 @@ def test_subscribe_selector_does_not_overmatch(tgen):
     _set_auth(r1, "foo")
 
 
+def test_commit_emits_netconf_config_change(tgen):
+    r1 = tgen.gears["r1"]
+    received = {}
+
+    def listener():
+        received["raw"] = _run_listen_with_path(
+            r1, "/ietf-netconf-notifications:netconf-config-change", timeout=30
+        )
+
+    t = threading.Thread(target=listener, daemon=True)
+    t.start()
+    time.sleep(2)
+
+    _commit_auth(r1, "bar")
+
+    t.join(timeout=35)
+    assert not t.is_alive(), "Subscribe listener did not return in time"
+
+    raw = received.get("raw", "").strip()
+    assert raw, "Subscribe stream returned no netconf-config-change"
+
+    update = json.loads(raw.splitlines()[-1])
+    assert (
+        update["path"] == "/ietf-netconf-notifications:netconf-config-change"
+    ), f"unexpected notification path: {update}"
+    data = json.loads(update["data"])
+    change = data["ietf-netconf-notifications:netconf-config-change"]
+    assert "server" in change["changed-by"], f"changed-by is not server: {change}"
+    assert change.get("datastore", "running") == "running"
+    edits = change["edit"]
+    assert edits, f"netconf-config-change carried no edits: {change}"
+    matching = [
+        edit
+        for edit in edits
+        if edit["target"].endswith("/frr-ripd:rip/authentication-password")
+        and "interface[name='r1-eth0']" in edit["target"]
+    ]
+    assert matching, f"expected edit target missing: {edits}"
+    assert matching[0]["operation"] == "replace", f"unexpected operation: {matching}"
+
+    _commit_auth(r1, "foo")
+
+
+def test_commit_without_changes_emits_no_config_change(tgen):
+    r1 = tgen.gears["r1"]
+    received = {}
+
+    def listener():
+        received["raw"] = _run_expect_error(
+            r1,
+            "ON_CHANGE",
+            "/ietf-netconf-notifications:netconf-config-change",
+            "DEADLINE_EXCEEDED",
+        )
+
+    t = threading.Thread(target=listener, daemon=True)
+    t.start()
+    time.sleep(1)
+
+    # Same value as running config: the commit is rejected with ABORTED
+    # (MGMTD_NO_CFG_CHANGES) and no notification may be emitted.
+    path = (
+        "/frr-interface:lib"
+        "/interface[name='r1-eth0']"
+        "/frr-ripd:rip/authentication-password"
+    )
+    rc, _, err = r1.net.cmd_status(
+        [script_path, f"--port={GRPCP_MGMTD}"], stdin=f"COMMIT-SET,{path}=foo\n"
+    )
+    assert rc != 0, "no-change commit unexpectedly succeeded"
+    assert "No changes found" in err, f"unexpected commit error: {err}"
+
+    t.join(timeout=10)
+    assert not t.is_alive(), "no-change Subscribe listener did not time out"
+    assert "DEADLINE_EXCEEDED" in received.get("raw", "")
+
+
 def test_subscribe_closes_cleanly_when_mgmtd_stops(tgen):
     r1 = tgen.gears["r1"]
     received = {}
