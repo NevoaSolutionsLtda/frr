@@ -748,6 +748,8 @@ def test_rollback_without_changes_emits_no_config_change(tgen):
     assert not t.is_alive(), "no-change Subscribe listener did not time out"
     assert "DEADLINE_EXCEEDED" in received.get("raw", "")
 
+    _set_auth(r1, "foo")
+
 
 def test_subscribe_closes_cleanly_when_mgmtd_stops(tgen):
     r1 = tgen.gears["r1"]
