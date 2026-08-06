@@ -447,7 +447,13 @@ message SubscribeRequest {
   // field presence is required because DataType.ALL == 0: when the field
   // is absent the snapshot serves STATE, matching the pre-extension
   // behavior.  Rejected with INVALID_ARGUMENT on ON_CHANGE subscriptions.
-  optional GetRequest.DataType snapshot_type = 6;
+  //
+  // Spelled as a single-member oneof rather than a proto3 optional label:
+  // the wire format and the generated has_snapshot_type() API are
+  // identical, but oneof does not require protoc >= 3.15 to compile.
+  oneof snapshot_type_present {
+    GetRequest.DataType snapshot_type = 6;
+  }
 }
 
 message SubscribeResponse {
