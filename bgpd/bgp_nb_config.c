@@ -4780,7 +4780,7 @@ static int bgp_nb_setter_result(int ret, char *errmsg, size_t errmsg_len)
 
 	if (!str)
 		return NB_OK;
-	snprintf(errmsg, errmsg_len, "%s", str);
+	snprintfrr(errmsg, errmsg_len, "%s", str);
 	return NB_ERR;
 }
 
