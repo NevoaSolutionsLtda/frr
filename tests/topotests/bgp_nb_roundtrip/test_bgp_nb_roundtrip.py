@@ -150,7 +150,8 @@ def test_per_af_route_reflector_client_roundtrip():
         f"mgmt set-config {n}/neighbor-remote-as/remote-as-type as-specified",
         f"mgmt set-config {n}/neighbor-remote-as/remote-as 65000",
         f"mgmt set-config {af}/enabled true",
-        f"mgmt set-config {af}/route-reflector-client true",
+        f"mgmt set-config {af}/ipv4-unicast/route-reflector"
+        "/route-reflector-client true",
     )
     output = r1.vtysh_cmd("show running-config bgpd")
     assert "neighbor 10.0.0.2 route-reflector-client" in output, (
