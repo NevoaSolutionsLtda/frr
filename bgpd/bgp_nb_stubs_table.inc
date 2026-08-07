@@ -9,7 +9,7 @@
  * tree. The trailing comment is the stub class column:
  * core = reject-strict for programmatic clients,
  * warn = NB_OK no-op with aggregated warning.
- * Current population: 496 core, 1651 warn.
+ * Current population: 494 core, 1631 warn.
  *
  * Real handlers for any of these xpaths should be
  * added to bgp_nb.c (above the #include of this file)
@@ -807,10 +807,6 @@
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-flowspec/filter-config/plist-import",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-flowspec/filter-config/rmap-export",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-flowspec/filter-config/rmap-import",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-flowspec/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-flowspec/filter-config/unsuppress-map-import",
@@ -850,10 +846,6 @@
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-labeled-unicast/filter-config/plist-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-labeled-unicast/filter-config/plist-import",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-labeled-unicast/filter-config/rmap-export",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-labeled-unicast/filter-config/rmap-import",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-labeled-unicast/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
@@ -935,10 +927,6 @@
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-multicast/filter-config/plist-import",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-multicast/filter-config/rmap-export",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-multicast/filter-config/rmap-import",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-multicast/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-multicast/filter-config/unsuppress-map-import",
@@ -1018,10 +1006,6 @@
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-unicast/filter-config/plist-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-unicast/filter-config/plist-import",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-unicast/filter-config/rmap-export",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-unicast/filter-config/rmap-import",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv4-unicast/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
@@ -1135,10 +1119,6 @@
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-flowspec/filter-config/plist-import",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-flowspec/filter-config/rmap-export",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-flowspec/filter-config/rmap-import",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-flowspec/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-flowspec/filter-config/unsuppress-map-import",
@@ -1178,10 +1158,6 @@
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-labeled-unicast/filter-config/plist-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-labeled-unicast/filter-config/plist-import",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-labeled-unicast/filter-config/rmap-export",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-labeled-unicast/filter-config/rmap-import",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-labeled-unicast/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
@@ -1263,10 +1239,6 @@
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-multicast/filter-config/plist-import",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-multicast/filter-config/rmap-export",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-multicast/filter-config/rmap-import",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-multicast/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-multicast/filter-config/unsuppress-map-import",
@@ -1346,10 +1318,6 @@
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-unicast/filter-config/plist-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-unicast/filter-config/plist-import",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-unicast/filter-config/rmap-export",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-unicast/filter-config/rmap-import",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/ipv6-unicast/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
@@ -1473,10 +1441,6 @@
   .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/filter-config/plist-import",
   .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/filter-config/rmap-export",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/filter-config/rmap-import",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/filter-config/unsuppress-map-import",
@@ -1532,10 +1496,6 @@
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l3vpn-ipv4-unicast/filter-config/plist-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l3vpn-ipv4-unicast/filter-config/plist-import",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l3vpn-ipv4-unicast/filter-config/rmap-export",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l3vpn-ipv4-unicast/filter-config/rmap-import",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l3vpn-ipv4-unicast/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
@@ -1596,10 +1556,6 @@
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l3vpn-ipv6-unicast/filter-config/plist-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l3vpn-ipv6-unicast/filter-config/plist-import",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l3vpn-ipv6-unicast/filter-config/rmap-export",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l3vpn-ipv6-unicast/filter-config/rmap-import",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l3vpn-ipv6-unicast/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */

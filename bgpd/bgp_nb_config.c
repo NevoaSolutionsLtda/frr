@@ -9,6 +9,7 @@
 
 #include "lib/log.h"
 #include "lib/northbound.h"
+#include "lib/routemap.h"
 #include "lib/yang.h"
 #include "lib/yang_wrappers.h"
 #include "lib/vrf.h"
@@ -5033,6 +5034,82 @@ int bgp_neighbor_af_enabled_destroy(struct nb_cb_destroy_args *args)
 	return NB_OK;
 }
 
+/*
+ * Per-AF route-map filters:
+ * neighbor/afi-safis/afi-safi/<AF>/filter-config/{rmap-import,rmap-export}.
+ * peer_route_map_set() propagates to peer-group members and schedules
+ * the policy refresh (peer_on_policy_change), so modify/destroy map 1:1
+ * onto the legacy setters. Like the CLI path, the filter binds by name:
+ * the referenced route-map does not have to exist yet.
+ */
+static int bgp_neighbor_af_rmap_filter_modify(struct nb_cb_modify_args *args,
+					      int direct)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const char *name;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_ERR;
+	name = yang_dnode_get_string(args->dnode, NULL);
+	return bgp_nb_setter_result(peer_route_map_set(peer, afi, safi, direct,
+						       name,
+						       route_map_lookup_by_name(
+							       name)),
+				    args->errmsg, args->errmsg_len);
+}
+
+static int bgp_neighbor_af_rmap_filter_destroy(struct nb_cb_destroy_args *args,
+					       int direct)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_OK;
+	return bgp_nb_setter_result(peer_route_map_unset(peer, afi, safi,
+							 direct),
+				    args->errmsg, args->errmsg_len);
+}
+
+int bgp_neighbor_af_rmap_import_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_neighbor_af_rmap_filter_modify(args, RMAP_IN);
+}
+
+int bgp_neighbor_af_rmap_import_destroy(struct nb_cb_destroy_args *args)
+{
+	return bgp_neighbor_af_rmap_filter_destroy(args, RMAP_IN);
+}
+
+int bgp_neighbor_af_rmap_export_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_neighbor_af_rmap_filter_modify(args, RMAP_OUT);
+}
+
+int bgp_neighbor_af_rmap_export_destroy(struct nb_cb_destroy_args *args)
+{
+	return bgp_neighbor_af_rmap_filter_destroy(args, RMAP_OUT);
+}
+
 BGP_NEIGHBOR_FLAG_MOD_CB(aigp, PEER_FLAG_AIGP)
 BGP_NEIGHBOR_FLAG_MOD_CB(ip_transparent, PEER_FLAG_IP_TRANSPARENT)
 BGP_NEIGHBOR_FLAG_MOD_CB(extended_link_bandwidth, PEER_FLAG_EXTENDED_LINK_BANDWIDTH)
@@ -5974,6 +6051,33 @@ void bgp_neighbor_af_add_paths_path_type_cli_show(struct vty *vty,
 	else if (strmatch(val, "per-as"))
 		vty_out(vty, "  neighbor %s addpath-tx-bestpath-per-AS\n",
 			peer);
+}
+
+/*
+ * Per-AF route-map filter: "neighbor X route-map NAME in|out". The
+ * rmap leaves sit under filter-config, so the peer key is 5 levels up
+ * like the <AFI>/<group>/<leaf> nodes.
+ */
+static void bgp_neighbor_af_rmap_filter_cli_show(struct vty *vty,
+						 const struct lyd_node *dnode,
+						 const char *direct)
+{
+	const char *peer = yang_dnode_get_string(dnode, BGP_NB_AF_PEER_REL5);
+
+	vty_out(vty, "  neighbor %s route-map %s %s\n", peer,
+		yang_dnode_get_string(dnode, NULL), direct);
+}
+
+void bgp_neighbor_af_rmap_import_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_neighbor_af_rmap_filter_cli_show(vty, dnode, "in");
+}
+
+void bgp_neighbor_af_rmap_export_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_neighbor_af_rmap_filter_cli_show(vty, dnode, "out");
 }
 
 /* value-style cli_show emitters. */

@@ -360,6 +360,8 @@ int bgp_neighbor_af_encapsulation_type_destroy(
 _BGP_NB_PEER_AF_FLAG_DECL(attr_unchanged_as_path);
 _BGP_NB_PEER_AF_FLAG_DECL(attr_unchanged_next_hop);
 _BGP_NB_PEER_AF_FLAG_DECL(attr_unchanged_med);
+_BGP_NB_PEER_AF_FLAG_DECL(rmap_import);
+_BGP_NB_PEER_AF_FLAG_DECL(rmap_export);
 #undef _BGP_NB_PEER_AF_FLAG_DECL
 
 /* peer-group */
@@ -501,6 +503,8 @@ _BGP_CLI(bgp_neighbor_af_send_large_community);
 _BGP_CLI(bgp_neighbor_af_accept_own);
 _BGP_CLI(bgp_neighbor_af_disable_addpath_rx);
 _BGP_CLI(bgp_neighbor_af_add_paths_path_type);
+_BGP_CLI(bgp_neighbor_af_rmap_import);
+_BGP_CLI(bgp_neighbor_af_rmap_export);
 
 _BGP_CLI(bgp_peer_group);
 _BGP_CLI(bgp_peer_group_ipv4_listen_range);
