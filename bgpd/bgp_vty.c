@@ -10,6 +10,7 @@
 #endif
 
 #include "command.h"
+#include "northbound_cli.h"
 #include "lib/json.h"
 #include "lib/sockopt.h"
 #include "lib_errors.h"
