@@ -787,9 +787,10 @@ struct bgp {
 #define BGP_FLAG_USE_RECURSIVE_WEIGHT (1ULL << 46)
 
 /* Use current (imported) path's attributes instead of source path's attributes
- * for bestpath comparison of imported paths.
+ * for bestpath comparison of imported paths. Bit 45 is already taken by
+ * BGP_FLAG_SOFT_VERSION_CAPABILITY_NEW; moved to 47 to fix the collision.
  */
-#define BGP_FLAG_BESTPATH_USE_IMPORTED_ATTRS (1ULL << 45)
+#define BGP_FLAG_BESTPATH_USE_IMPORTED_ATTRS (1ULL << 47)
 
 	/* BGP default address-families.
 	 * New peers inherit enabled afi/safis from bgp instance.

@@ -32,6 +32,8 @@ struct txn_req_get_tree {
 	uint8_t exact;	       /* if exact node is requested */
 	uint8_t simple_xpath;  /* if xpath is simple */
 	struct lyd_node *client_results; /* result tree from clients */
+	mgmt_txn_get_tree_done_cb done;	 /* skips the FE reply when set */
+	void *done_arg;
 };
 #define as_get_tree(txn_req)                                                                      \
 	({                                                                                        \
@@ -185,11 +187,31 @@ static void txn_get_tree_data_done(struct txn_req_get_tree *get_tree)
 	if (ret == NB_OK && result && get_tree->exact)
 		result = yang_dnode_get(result, get_tree->xpath);
 
-	if (ret == NB_OK)
+	if (get_tree->done) {
+		uint64_t txn_id = txn->txn_id;
+		int error;
+
+		/* Positive values are LY_ERR from a merge step; the callback
+		 * contract is errno.
+		 */
+		if (ret != NB_OK)
+			error = errno_from_nb_error(ret);
+		else if (get_tree->partial_error > 0)
+			error = -EINVAL;
+		else
+			error = get_tree->partial_error;
+
+		/* get_tree->done is synchronous: txn_req_free() below releases
+		 * txn_req->err_info and get_tree->client_results.
+		 */
+		get_tree->done(txn_id, req_id, error, txn_req->err_info,
+			       ret == NB_OK ? result : NULL, get_tree->done_arg);
+		mgmt_destroy_txn(&txn_id);
+	} else if (ret == NB_OK) {
 		mgmt_fe_adapter_send_tree_data(txn->session_id, txn->txn_id, txn_req->req_id,
 					       get_tree->result_type, get_tree->wd_options, result,
 					       get_tree->partial_error, false);
-	else {
+	} else {
 		_log_err("Error sending the results of GET-TREE for txn-id %" PRIu64
 			 " req_id %" PRIu64 " to requested type %u",
 			 txn->txn_id, req_id, get_tree->result_type);
@@ -302,10 +324,11 @@ void mgmt_txn_handle_tree_data_reply(struct mgmt_be_client_adapter *adapter,
  * Send get-tree requests to each client indicated in `clients` bitmask, which
  * has registered operational state that matches the given `xpath`
  */
-int mgmt_txn_send_get_tree(uint64_t txn_id, uint64_t req_id, uint64_t clients,
-			   enum mgmt_ds_id ds_id, LYD_FORMAT result_type, uint8_t flags,
-			   uint32_t wd_options, bool simple_xpath, struct lyd_node **ylib,
-			   const char *xpath)
+int mgmt_txn_send_get_tree_cb(uint64_t txn_id, uint64_t req_id, uint64_t clients,
+			      enum mgmt_ds_id ds_id, LYD_FORMAT result_type, uint8_t flags,
+			      uint32_t wd_options, bool simple_xpath, struct lyd_node **ylib,
+			      const char *xpath, uint32_t timeout_ms,
+			      mgmt_txn_get_tree_done_cb done, void *arg)
 {
 	struct mgmt_be_client_adapter *adapter;
 	struct mgmt_msg_get_tree *msg;
@@ -325,6 +348,8 @@ int mgmt_txn_send_get_tree(uint64_t txn_id, uint64_t req_id, uint64_t clients,
 	get_tree->exact = CHECK_FLAG(flags, GET_DATA_FLAG_EXACT);
 	get_tree->simple_xpath = simple_xpath;
 	get_tree->xpath = XSTRDUP(MTYPE_MGMTD_XPATH, xpath);
+	get_tree->done = done;
+	get_tree->done_arg = arg;
 
 	if (CHECK_FLAG(flags, GET_DATA_FLAG_CONFIG)) {
 		/*
@@ -423,10 +448,44 @@ state:
 	get_tree->clients_wait = get_tree->clients;
 	if (!get_tree->clients_wait)
 		txn_get_tree_data_done(get_tree);
+	else if (timeout_ms)
+		event_add_timer_msec(mm->master, txn_get_tree_timeout, get_tree, timeout_ms,
+				     &get_tree->req.timeout);
 	else
 		event_add_timer(mm->master, txn_get_tree_timeout, get_tree,
 				MGMTD_TXN_GET_TREE_MAX_DELAY_SEC, &get_tree->req.timeout);
 	return 0;
+}
+
+int mgmt_txn_send_get_tree(uint64_t txn_id, uint64_t req_id, uint64_t clients,
+			   enum mgmt_ds_id ds_id, LYD_FORMAT result_type, uint8_t flags,
+			   uint32_t wd_options, bool simple_xpath, struct lyd_node **ylib,
+			   const char *xpath)
+{
+	return mgmt_txn_send_get_tree_cb(txn_id, req_id, clients, ds_id, result_type, flags,
+					 wd_options, simple_xpath, ylib, xpath, 0, NULL, NULL);
+}
+
+bool mgmt_txn_cancel_get_tree_notify(uint64_t txn_id, uint64_t req_id, int error,
+				     const char *errstr)
+{
+	struct mgmt_txn *txn = txn_lookup(txn_id);
+	struct txn_req *txn_req;
+	struct txn_req_get_tree *get_tree;
+
+	if (!txn || txn->type != MGMTD_TXN_TYPE_SHOW)
+		return false;
+
+	txn_req = txn_txn_req(txn, req_id);
+	if (!txn_req || txn_req->req_type != TXN_REQ_TYPE_GETTREE)
+		return false;
+
+	get_tree = as_get_tree(txn_req);
+	get_tree->partial_error = error;
+	if (errstr)
+		darr_in_strdup(txn_req->err_info, errstr);
+	txn_get_tree_data_done(get_tree);
+	return true;
 }
 
 /* =============== */

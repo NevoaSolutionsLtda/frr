@@ -945,6 +945,30 @@ extern int nb_rpc_dispatch_async(const char *xpath, const struct lyd_node *input
 				 size_t errmsg_len);
 
 /*
+ * Optional global operational-state get dispatch hook.
+ *
+ * This hook is for northbound frontends whose operational state lives in
+ * backend daemons rather than in local nb_node callbacks.  The asynchronous
+ * dispatcher must complete after it returns and must eventually invoke done
+ * once, on the main thread.  The result tree passed to done is borrowed: it
+ * stays alive only for the duration of the callback.  A NULL result with a
+ * zero error means the path is valid but no data exists for it.  When
+ * include_config is set the dispatcher merges configuration into the result
+ * with operational-datastore semantics.  A timeout_ms of zero selects the
+ * dispatcher default deadline.
+ */
+typedef void (*nb_oper_get_dispatch_done_cb)(int error, const char *errmsg,
+					     const struct lyd_node *result, void *arg);
+typedef int (*nb_oper_get_dispatch_async_cb)(const char *xpath, bool include_config,
+					     uint32_t timeout_ms,
+					     nb_oper_get_dispatch_done_cb done, void *arg,
+					     char *errmsg, size_t errmsg_len);
+void nb_oper_get_dispatch_async_set(nb_oper_get_dispatch_async_cb cb);
+int nb_oper_get_dispatch_async(const char *xpath, bool include_config, uint32_t timeout_ms,
+			       nb_oper_get_dispatch_done_cb done, void *arg, char *errmsg,
+			       size_t errmsg_len);
+
+/*
  * Create a northbound node for all YANG schema nodes.
  */
 void nb_nodes_create(void);

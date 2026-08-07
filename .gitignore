@@ -119,3 +119,8 @@ refix
 pceplib/test/*.log
 pceplib/test/*.trs
 /tests/topotests/lib/mgmt_pb2.py
+
+# Local agent migration notes (not for upstream)
+/BGPD_NB_MIGRATION_PLAN.md
+/BGPD_NB_MIGRATION_PROGRES.md
+/BGPD_NB_ISSUE_5428_UPDATE.md

@@ -1552,7 +1552,7 @@ static int lptest_start(struct vty *vty)
 	return 0;
 }
 
-DEFPY(start_labelpool_perf_test, start_labelpool_perf_test_cmd,
+DEFPY_YANG(start_labelpool_perf_test, start_labelpool_perf_test_cmd,
       "debug bgp lptest start",
       DEBUG_STR BGP_STR
       "label pool test\n"
@@ -1638,7 +1638,7 @@ DEFPY(show_labelpool_perf_test, show_labelpool_perf_test_cmd,
 	return CMD_SUCCESS;
 }
 
-DEFPY(stop_labelpool_perf_test, stop_labelpool_perf_test_cmd,
+DEFPY_YANG(stop_labelpool_perf_test, stop_labelpool_perf_test_cmd,
       "debug bgp lptest stop",
       DEBUG_STR BGP_STR
       "label pool test\n"
@@ -1678,7 +1678,7 @@ DEFPY(clear_labelpool_perf_test, clear_labelpool_perf_test_cmd,
  * of the allocator in a subsequent test.
  */
 /* clang-format off */
-DEFPY(release_labelpool_perf_test, release_labelpool_perf_test_cmd,
+DEFPY_YANG(release_labelpool_perf_test, release_labelpool_perf_test_cmd,
       "debug bgp lptest release test GENERATION$generation every (1-5)$every_nth",
       DEBUG_STR
       BGP_STR

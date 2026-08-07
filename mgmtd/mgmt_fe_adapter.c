@@ -1017,8 +1017,8 @@ static void fe_session_handle_commit(struct mgmt_fe_session_ctx *session, void *
 	/*
 	 * Create COMMIT Config request under the transaction
 	 */
-	mgmt_txn_send_commit_config_req(session->cfg_txn_id, msg->req_id, msg->source, src_ds_ctx,
-					msg->target, dst_ds_ctx,
+	mgmt_txn_send_commit_config_req(session->cfg_txn_id, msg->req_id, session->adapter->name,
+					msg->source, src_ds_ctx, msg->target, dst_ds_ctx,
 					msg->action == MGMT_MSG_COMMIT_VALIDATE,
 					msg->action == MGMT_MSG_COMMIT_ABORT, false /* implicit */,
 					msg->unlock, NULL);
@@ -1525,9 +1525,10 @@ static void fe_session_handle_edit(struct mgmt_fe_session_ctx *session, void *_m
 		     session->session_id);
 
 		/* And this is modifying the running */
-		mgmt_txn_send_commit_config_req(txn_id, msg->req_id, can_id, can_ds, run_id,
-						run_ds, false /*abort*/, false /*validate-only*/,
-						true /*implicit*/, false /*unlock*/, edit);
+		mgmt_txn_send_commit_config_req(txn_id, msg->req_id, session->adapter->name, can_id,
+						can_ds, run_id, run_ds, false /*abort*/,
+						false /*validate-only*/, true /*implicit*/,
+						false /*unlock*/, edit);
 		return;
 	}
 reply:
@@ -2275,6 +2276,17 @@ struct mgmt_commit_stats *mgmt_fe_get_session_commit_stats(uint64_t session_id)
 		return NULL;
 
 	return &session->adapter->cmt_stats;
+}
+
+const char *mgmt_fe_session_client_name(uint64_t session_id)
+{
+	struct mgmt_fe_session_ctx *session;
+
+	session = fe_session_lookup(session_id);
+	if (!session || !session->adapter)
+		return NULL;
+
+	return session->adapter->name;
 }
 
 static void _cmt_stats_write(struct vty *vty, struct mgmt_fe_client_adapter *adapter)
