@@ -4929,7 +4929,7 @@ void bgp_neighbor_shutdown_rtt_apply_finish(
 {
 	struct peer *peer;
 
-	peer = bgp_nb_lookup_peer(args->dnode, "..", 5);
+	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
 	if (!peer)
 		return;
 	if (yang_dnode_exists(args->dnode, "./rtt"))
@@ -5066,7 +5066,7 @@ void bgp_neighbor_local_role_apply_finish(struct nb_cb_apply_finish_args *args)
 	uint8_t role;
 	bool strict_mode = false;
 
-	peer = bgp_nb_lookup_peer(args->dnode, "..", 5);
+	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
 	if (!peer)
 		return;
 
@@ -5171,7 +5171,7 @@ void bgp_neighbor_timers_apply_finish(struct nb_cb_apply_finish_args *args)
 	uint32_t keepalive = 0, holdtime = 0;
 	bool have_k = false, have_h = false;
 
-	peer = bgp_nb_lookup_peer(args->dnode, "..", 5);
+	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
 	if (!peer)
 		return;
 
