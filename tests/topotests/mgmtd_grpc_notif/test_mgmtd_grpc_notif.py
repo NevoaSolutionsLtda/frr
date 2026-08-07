@@ -442,14 +442,34 @@ def test_sample_explicit_state_type_matches_default(tgen):
     assert all("frr-backend:clients" in response["data"] for response in responses)
 
 
-def test_sample_snapshot_type_absent_keeps_state_semantics(tgen):
+def test_sample_state_default_serves_backend_state_without_config(tgen):
     r1 = tgen.gears["r1"]
 
-    # Without snapshot_type the snapshot serves STATE, and a config-only
-    # path has no operational data: the pre-extension error is preserved.
-    assert "INVALID_ARGUMENT" in _run_sample_expect_error(
-        r1, "/frr-interface:lib", 200, "INVALID_ARGUMENT"
-    )
+    # Without snapshot_type the snapshot serves STATE.  mgmtd now
+    # dispatches backend operational state into SAMPLE snapshots, so a
+    # config-owning path streams the zebra-owned state subtree -- but it
+    # must not include config, which only an explicit ALL request merges.
+    raw = _run_sample_count(
+        r1,
+        "/frr-interface:lib",
+        interval_ms=200,
+        count=3,
+        timeout=5,
+    ).strip()
+
+    responses = json.loads(raw.splitlines()[-1])
+    assert len(responses) >= 3
+    for response in responses:
+        assert response["path"] == "/frr-interface:lib"
+        data = json.loads(response["data"])
+        interfaces = data["frr-interface:lib"]["interface"]
+        eth0 = [entry for entry in interfaces if entry["name"] == "r1-eth0"]
+        assert eth0, f"interface state missing from snapshot: {data}"
+        assert "if-index" in eth0[0]["state"], f"no state in snapshot: {eth0[0]}"
+        rip = eth0[0].get("frr-ripd:rip", {})
+        assert (
+            "authentication-password" not in rip
+        ), f"config leaked into a STATE snapshot: {eth0[0]}"
 
 
 def test_on_change_rejects_snapshot_type(tgen):
@@ -749,6 +769,196 @@ def test_rollback_without_changes_emits_no_config_change(tgen):
     assert "DEADLINE_EXCEEDED" in received.get("raw", "")
 
     _set_auth(r1, "foo")
+
+
+NETCONF_CHANGE = "/ietf-netconf-notifications:netconf-config-change"
+
+
+def _zebra_signal(r, sig):
+    "Stop or resume zebra to stall backend snapshot collection."
+    r.cmd_raises(f"kill -{sig} $(cat /var/run/frr/zebra.pid)")
+
+
+def _commit_rip_distance(router, value):
+    "Commit a ripd-only config change: zebra is not an interested backend."
+    path = "/frr-ripd:ripd/instance[vrf='default']/distance/default"
+    cmd = f"COMMIT-SET,{path}={value}\n"
+    return router.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
+
+
+def _run_sample_cancel(r, xpath, interval_ms=200, delay=0.5, timeout=5):
+    cmd = f"SUBSCRIBE-SAMPLE-CANCEL,{xpath},{interval_ms},{delay},{timeout}\n"
+    return r.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
+
+
+def _run_stream_paths_order(r, xpaths, timeout=15):
+    cmd = f"SUBSCRIBE-STREAM-PATHS-ORDER,{';'.join(xpaths)},{timeout}\n"
+    return r.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
+
+
+def _run_stream_paths_expect_error(r, xpaths, expected, timeout=15):
+    cmd = (
+        "SUBSCRIBE-STREAM-PATHS-EXPECT-ERROR,"
+        f"{';'.join(xpaths)},{expected},{timeout}\n"
+    )
+    return r.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
+
+
+def test_stream_backend_stall_closes_deadline_exceeded(tgen):
+    r1 = tgen.gears["r1"]
+
+    # The STREAM initial snapshot is the baseline the deltas build on:
+    # when the owning backend cannot answer within the 10 s snapshot
+    # deadline the stream must close instead of delivering a holed
+    # baseline.  The elapsed bound proves the server closed the stream
+    # (~10 s) rather than the client deadline expiring (20 s).
+    _zebra_signal(r1, "STOP")
+    started = time.time()
+    try:
+        assert "DEADLINE_EXCEEDED" in _run_expect_error(
+            r1, "STREAM", "/frr-interface:lib", "DEADLINE_EXCEEDED", timeout=20
+        )
+    finally:
+        _zebra_signal(r1, "CONT")
+    assert time.time() - started < 16, "stream was not closed server-side"
+
+
+def test_sample_backend_stall_delivers_partial_and_heals(tgen):
+    r1 = tgen.gears["r1"]
+    received = {}
+
+    # A sampling snapshot is bounded by min(interval, 10 s): a timed-out
+    # read delivers whatever merged before the deadline (an empty update
+    # here, zebra never answered) and keeps the stream.  Ticks landing
+    # mid-collection coalesce, and the first tick after the backend
+    # recovers self-heals.
+    def collector():
+        received["raw"] = _run_sample_count(
+            r1, "/frr-interface:lib", interval_ms=300, count=12, timeout=30
+        )
+
+    t = threading.Thread(target=collector, daemon=True)
+    t.start()
+    time.sleep(1.2)
+    _zebra_signal(r1, "STOP")
+    try:
+        time.sleep(2.4)
+    finally:
+        _zebra_signal(r1, "CONT")
+
+    t.join(timeout=35)
+    assert not t.is_alive(), "SAMPLE collector did not return in time"
+
+    responses = json.loads(received["raw"].strip().splitlines()[-1])
+    assert len(responses) >= 12
+    assert '"if-index"' in responses[0]["data"], "no healthy sample before the stall"
+    empties = [r for r in responses if not r["data"]]
+    assert empties, "no partial sample delivered during the stall"
+    # A tick pile-up would emit roughly one partial per interval (~8 for
+    # a 2.4 s stall at 300 ms); coalescing bounds them to one per
+    # timeout-plus-rearm window (~4).
+    assert len(empties) <= 7, f"tick pile-up during the stall: {len(empties)}"
+    assert '"if-index"' in responses[-1]["data"], "stream did not heal after the stall"
+
+
+def test_sample_cancel_mid_collection_cleans_up(tgen):
+    r1 = tgen.gears["r1"]
+
+    # Cancel while the snapshot collection is stalled inside the backend:
+    # the in-flight dispatch must detach cleanly and the server must keep
+    # serving new subscriptions afterwards.
+    _zebra_signal(r1, "STOP")
+    try:
+        assert "CANCELLED" in _run_sample_cancel(
+            r1, "/frr-interface:lib", interval_ms=1000, delay=0.5, timeout=5
+        )
+    finally:
+        _zebra_signal(r1, "CONT")
+
+    raw = _run_sample_count(
+        r1, "/frr-interface:lib", interval_ms=200, count=2, timeout=5
+    ).strip()
+    responses = json.loads(raw.splitlines()[-1])
+    assert len(responses) >= 2
+    assert '"if-index"' in responses[0]["data"]
+
+
+def test_stream_side_buffer_orders_baseline_before_deltas(tgen):
+    r1 = tgen.gears["r1"]
+    received = {}
+
+    # A notification firing while the STREAM baseline is still collecting
+    # must be held back and delivered after sync_response (at-least-once
+    # post-baseline), never interleaved with the baseline.
+    _commit_rip_distance(r1, 120)
+
+    def collector():
+        received["raw"] = _run_stream_paths_order(
+            r1, ["/frr-interface:lib", NETCONF_CHANGE], timeout=20
+        )
+
+    _zebra_signal(r1, "STOP")
+    try:
+        t = threading.Thread(target=collector, daemon=True)
+        t.start()
+        # The stalled collection holds the baseline for 10 s: wait out the
+        # client startup so the commit lands mid-collection.
+        time.sleep(2.5)
+        _commit_rip_distance(r1, 121)
+        time.sleep(0.5)
+    finally:
+        _zebra_signal(r1, "CONT")
+
+    t.join(timeout=25)
+    assert not t.is_alive(), "STREAM order collector did not return in time"
+
+    events = json.loads(received["raw"].strip().splitlines()[-1])
+    assert {"sync_response": True} in events, f"no sync_response: {events}"
+    sync_idx = events.index({"sync_response": True})
+    baseline = events[:sync_idx]
+    assert baseline, f"no baseline updates before sync_response: {events}"
+    assert all(
+        e["update"] in {"/frr-interface:lib", NETCONF_CHANGE} for e in baseline
+    ), f"unexpected baseline update: {events}"
+    assert any(
+        e["update"] == "/frr-interface:lib" and not e["empty"] for e in baseline
+    ), f"baseline missing interface data: {events}"
+    after = events[sync_idx + 1 :]
+    assert after, f"no delta delivered after sync_response: {events}"
+    assert (
+        after[0]["update"] == NETCONF_CHANGE and not after[0]["empty"]
+    ), f"post-baseline delta is not the held notification: {events}"
+
+
+def test_stream_side_buffer_overflow_closes_out_of_range(tgen):
+    r1 = tgen.gears["r1"]
+    received = {}
+
+    # Held deltas share the pending-queue budget (limit 4 here): a client
+    # whose baseline cannot complete while notifications keep firing is a
+    # slow consumer and must close OUT_OF_RANGE.
+    _commit_rip_distance(r1, 110)
+
+    def collector():
+        received["raw"] = _run_stream_paths_expect_error(
+            r1, ["/frr-interface:lib", NETCONF_CHANGE], "OUT_OF_RANGE", timeout=20
+        )
+
+    _zebra_signal(r1, "STOP")
+    try:
+        t = threading.Thread(target=collector, daemon=True)
+        t.start()
+        # The stalled collection holds the baseline for 10 s: wait out the
+        # client startup so the commits land mid-collection.
+        time.sleep(2.5)
+        for value in (111, 112, 113, 114, 115):
+            _commit_rip_distance(r1, value)
+    finally:
+        _zebra_signal(r1, "CONT")
+
+    t.join(timeout=25)
+    assert not t.is_alive(), "STREAM overflow collector did not return in time"
+    assert "OUT_OF_RANGE" in received["raw"]
 
 
 def test_subscribe_closes_cleanly_when_mgmtd_stops(tgen):
