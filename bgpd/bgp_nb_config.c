@@ -4983,6 +4983,14 @@ static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode, int ups,
 		*afi_out = AFI_IP;  *safi_out = SAFI_UNICAST;
 	} else if (strstr(afi_safi_id, "ipv6-unicast")) {
 		*afi_out = AFI_IP6; *safi_out = SAFI_UNICAST;
+	} else if (strstr(afi_safi_id, "ipv4-multicast")) {
+		*afi_out = AFI_IP;  *safi_out = SAFI_MULTICAST;
+	} else if (strstr(afi_safi_id, "ipv6-multicast")) {
+		*afi_out = AFI_IP6; *safi_out = SAFI_MULTICAST;
+	} else if (strstr(afi_safi_id, "ipv4-flowspec")) {
+		*afi_out = AFI_IP;  *safi_out = SAFI_FLOWSPEC;
+	} else if (strstr(afi_safi_id, "ipv6-flowspec")) {
+		*afi_out = AFI_IP6; *safi_out = SAFI_FLOWSPEC;
 	} else if (strstr(afi_safi_id, "l2vpn-evpn")) {
 		*afi_out = AFI_L2VPN; *safi_out = SAFI_EVPN;
 	} else if (strstr(afi_safi_id, "l2vpn-vpls")) {
