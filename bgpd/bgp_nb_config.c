@@ -2339,25 +2339,63 @@ int bgp_global_graceful_shutdown_enable_destroy(
  *   .../bgp/global/suppress-fib-pending  (presence container)
  *
  * apply_finish reads adv-delay (default 1000ms) and calls
- * bgp_suppress_fib_pending_set(bgp, true, delay). Destroy unsets.
+ * suppress-fib-pending is a plain boolean leaf; the advertisement
+ * delay rides in the when-guarded sibling suppress-fib-pending-delay
+ * (default 1000 ms, so it never sees a destroy).
  */
-void bgp_global_suppress_fib_pending_apply_finish(
-	struct nb_cb_apply_finish_args *args)
+int bgp_global_suppress_fib_pending_modify(struct nb_cb_modify_args *args)
 {
 	struct bgp *bgp;
+	bool on;
 	uint16_t delay = BGP_DEFAULT_SUPPRESS_FIB_ADV_DELAY;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
 
 	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
 	if (!bgp)
-		return;
+		return NB_ERR;
 
-	if (yang_dnode_exists(args->dnode, "adv-delay"))
-		delay = yang_dnode_get_uint16(args->dnode, "adv-delay");
-	bgp_suppress_fib_pending_set(bgp, true, delay);
-	return;
+	on = yang_dnode_get_bool(args->dnode, NULL);
+	if (on &&
+	    yang_dnode_exists(args->dnode, "../suppress-fib-pending-delay"))
+		delay = yang_dnode_get_uint16(
+			args->dnode, "../suppress-fib-pending-delay");
+	bgp_suppress_fib_pending_set(bgp, on, delay);
+	return NB_OK;
 }
 
-int bgp_global_suppress_fib_pending_destroy(struct nb_cb_destroy_args *args)
+int bgp_global_suppress_fib_pending_delay_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	if (!bgp)
+		return NB_ERR;
+
+	/* when-guarded by suppress-fib-pending = true; re-apply. */
+	bgp_suppress_fib_pending_set(bgp, true,
+				     yang_dnode_get_uint16(args->dnode, NULL));
+	return NB_OK;
+}
+
+int bgp_global_suppress_fib_pending_delay_destroy(
+	struct nb_cb_destroy_args *args)
 {
 	struct bgp *bgp;
 
@@ -2374,7 +2412,15 @@ int bgp_global_suppress_fib_pending_destroy(struct nb_cb_destroy_args *args)
 	if (!bgp)
 		return NB_OK;
 
-	bgp_suppress_fib_pending_set(bgp, false,
+	/*
+	 * The leaf also vanishes when its when-guard goes false because
+	 * the same transaction turned suppress-fib-pending off -- that
+	 * modify already cleared the state, so don't re-enable it here.
+	 */
+	if (!CHECK_FLAG(bgp->flags, BGP_FLAG_SUPPRESS_FIB_PENDING))
+		return NB_OK;
+
+	bgp_suppress_fib_pending_set(bgp, true,
 				     BGP_DEFAULT_SUPPRESS_FIB_ADV_DELAY);
 	return NB_OK;
 }
@@ -6340,7 +6386,16 @@ void bgp_global_shutdown_cli_show(struct vty *vty,
 void bgp_global_suppress_fib_pending_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
-	if (yang_dnode_get_bool(dnode, NULL))
+	const char *delay = NULL;
+
+	if (!yang_dnode_get_bool(dnode, NULL))
+		return;
+	if (yang_dnode_exists(dnode, "../suppress-fib-pending-delay"))
+		delay = yang_dnode_get_string(dnode,
+					      "../suppress-fib-pending-delay");
+	if (delay && strcmp(delay, "1000"))
+		vty_out(vty, " bgp suppress-fib-pending %s\n", delay);
+	else
 		vty_out(vty, " bgp suppress-fib-pending\n");
 }
 

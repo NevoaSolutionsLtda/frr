@@ -164,9 +164,11 @@ int bgp_global_peer_type_multipath_relax_destroy(
 	struct nb_cb_destroy_args *args);
 int bgp_global_graceful_shutdown_enable_modify(struct nb_cb_modify_args *args);
 int bgp_global_graceful_shutdown_enable_destroy(struct nb_cb_destroy_args *args);
-void bgp_global_suppress_fib_pending_apply_finish(
-	struct nb_cb_apply_finish_args *args);
-int bgp_global_suppress_fib_pending_destroy(struct nb_cb_destroy_args *args);
+int bgp_global_suppress_fib_pending_modify(struct nb_cb_modify_args *args);
+int bgp_global_suppress_fib_pending_delay_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_suppress_fib_pending_delay_destroy(
+	struct nb_cb_destroy_args *args);
 int bgp_global_advertisement_delay_global_modify(
 	struct nb_cb_modify_args *args);
 int bgp_global_advertisement_delay_global_destroy(
