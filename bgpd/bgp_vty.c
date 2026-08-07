@@ -1734,8 +1734,26 @@ static const char *bgp_nb_af_yang_name(afi_t afi, safi_t safi)
 	return NULL;
 }
 
-static void bgp_nb_peer_af_flag_dual(struct vty *vty, const char *peer_arg,
-				     const char *xpath_leaf, bool set)
+/*
+ * Per-AF config nodes live inside a per-AFI container named after the
+ * afi-safi identity (post-#22844 model). l2vpn-vpls has no per-AFI
+ * container, so those sessions get no NB dual-write.
+ */
+static const char *bgp_nb_af_container_name(const char *af_name)
+{
+	const char *p = strchr(af_name, ':');
+
+	if (!p)
+		return NULL;
+	if (strmatch(p + 1, "l2vpn-vpls"))
+		return NULL;
+	return p + 1;
+}
+
+/* Nodes directly in the afi-safi list entry (e.g. enabled). */
+static void bgp_nb_peer_af_entry_flag_dual(struct vty *vty,
+					   const char *peer_arg,
+					   const char *xpath_leaf, bool set)
 {
 	struct bgp *bgp;
 	const char *af_name;
@@ -1751,12 +1769,78 @@ static void bgp_nb_peer_af_flag_dual(struct vty *vty, const char *peer_arg,
 	af_name = bgp_nb_af_yang_name(afi, safi);
 	if (!af_name)
 		return;
-	snprintf(xpath, sizeof(xpath),
+	snprintfrr(xpath, sizeof(xpath),
 		 "./afi-safis/afi-safi[afi-safi-name='%s']/%s",
 		 af_name, xpath_leaf);
 	nb_cli_enqueue_change(vty, xpath,
 			      set ? NB_OP_MODIFY : NB_OP_DESTROY,
 			      set ? "true" : NULL);
+	(void)nb_cli_apply_changes(vty, BGP_NEIGHBOR_XPATH, "frr-bgp:bgp",
+				   bgp_nb_cpp_name(bgp), bgp_nb_vrf_key(bgp),
+				   peer_arg);
+}
+
+static void bgp_nb_peer_af_flag_dual(struct vty *vty, const char *peer_arg,
+				     const char *xpath_leaf, bool set)
+{
+	struct bgp *bgp;
+	const char *af_name;
+	const char *cont;
+	char xpath[256];
+	afi_t afi = bgp_node_afi(vty);
+	safi_t safi = bgp_node_safi(vty);
+
+	if (!bgp_arg_is_ip_peer(peer_arg))
+		return;
+	bgp = VTY_GET_CONTEXT(bgp);
+	if (!bgp)
+		return;
+	af_name = bgp_nb_af_yang_name(afi, safi);
+	if (!af_name)
+		return;
+	cont = bgp_nb_af_container_name(af_name);
+	if (!cont)
+		return;
+	snprintfrr(xpath, sizeof(xpath),
+		 "./afi-safis/afi-safi[afi-safi-name='%s']/%s/%s",
+		 af_name, cont, xpath_leaf);
+	nb_cli_enqueue_change(vty, xpath,
+			      set ? NB_OP_MODIFY : NB_OP_DESTROY,
+			      set ? "true" : NULL);
+	(void)nb_cli_apply_changes(vty, BGP_NEIGHBOR_XPATH, "frr-bgp:bgp",
+				   bgp_nb_cpp_name(bgp), bgp_nb_vrf_key(bgp),
+				   peer_arg);
+}
+
+/* Per-AF leaf-list dual write (e.g. encapsulation/type entries). */
+static void bgp_nb_peer_af_leaflist_dual(struct vty *vty,
+					 const char *peer_arg,
+					 const char *xpath_leaf,
+					 const char *value, bool set)
+{
+	struct bgp *bgp;
+	const char *af_name;
+	const char *cont;
+	char xpath[256];
+	afi_t afi = bgp_node_afi(vty);
+	safi_t safi = bgp_node_safi(vty);
+
+	if (!bgp_arg_is_ip_peer(peer_arg))
+		return;
+	bgp = VTY_GET_CONTEXT(bgp);
+	if (!bgp)
+		return;
+	af_name = bgp_nb_af_yang_name(afi, safi);
+	if (!af_name)
+		return;
+	cont = bgp_nb_af_container_name(af_name);
+	if (!cont)
+		return;
+	snprintfrr(xpath, sizeof(xpath),
+		 "./afi-safis/afi-safi[afi-safi-name='%s']/%s/%s",
+		 af_name, cont, xpath_leaf);
+	nb_cli_enqueue_change(vty, xpath,
+			      set ? NB_OP_CREATE : NB_OP_DESTROY, value);
 	(void)nb_cli_apply_changes(vty, BGP_NEIGHBOR_XPATH, "frr-bgp:bgp",
 				   bgp_nb_cpp_name(bgp), bgp_nb_vrf_key(bgp),
 				   peer_arg);
@@ -1772,6 +1856,7 @@ static void bgp_nb_peer_af_value_dual(struct vty *vty, const char *peer_arg,
 {
 	struct bgp *bgp;
 	const char *af_name;
+	const char *cont;
 	char xpath[256];
 	afi_t afi = bgp_node_afi(vty);
 	safi_t safi = bgp_node_safi(vty);
@@ -1784,9 +1869,12 @@ static void bgp_nb_peer_af_value_dual(struct vty *vty, const char *peer_arg,
 	af_name = bgp_nb_af_yang_name(afi, safi);
 	if (!af_name)
 		return;
-	snprintf(xpath, sizeof(xpath),
-		 "./afi-safis/afi-safi[afi-safi-name='%s']/%s",
-		 af_name, xpath_leaf);
+	cont = bgp_nb_af_container_name(af_name);
+	if (!cont)
+		return;
+	snprintfrr(xpath, sizeof(xpath),
+		 "./afi-safis/afi-safi[afi-safi-name='%s']/%s/%s",
+		 af_name, cont, xpath_leaf);
 	nb_cli_enqueue_change(vty, xpath,
 			      value ? NB_OP_MODIFY : NB_OP_DESTROY, value);
 	(void)nb_cli_apply_changes(vty, BGP_NEIGHBOR_XPATH, "frr-bgp:bgp",
@@ -2353,14 +2441,16 @@ DEFPY_YANG (bgp_suppress_fib_pending,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
 	if (no) {
-		nb_cli_enqueue_change(vty, "./suppress-fib-pending",
+		nb_cli_enqueue_change(vty, "./suppress-fib-pending-delay",
 				      NB_OP_DESTROY, NULL);
+		nb_cli_enqueue_change(vty, "./suppress-fib-pending",
+				      NB_OP_MODIFY, "false");
 	} else {
 		nb_cli_enqueue_change(vty, "./suppress-fib-pending",
-				      NB_OP_CREATE, NULL);
+				      NB_OP_MODIFY, "true");
 		if (delay_str)
 			nb_cli_enqueue_change(vty,
-				"./suppress-fib-pending/adv-delay",
+				"./suppress-fib-pending-delay",
 				NB_OP_MODIFY, delay_str);
 	}
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
@@ -2980,7 +3070,7 @@ DEFPY_YANG (bgp_advertisement_delay, bgp_advertisement_delay_cmd,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
-	nb_cli_enqueue_change(vty, "./advertisement-delay-global",
+	nb_cli_enqueue_change(vty, "./global-config-timers/advertisement-delay-time",
 			      NB_OP_MODIFY, delay_str);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -2996,7 +3086,7 @@ DEFPY_YANG (no_bgp_advertisement_delay, no_bgp_advertisement_delay_cmd,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
-	nb_cli_enqueue_change(vty, "./advertisement-delay-global",
+	nb_cli_enqueue_change(vty, "./global-config-timers/advertisement-delay-time",
 			      NB_OP_DESTROY, NULL);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -3385,7 +3475,7 @@ DEFPY_YANG (bgp_minimum_holdtime, bgp_minimum_holdtime_cmd,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
-	nb_cli_enqueue_change(vty, "./minimum-holdtime", NB_OP_MODIFY,
+	nb_cli_enqueue_change(vty, "./global-config-timers/minimum-holdtime", NB_OP_MODIFY,
 			      holdtime_str);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -3401,7 +3491,7 @@ DEFPY_YANG (no_bgp_minimum_holdtime, no_bgp_minimum_holdtime_cmd,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
-	nb_cli_enqueue_change(vty, "./minimum-holdtime", NB_OP_DESTROY, NULL);
+	nb_cli_enqueue_change(vty, "./global-config-timers/minimum-holdtime", NB_OP_DESTROY, NULL);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
 				    bgp_nb_vrf_key(bgp));
@@ -3417,11 +3507,11 @@ DEFPY_YANG (bgp_tcp_keepalive, bgp_tcp_keepalive_cmd,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
-	nb_cli_enqueue_change(vty, "./tcp-keepalive/idle",
+	nb_cli_enqueue_change(vty, "./global-config-timers/tcp-keepalive/idle",
 			      NB_OP_MODIFY, idle_str);
-	nb_cli_enqueue_change(vty, "./tcp-keepalive/interval",
+	nb_cli_enqueue_change(vty, "./global-config-timers/tcp-keepalive/interval",
 			      NB_OP_MODIFY, intvl_str);
-	nb_cli_enqueue_change(vty, "./tcp-keepalive/probes",
+	nb_cli_enqueue_change(vty, "./global-config-timers/tcp-keepalive/probes",
 			      NB_OP_MODIFY, probes_str);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -3439,7 +3529,14 @@ DEFPY_YANG (no_bgp_tcp_keepalive, no_bgp_tcp_keepalive_cmd,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
-	nb_cli_enqueue_change(vty, "./tcp-keepalive", NB_OP_DESTROY, NULL);
+	nb_cli_enqueue_change(vty, "./global-config-timers/tcp-keepalive/idle",
+			      NB_OP_DESTROY, NULL);
+	nb_cli_enqueue_change(vty,
+			      "./global-config-timers/tcp-keepalive/interval",
+			      NB_OP_DESTROY, NULL);
+	nb_cli_enqueue_change(vty,
+			      "./global-config-timers/tcp-keepalive/probes",
+			      NB_OP_DESTROY, NULL);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
 				    bgp_nb_vrf_key(bgp));
@@ -3554,10 +3651,10 @@ DEFPY_YANG (bgp_enforce_first_as_yang,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
 	if (no)
-		nb_cli_enqueue_change(vty, "./enforce-first-as-global",
+		nb_cli_enqueue_change(vty, "./enforce-first-as",
 				      NB_OP_DESTROY, NULL);
 	else
-		nb_cli_enqueue_change(vty, "./enforce-first-as-global",
+		nb_cli_enqueue_change(vty, "./enforce-first-as",
 				      NB_OP_MODIFY, "true");
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -4216,11 +4313,11 @@ DEFPY_YANG (bgp_graceful_restart_notification,
 
 	if (no)
 		nb_cli_enqueue_change(vty,
-			"./graceful-restart-notification",
+			"./graceful-restart/notification",
 			NB_OP_DESTROY, NULL);
 	else
 		nb_cli_enqueue_change(vty,
-			"./graceful-restart-notification",
+			"./graceful-restart/notification",
 			NB_OP_MODIFY, "true");
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -4560,7 +4657,7 @@ DEFPY_YANG (neighbor_graceful_shutdown,
 			ret = bgp_peer_soft_reset(vty, neighbor_str, peer,
 						  clear_group);
 		bgp_nb_peer_value_dual(vty, neighbor_str,
-				       "./peer-graceful-shutdown",
+				       "./graceful-shutdown",
 				       no ? NULL : "true");
 	}
 	return ret;
@@ -4638,7 +4735,7 @@ DEFPY_YANG (bgp_llgr_stalepath_time, bgp_llgr_stalepath_time_cmd,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
 	nb_cli_enqueue_change(vty,
-		"./long-lived-graceful-restart-stale-time",
+		"./graceful-restart/long-lived-stale-time",
 		NB_OP_MODIFY, llgr_time_str);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -4655,7 +4752,7 @@ DEFPY_YANG (no_bgp_llgr_stalepath_time, no_bgp_llgr_stalepath_time_cmd,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
 	nb_cli_enqueue_change(vty,
-		"./long-lived-graceful-restart-stale-time",
+		"./graceful-restart/long-lived-stale-time",
 		NB_OP_DESTROY, NULL);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -4816,11 +4913,11 @@ DEFPY_YANG (bgp_bestpath_aigp,
 
 	if (no)
 		nb_cli_enqueue_change(vty,
-			"./route-selection-options/bestpath-aigp",
+			"./route-selection-options/compare-aigp",
 			NB_OP_DESTROY, NULL);
 	else
 		nb_cli_enqueue_change(vty,
-			"./route-selection-options/bestpath-aigp",
+			"./route-selection-options/compare-aigp",
 			NB_OP_MODIFY, "true");
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -4914,11 +5011,11 @@ DEFPY_YANG (bgp_bestpath_use_imported_attrs,
 
 	if (no)
 		nb_cli_enqueue_change(vty,
-			"./route-selection-options/bestpath-use-imported-attributes",
+			"./route-selection-options/use-imported-attributes",
 			NB_OP_DESTROY, NULL);
 	else
 		nb_cli_enqueue_change(vty,
-			"./route-selection-options/bestpath-use-imported-attributes",
+			"./route-selection-options/use-imported-attributes",
 			NB_OP_MODIFY, "true");
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -5160,7 +5257,7 @@ DEFPY_YANG (bgp_bestpath_bw, bgp_bestpath_bw_cmd,
 		vty_out(vty, "%% Bandwidth configuration must be specified\n");
 		return CMD_ERR_INCOMPLETE;
 	}
-	nb_cli_enqueue_change(vty, "./bestpath-bandwidth",
+	nb_cli_enqueue_change(vty, "./route-selection-options/bandwidth-handling",
 			      NB_OP_MODIFY, bw_cfg);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -5179,7 +5276,7 @@ DEFPY_YANG (no_bgp_bestpath_bw, no_bgp_bestpath_bw_cmd,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
-	nb_cli_enqueue_change(vty, "./bestpath-bandwidth",
+	nb_cli_enqueue_change(vty, "./route-selection-options/bandwidth-handling",
 			      NB_OP_DESTROY, NULL);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -5333,7 +5430,9 @@ DEFPY_YANG (bgp_default_software_version_capability,
 	else
 		nb_cli_enqueue_change(vty,
 			"./default-software-version-capability",
-			NB_OP_MODIFY, latest_encoding ? "new" : "old");
+			NB_OP_MODIFY,
+			latest_encoding ? "latest-encoding"
+					: "old-encoding");
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
 				    bgp_nb_vrf_key(bgp));
@@ -5907,9 +6006,8 @@ DEFPY_YANG (bgp_shutdown_msg, bgp_shutdown_msg_cmd,
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 
-	nb_cli_enqueue_change(vty, "./administrative-shutdown",
-			      NB_OP_CREATE, NULL);
-	nb_cli_enqueue_change(vty, "./administrative-shutdown/message",
+	nb_cli_enqueue_change(vty, "./shutdown", NB_OP_MODIFY, "true");
+	nb_cli_enqueue_change(vty, "./shutdown-message",
 			      NB_OP_MODIFY, msgstr);
 	ret = nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				   bgp_nb_cpp_name(bgp),
@@ -5923,8 +6021,7 @@ DEFPY_YANG (bgp_shutdown, bgp_shutdown_cmd, "bgp shutdown",
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
-	nb_cli_enqueue_change(vty, "./administrative-shutdown",
-			      NB_OP_CREATE, NULL);
+	nb_cli_enqueue_change(vty, "./shutdown", NB_OP_MODIFY, "true");
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
 				    bgp_nb_vrf_key(bgp));
@@ -5936,8 +6033,9 @@ DEFPY_YANG (no_bgp_shutdown, no_bgp_shutdown_cmd, "no bgp shutdown",
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
-	nb_cli_enqueue_change(vty, "./administrative-shutdown",
+	nb_cli_enqueue_change(vty, "./shutdown-message",
 			      NB_OP_DESTROY, NULL);
+	nb_cli_enqueue_change(vty, "./shutdown", NB_OP_MODIFY, "false");
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
 				    bgp_nb_vrf_key(bgp));
@@ -6715,7 +6813,7 @@ DEFPY_YANG (neighbor_activate,
 
 	ret = peer_activate(p, bgp_node_afi(vty), bgp_node_safi(vty));
 	if (ret == 0)
-		bgp_nb_peer_af_flag_dual(vty, peer, "enabled", true);
+		bgp_nb_peer_af_entry_flag_dual(vty, peer, "enabled", true);
 	return bgp_vty_return(vty, ret);
 }
 
@@ -6741,7 +6839,7 @@ DEFPY_YANG (no_neighbor_activate,
 
 	ret = peer_deactivate(p, bgp_node_afi(vty), bgp_node_safi(vty));
 	if (ret == 0)
-		bgp_nb_peer_af_flag_dual(vty, peer, "enabled", false);
+		bgp_nb_peer_af_entry_flag_dual(vty, peer, "enabled", false);
 	return bgp_vty_return(vty, ret);
 }
 
@@ -7007,12 +7105,12 @@ DEFPY_YANG(neighbor_shutdown_rtt,
 		struct bgp *bgp = VTY_GET_CONTEXT(bgp);
 		if (bgp) {
 			snprintf(rbuf, sizeof(rbuf), "%ld", rtt);
-			nb_cli_enqueue_change(vty, "./shutdown-rtt/rtt",
+			nb_cli_enqueue_change(vty, "./admin-shutdown/rtt",
 					      NB_OP_MODIFY, rbuf);
 			if (ct) {
 				snprintf(cbuf, sizeof(cbuf), "%ld", ct);
 				nb_cli_enqueue_change(vty,
-					"./shutdown-rtt/count",
+					"./admin-shutdown/rtt-count",
 					NB_OP_MODIFY, cbuf);
 			}
 			(void)nb_cli_apply_changes(vty, BGP_NEIGHBOR_XPATH,
@@ -7046,7 +7144,10 @@ DEFPY_YANG(no_neighbor_shutdown_rtt,
 	p->rtt_keepalive_conf = 1;
 	ret = peer_flag_unset_vty(vty, peer, PEER_FLAG_RTT_SHUTDOWN);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_value_dual(vty, peer, "./shutdown-rtt", NULL);
+		bgp_nb_peer_value_dual(vty, peer, "./admin-shutdown/rtt-count",
+				       NULL);
+		bgp_nb_peer_value_dual(vty, peer, "./admin-shutdown/rtt",
+				       NULL);
 	return ret;
 }
 
@@ -7149,7 +7250,7 @@ DEFPY_YANG (neighbor_capability_fqdn,
 		return CMD_WARNING_CONFIG_FAILED;
 
 	ret = bgp_nb_peer_flag_dual(vty, neighbor, PEER_FLAG_CAPABILITY_FQDN,
-				    !no, "./capability-fqdn");
+				    !no, "./capability-options/fqdn-capability");
 
 	bgp_capability_send(peer->connection, AFI_IP, SAFI_UNICAST,
 			    CAPABILITY_CODE_FQDN,
@@ -7299,12 +7400,12 @@ DEFPY_YANG(neighbor_capability_software_version,
 	if (ret == CMD_SUCCESS && bgp_arg_is_ip_peer(neighbor)) {
 		struct bgp *bgp = VTY_GET_CONTEXT(bgp);
 		if (bgp) {
-			const char *xp = latest_encoding
-				? "./capability-software-version-latest-encoding"
-				: "./capability-software-version";
-			nb_cli_enqueue_change(vty, xp,
-					      no ? NB_OP_DESTROY : NB_OP_MODIFY,
-					      no ? NULL : "true");
+			const char *val = latest_encoding ? "latest-encoding"
+							  : "old-encoding";
+			nb_cli_enqueue_change(vty,
+				"./capability-options/software-version-capability",
+				no ? NB_OP_DESTROY : NB_OP_MODIFY,
+				no ? NULL : val);
 			(void)nb_cli_apply_changes(vty, BGP_NEIGHBOR_XPATH,
 						   "frr-bgp:bgp",
 						   bgp_nb_cpp_name(bgp),
@@ -7334,7 +7435,7 @@ DEFPY_YANG(neighbor_capability_link_local,
 
 	ret = bgp_nb_peer_flag_dual(vty, neighbor,
 				    PEER_FLAG_CAPABILITY_LINK_LOCAL, !no,
-				    "./capability-link-local");
+				    "./capability-options/link-local-capability");
 
 	bgp_capability_send(peer->connection, AFI_IP, SAFI_UNICAST,
 			    CAPABILITY_CODE_LINK_LOCAL,
@@ -7536,7 +7637,7 @@ DEFPY_YANG (neighbor_nexthop_self,
 				       bgp_node_safi(vty),
 				       PEER_FLAG_NEXTHOP_SELF);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "next-hop-self", true);
+		bgp_nb_peer_af_flag_dual(vty, peer, "nexthop-self/next-hop-self", true);
 	return ret;
 }
 
@@ -7558,7 +7659,7 @@ DEFPY_YANG (neighbor_nexthop_self_force,
 				       bgp_node_safi(vty),
 				       PEER_FLAG_FORCE_NEXTHOP_SELF);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "next-hop-self-force",
+		bgp_nb_peer_af_flag_dual(vty, peer, "nexthop-self/next-hop-self-force",
 					 true);
 	return ret;
 }
@@ -7589,7 +7690,7 @@ DEFPY_YANG (no_neighbor_nexthop_self,
 					 bgp_node_safi(vty),
 					 PEER_FLAG_NEXTHOP_SELF);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "next-hop-self", false);
+		bgp_nb_peer_af_flag_dual(vty, peer, "nexthop-self/next-hop-self", false);
 	return ret;
 }
 
@@ -7611,7 +7712,7 @@ DEFPY_YANG (no_neighbor_nexthop_self_force,
 					 bgp_node_safi(vty),
 					 PEER_FLAG_FORCE_NEXTHOP_SELF);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "next-hop-self-force",
+		bgp_nb_peer_af_flag_dual(vty, peer, "nexthop-self/next-hop-self-force",
 					 false);
 	return ret;
 }
@@ -7642,7 +7743,7 @@ DEFPY_YANG (neighbor_as_override,
 				       bgp_node_safi(vty),
 				       PEER_FLAG_AS_OVERRIDE);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "as-override", true);
+		bgp_nb_peer_af_flag_dual(vty, peer, "as-path-options/replace-peer-as", true);
 	return ret;
 }
 
@@ -7663,7 +7764,7 @@ DEFPY_YANG (no_neighbor_as_override,
 					 bgp_node_safi(vty),
 					 PEER_FLAG_AS_OVERRIDE);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "as-override", false);
+		bgp_nb_peer_af_flag_dual(vty, peer, "as-path-options/replace-peer-as", false);
 	return ret;
 }
 
@@ -7684,7 +7785,7 @@ DEFPY_YANG (neighbor_remove_private_as,
 				       bgp_node_safi(vty),
 				       PEER_FLAG_REMOVE_PRIVATE_AS);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "remove-private-as", true);
+		bgp_nb_peer_af_flag_dual(vty, peer, "private-as/remove-private-as", true);
 	return ret;
 }
 
@@ -7705,7 +7806,7 @@ DEFPY_YANG (neighbor_remove_private_as_all,
 				       bgp_node_safi(vty),
 				       PEER_FLAG_REMOVE_PRIVATE_AS_ALL);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "remove-private-as-all",
+		bgp_nb_peer_af_flag_dual(vty, peer, "private-as/remove-private-as-all",
 					 true);
 	return ret;
 }
@@ -7730,7 +7831,7 @@ DEFPY_YANG (neighbor_remove_private_as_replace_as,
 				       PEER_FLAG_REMOVE_PRIVATE_AS_REPLACE);
 	if (ret == CMD_SUCCESS)
 		bgp_nb_peer_af_flag_dual(vty, peer,
-					 "remove-private-as-replace-as", true);
+					 "private-as/remove-private-as-replace", true);
 	return ret;
 }
 
@@ -7755,7 +7856,7 @@ DEFPY_YANG (neighbor_remove_private_as_all_replace_as,
 				       PEER_FLAG_REMOVE_PRIVATE_AS_ALL_REPLACE);
 	if (ret == CMD_SUCCESS)
 		bgp_nb_peer_af_flag_dual(vty, peer,
-			"remove-private-as-all-replace-as", true);
+			"private-as/remove-private-as-all-replace", true);
 	return ret;
 }
 
@@ -7780,7 +7881,7 @@ DEFPY_YANG (no_neighbor_remove_private_as,
 					 bgp_node_safi(vty),
 					 PEER_FLAG_REMOVE_PRIVATE_AS);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "remove-private-as", false);
+		bgp_nb_peer_af_flag_dual(vty, peer, "private-as/remove-private-as", false);
 	return ret;
 }
 
@@ -7803,7 +7904,7 @@ DEFPY_YANG (no_neighbor_remove_private_as_all,
 					 bgp_node_safi(vty),
 					 PEER_FLAG_REMOVE_PRIVATE_AS_ALL);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "remove-private-as-all",
+		bgp_nb_peer_af_flag_dual(vty, peer, "private-as/remove-private-as-all",
 					 false);
 	return ret;
 }
@@ -7829,7 +7930,7 @@ DEFPY_YANG (no_neighbor_remove_private_as_replace_as,
 					 PEER_FLAG_REMOVE_PRIVATE_AS_REPLACE);
 	if (ret == CMD_SUCCESS)
 		bgp_nb_peer_af_flag_dual(vty, peer,
-			"remove-private-as-replace-as", false);
+			"private-as/remove-private-as-replace", false);
 	return ret;
 }
 
@@ -7855,7 +7956,7 @@ DEFPY_YANG (no_neighbor_remove_private_as_all_replace_as,
 					 PEER_FLAG_REMOVE_PRIVATE_AS_ALL_REPLACE);
 	if (ret == CMD_SUCCESS)
 		bgp_nb_peer_af_flag_dual(vty, peer,
-			"remove-private-as-all-replace-as", false);
+			"private-as/remove-private-as-all-replace", false);
 	return ret;
 }
 
@@ -7881,7 +7982,7 @@ DEFPY_YANG (neighbor_send_community,
 				       bgp_node_safi(vty),
 				       PEER_FLAG_SEND_COMMUNITY);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "send-community-standard",
+		bgp_nb_peer_af_flag_dual(vty, peer, "send-community/send-community",
 					 true);
 	return ret;
 }
@@ -7903,7 +8004,7 @@ DEFPY_YANG (no_neighbor_send_community,
 					 bgp_node_safi(vty),
 					 PEER_FLAG_SEND_COMMUNITY);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "send-community-standard",
+		bgp_nb_peer_af_flag_dual(vty, peer, "send-community/send-community",
 					 false);
 	return ret;
 }
@@ -7968,13 +8069,13 @@ DEFPY_YANG (neighbor_send_community_type,
 	if (ret == 0) {
 		if (std)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"send-community-standard", true);
+				"send-community/send-community", true);
 		if (ext)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"send-community-extended", true);
+				"send-community/send-ext-community", true);
 		if (large)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"send-community-large", true);
+				"send-community/send-large-community", true);
 	}
 	return ret;
 }
@@ -8045,13 +8146,13 @@ DEFPY_YANG (no_neighbor_send_community_type,
 	if (ret == 0) {
 		if (std)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"send-community-standard", false);
+				"send-community/send-community", false);
 		if (ext)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"send-community-extended", false);
+				"send-community/send-ext-community", false);
 		if (large)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"send-community-large", false);
+				"send-community/send-large-community", false);
 	}
 	return ret;
 }
@@ -8097,7 +8198,7 @@ DEFPY_YANG (neighbor_ecommunity_rpki,
 	 * send-community-extended-rpki YANG leaf is a future enhancement. */
 	if (ret == CMD_SUCCESS)
 		bgp_nb_peer_af_flag_dual(vty, neighbor,
-					 "send-community-extended", !no);
+					 "send-community/send-ext-community", !no);
 	return ret;
 }
 
@@ -8115,7 +8216,7 @@ DEFPY_YANG (neighbor_soft_reconfiguration,
 				       PEER_FLAG_SOFT_RECONFIG);
 	if (ret == CMD_SUCCESS)
 		bgp_nb_peer_af_flag_dual(vty, peer,
-					 "soft-reconfiguration-inbound", true);
+					 "soft-reconfiguration", true);
 	return ret;
 }
 
@@ -8140,7 +8241,7 @@ DEFPY_YANG (no_neighbor_soft_reconfiguration,
 					 PEER_FLAG_SOFT_RECONFIG);
 	if (ret == CMD_SUCCESS)
 		bgp_nb_peer_af_flag_dual(vty, peer,
-					 "soft-reconfiguration-inbound", false);
+					 "soft-reconfiguration", false);
 	return ret;
 }
 
@@ -8169,7 +8270,7 @@ DEFPY_YANG (neighbor_route_reflector_client,
 				   bgp_node_safi(vty),
 				   PEER_FLAG_REFLECTOR_CLIENT);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "route-reflector-client",
+		bgp_nb_peer_af_flag_dual(vty, peer, "route-reflector/route-reflector-client",
 					 true);
 	return ret;
 }
@@ -8192,7 +8293,7 @@ DEFPY_YANG (no_neighbor_route_reflector_client,
 					 bgp_node_safi(vty),
 					 PEER_FLAG_REFLECTOR_CLIENT);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "route-reflector-client",
+		bgp_nb_peer_af_flag_dual(vty, peer, "route-reflector/route-reflector-client",
 					 false);
 	return ret;
 }
@@ -8221,7 +8322,7 @@ DEFPY_YANG (neighbor_route_server_client,
 				   bgp_node_safi(vty),
 				   PEER_FLAG_RSERVER_CLIENT);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "route-server-client",
+		bgp_nb_peer_af_flag_dual(vty, peer, "route-server/route-server-client",
 					 true);
 	return ret;
 }
@@ -8244,7 +8345,7 @@ DEFPY_YANG (no_neighbor_route_server_client,
 					 bgp_node_safi(vty),
 					 PEER_FLAG_RSERVER_CLIENT);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "route-server-client",
+		bgp_nb_peer_af_flag_dual(vty, peer, "route-server/route-server-client",
 					 false);
 	return ret;
 }
@@ -8358,13 +8459,13 @@ DEFPY_YANG (neighbor_attr_unchanged,
 	if (ret == 0) {
 		if (aspath)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"attribute-unchanged-as-path", true);
+				"attr-unchanged/as-path-unchanged", true);
 		if (nexthop)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"attribute-unchanged-next-hop", true);
+				"attr-unchanged/next-hop-unchanged", true);
 		if (med)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"attribute-unchanged-med", true);
+				"attr-unchanged/med-unchanged", true);
 	}
 	return ret;
 }
@@ -8428,13 +8529,13 @@ DEFPY_YANG (no_neighbor_attr_unchanged,
 	if (ret == 0) {
 		if (aspath)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"attribute-unchanged-as-path", false);
+				"attr-unchanged/as-path-unchanged", false);
 		if (nexthop)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"attribute-unchanged-next-hop", false);
+				"attr-unchanged/next-hop-unchanged", false);
 		if (med)
 			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"attribute-unchanged-med", false);
+				"attr-unchanged/med-unchanged", false);
 	}
 	return ret;
 }
@@ -9130,10 +9231,8 @@ DEFPY_YANG (neighbor_port,
 	char buf[8];
 
 	ret = peer_port_vty(vty, peer, AFI_IP, portnum_str);
-	if (ret == CMD_SUCCESS) {
-		snprintf(buf, sizeof(buf), "%ld", portnum);
-		bgp_nb_peer_value_dual(vty, peer, "./port", buf);
-	}
+	/* No NB write: the post-#22844 model does not carry neighbor port. */
+	(void)buf;
 	return ret;
 }
 
@@ -9147,8 +9246,8 @@ DEFPY_YANG (no_neighbor_port,
 	    "TCP port number\n")
 {
 	int ret = peer_port_vty(vty, peer, AFI_IP, NULL);
-	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_value_dual(vty, peer, "./port", NULL);
+
+	/* No NB write: the post-#22844 model does not carry neighbor port. */
 	return ret;
 }
 
@@ -9196,7 +9295,7 @@ DEFPY_YANG (neighbor_weight,
 	int ret = peer_weight_set_vty(vty, peer, bgp_node_afi(vty),
 				      bgp_node_safi(vty), wt_str);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_value_dual(vty, peer, "weight", wt_str);
+		bgp_nb_peer_af_value_dual(vty, peer, "weight/weight-attribute", wt_str);
 	return ret;
 }
 
@@ -9218,7 +9317,7 @@ DEFPY_YANG (no_neighbor_weight,
 	int ret = peer_weight_unset_vty(vty, peer, bgp_node_afi(vty),
 					bgp_node_safi(vty));
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_value_dual(vty, peer, "weight", NULL);
+		bgp_nb_peer_af_value_dual(vty, peer, "weight/weight-attribute", NULL);
 	return ret;
 }
 
@@ -9458,13 +9557,13 @@ DEFPY_YANG (neighbor_timers_delayopen,
 	if (!interval) {
 		if (peer_timers_delayopen_unset(peer))
 			return CMD_WARNING_CONFIG_FAILED;
-		bgp_nb_peer_value_dual(vty, neighbor, "./timers-delayopen",
+		bgp_nb_peer_value_dual(vty, neighbor, "./timers/delayopen",
 				       NULL);
 	} else {
 		if (peer_timers_delayopen_set(peer, interval))
 			return CMD_WARNING_CONFIG_FAILED;
 		snprintf(buf, sizeof(buf), "%ld", interval);
-		bgp_nb_peer_value_dual(vty, neighbor, "./timers-delayopen",
+		bgp_nb_peer_value_dual(vty, neighbor, "./timers/delayopen",
 				       buf);
 	}
 	return CMD_SUCCESS;
@@ -9488,7 +9587,7 @@ DEFPY_YANG (no_neighbor_timers_delayopen,
 
 	if (peer_timers_delayopen_unset(peer))
 		return CMD_WARNING_CONFIG_FAILED;
-	bgp_nb_peer_value_dual(vty, neighbor, "./timers-delayopen", NULL);
+	bgp_nb_peer_value_dual(vty, neighbor, "./timers/delayopen", NULL);
 	return CMD_SUCCESS;
 }
 
@@ -9964,11 +10063,11 @@ DEFPY_YANG (bgp_condadv_period, bgp_condadv_period_cmd,
 
 	if (no)
 		nb_cli_enqueue_change(vty,
-			"./conditional-advertisement-period",
+			"./global-config-timers/conditional-advertisement-timer",
 			NB_OP_DESTROY, NULL);
 	else
 		nb_cli_enqueue_change(vty,
-			"./conditional-advertisement-period",
+			"./global-config-timers/conditional-advertisement-timer",
 			NB_OP_MODIFY, period_str);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -9986,10 +10085,10 @@ DEFPY_YANG (bgp_def_originate_eval, bgp_def_originate_eval_cmd,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
 	if (no)
-		nb_cli_enqueue_change(vty, "./default-originate-timer",
+		nb_cli_enqueue_change(vty, "./global-config-timers/default-originate-timer",
 				      NB_OP_DESTROY, NULL);
 	else
-		nb_cli_enqueue_change(vty, "./default-originate-timer",
+		nb_cli_enqueue_change(vty, "./global-config-timers/default-originate-timer",
 				      NB_OP_MODIFY, timer_str);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
@@ -10675,7 +10774,7 @@ DEFPY_YANG (neighbor_allowas_in,
 	if (ret == 0 && !origin) {
 		char buf[8];
 		snprintf(buf, sizeof(buf), "%d", allow_num_val);
-		bgp_nb_peer_af_value_dual(vty, neighbor, "allowas-in", buf);
+		bgp_nb_peer_af_value_dual(vty, neighbor, "as-path-options/allow-own-as", buf);
 	}
 	return bgp_vty_return(vty, ret);
 }
@@ -10712,7 +10811,7 @@ DEFPY_YANG (no_neighbor_allowas_in,
 	ret = peer_allowas_in_unset(peer, bgp_node_afi(vty),
 				    bgp_node_safi(vty));
 	if (ret == 0)
-		bgp_nb_peer_af_value_dual(vty, neighbor, "allowas-in", NULL);
+		bgp_nb_peer_af_value_dual(vty, neighbor, "as-path-options/allow-own-as", NULL);
 	return bgp_vty_return(vty, ret);
 }
 
@@ -10808,8 +10907,8 @@ DEFPY_YANG (neighbor_encapsulation_srv6_or_mpls,
 			ret = peer_af_flag_set_vty(vty, peer_str, afi, safi,
 				PEER_FLAG_CONFIG_ENCAPSULATION_SRV6);
 		if (ret == CMD_SUCCESS)
-			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"encapsulation-srv6", !no);
+			bgp_nb_peer_af_leaflist_dual(vty, peer_str,
+				"encapsulation/type", "srv6", !no);
 		return ret;
 	}
 	if (mpls) {
@@ -10820,8 +10919,8 @@ DEFPY_YANG (neighbor_encapsulation_srv6_or_mpls,
 			ret = peer_af_flag_set_vty(vty, peer_str, afi, safi,
 				PEER_FLAG_CONFIG_ENCAPSULATION_MPLS);
 		if (ret == CMD_SUCCESS)
-			bgp_nb_peer_af_flag_dual(vty, peer_str,
-				"encapsulation-mpls", !no);
+			bgp_nb_peer_af_leaflist_dual(vty, peer_str,
+				"encapsulation/type", "mpls", !no);
 		return ret;
 	}
 	return CMD_WARNING_CONFIG_FAILED;
@@ -10846,7 +10945,7 @@ DEFPY_YANG(neighbor_disable_addpath_rx,
 	ret = peer_af_flag_set_vty(vty, peer, afi, safi,
 				   PEER_FLAG_DISABLE_ADDPATH_RX);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "disable-addpath-rx", true);
+		bgp_nb_peer_af_flag_dual(vty, peer, "add-paths/disable-addpath-rx", true);
 	return ret;
 }
 
@@ -10869,7 +10968,7 @@ DEFPY_YANG(no_neighbor_disable_addpath_rx,
 	ret = peer_af_flag_unset_vty(vty, peer, afi, safi,
 				     PEER_FLAG_DISABLE_ADDPATH_RX);
 	if (ret == CMD_SUCCESS)
-		bgp_nb_peer_af_flag_dual(vty, peer, "disable-addpath-rx",
+		bgp_nb_peer_af_flag_dual(vty, peer, "add-paths/disable-addpath-rx",
 					 false);
 	return ret;
 }
@@ -10889,7 +10988,7 @@ DEFPY_YANG (neighbor_addpath_tx_all_paths,
 
 	bgp_addpath_set_peer_type(p, bgp_node_afi(vty), bgp_node_safi(vty),
 				  BGP_ADDPATH_ALL, 0);
-	bgp_nb_peer_af_flag_dual(vty, peer, "addpath-tx-all-paths", true);
+	bgp_nb_peer_af_value_dual(vty, peer, "add-paths/path-type", "all");
 	return CMD_SUCCESS;
 }
 
@@ -10924,7 +11023,7 @@ DEFPY_YANG (no_neighbor_addpath_tx_all_paths,
 
 	bgp_addpath_set_peer_type(p, bgp_node_afi(vty), bgp_node_safi(vty),
 				  BGP_ADDPATH_NONE, 0);
-	bgp_nb_peer_af_flag_dual(vty, peer, "addpath-tx-all-paths", false);
+	bgp_nb_peer_af_value_dual(vty, peer, "add-paths/path-type", NULL);
 	return CMD_SUCCESS;
 }
 
@@ -10988,7 +11087,7 @@ DEFPY_YANG (neighbor_addpath_tx_bestpath_per_as,
 
 	bgp_addpath_set_peer_type(p, bgp_node_afi(vty), bgp_node_safi(vty),
 				  BGP_ADDPATH_BEST_PER_AS, 0);
-	bgp_nb_peer_af_flag_dual(vty, peer, "addpath-tx-bestpath-per-as", true);
+	bgp_nb_peer_af_value_dual(vty, peer, "add-paths/path-type", "per-as");
 	return CMD_SUCCESS;
 }
 
@@ -11023,7 +11122,7 @@ DEFPY_YANG (no_neighbor_addpath_tx_bestpath_per_as,
 
 	bgp_addpath_set_peer_type(p, bgp_node_afi(vty), bgp_node_safi(vty),
 				  BGP_ADDPATH_NONE, 0);
-	bgp_nb_peer_af_flag_dual(vty, peer, "addpath-tx-bestpath-per-as",
+	bgp_nb_peer_af_value_dual(vty, peer, "add-paths/path-type",
 				 false);
 	return CMD_SUCCESS;
 }
@@ -11042,7 +11141,7 @@ DEFPY_YANG(
 	"Detect AS loops before sending to neighbor\n")
 {
 	return bgp_nb_peer_flag_dual(vty, neighbor, PEER_FLAG_AS_LOOP_DETECTION,
-				     true, "./as-loop-detection");
+				     true, "./sender-as-path-loop-detection");
 }
 
 DEFPY_YANG (neighbor_addpath_paths_limit,
@@ -11112,7 +11211,7 @@ DEFPY_YANG(
 	"Detect AS loops before sending to neighbor\n")
 {
 	return bgp_nb_peer_flag_dual(vty, neighbor, PEER_FLAG_AS_LOOP_DETECTION,
-				     false, "./as-loop-detection");
+				     false, "./sender-as-path-loop-detection");
 }
 
 DEFPY_YANG(neighbor_path_attribute_discard,
@@ -21605,11 +21704,11 @@ DEFPY_YANG(bgp_ls_distribute_bgp_fabric,
 		}
 	}
 
-	nb_cli_enqueue_change(vty, "./bgp-ls-distribute", NB_OP_CREATE, NULL);
+	nb_cli_enqueue_change(vty, "./afi-safis/afi-safi[afi-safi-name='frr-rt:link-state']/link-state/distribute/bgp-fabric-link-state", NB_OP_CREATE, NULL);
 	if (instance_id_str) {
 		char buf[32];
 		snprintf(buf, sizeof(buf), "%" PRIu64, instance_id);
-		nb_cli_enqueue_change(vty, "./bgp-ls-distribute/instance-id",
+		nb_cli_enqueue_change(vty, "./afi-safis/afi-safi[afi-safi-name='frr-rt:link-state']/link-state/distribute/bgp-fabric-link-state/instance-id",
 				      NB_OP_MODIFY, buf);
 	}
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
@@ -21640,7 +21739,7 @@ DEFPY_YANG(no_bgp_ls_distribute_bgp_fabric,
 		}
 	}
 
-	nb_cli_enqueue_change(vty, "./bgp-ls-distribute", NB_OP_DESTROY, NULL);
+	nb_cli_enqueue_change(vty, "./afi-safis/afi-safi[afi-safi-name='frr-rt:link-state']/link-state/distribute/bgp-fabric-link-state", NB_OP_DESTROY, NULL);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
 				    bgp_nb_vrf_key(bgp));
@@ -21699,7 +21798,7 @@ DEFPY_YANG(neighbor_ls_local_link_id,
 	if (bgp_arg_is_ip_peer(peer_str)) {
 		char buf[16];
 		snprintf(buf, sizeof(buf), "%ld", link_id);
-		bgp_nb_peer_value_dual(vty, peer_str, "./ls-local-link-id",
+		bgp_nb_peer_value_dual(vty, peer_str, "./local-link-id",
 				       buf);
 	}
 	return CMD_SUCCESS;
@@ -21736,7 +21835,7 @@ DEFPY_YANG(no_neighbor_ls_local_link_id,
 		bgp_ls_originate_bgp_link(bgp, peer);
 
 	if (bgp_arg_is_ip_peer(peer_str))
-		bgp_nb_peer_value_dual(vty, peer_str, "./ls-local-link-id",
+		bgp_nb_peer_value_dual(vty, peer_str, "./local-link-id",
 				       NULL);
 	return CMD_SUCCESS;
 }
@@ -21775,7 +21874,7 @@ DEFPY_YANG(neighbor_ls_remote_link_id,
 	if (bgp_arg_is_ip_peer(peer_str)) {
 		char buf[16];
 		snprintf(buf, sizeof(buf), "%ld", link_id);
-		bgp_nb_peer_value_dual(vty, peer_str, "./ls-remote-link-id",
+		bgp_nb_peer_value_dual(vty, peer_str, "./remote-link-id",
 				       buf);
 	}
 	return CMD_SUCCESS;
@@ -21812,7 +21911,7 @@ DEFPY_YANG(no_neighbor_ls_remote_link_id,
 		bgp_ls_originate_bgp_link(bgp, peer);
 
 	if (bgp_arg_is_ip_peer(peer_str))
-		bgp_nb_peer_value_dual(vty, peer_str, "./ls-remote-link-id",
+		bgp_nb_peer_value_dual(vty, peer_str, "./remote-link-id",
 				       NULL);
 	return CMD_SUCCESS;
 }

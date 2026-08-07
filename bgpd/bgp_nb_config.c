@@ -993,7 +993,7 @@ int bgp_global_minimum_holdtime_modify(struct nb_cb_modify_args *args)
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_ERR;
 
@@ -1014,7 +1014,7 @@ int bgp_global_minimum_holdtime_destroy(struct nb_cb_destroy_args *args)
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_OK;
 
@@ -1169,7 +1169,7 @@ int bgp_global_bgp_ls_distribute_create(struct nb_cb_create_args *args)
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 7);
 	if (!bgp)
 		return NB_ERR;
 
@@ -1203,7 +1203,7 @@ int bgp_global_bgp_ls_distribute_destroy(struct nb_cb_destroy_args *args)
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 7);
 	if (!bgp || !bgp->ls_info)
 		return NB_OK;
 
@@ -1214,9 +1214,10 @@ int bgp_global_bgp_ls_distribute_destroy(struct nb_cb_destroy_args *args)
 
 /*
  * XPath:
- *   .../bgp/global/bgp-ls-distribute/instance-id
+ *   .../bgp/global/afi-safis/afi-safi/link-state/distribute/
+ *     bgp-fabric-link-state/instance-id
  *
- * Depth 4. If distribution is already enabled and the instance-id changes,
+ * Depth 8. If distribution is already enabled and the instance-id changes,
  * withdraw existing NLRIs then re-export with the new id.
  */
 int bgp_global_bgp_ls_distribute_instance_id_modify(
@@ -1234,7 +1235,7 @@ int bgp_global_bgp_ls_distribute_instance_id_modify(
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 8);
 	if (!bgp || !bgp->ls_info)
 		return NB_ERR;
 
@@ -1436,9 +1437,9 @@ int bgp_global_default_software_version_capability_modify(
 	UNSET_FLAG(bgp->flags, BGP_FLAG_SOFT_VERSION_CAPABILITY_NEW);
 
 	value = yang_dnode_get_string(args->dnode, NULL);
-	if (strmatch(value, "old"))
+	if (strmatch(value, "old-encoding"))
 		SET_FLAG(bgp->flags, BGP_FLAG_SOFT_VERSION_CAPABILITY_OLD);
-	else if (strmatch(value, "new"))
+	else if (strmatch(value, "latest-encoding"))
 		SET_FLAG(bgp->flags, BGP_FLAG_SOFT_VERSION_CAPABILITY_NEW);
 	return NB_OK;
 }
@@ -1477,9 +1478,21 @@ void bgp_global_tcp_keepalive_apply_finish(struct nb_cb_apply_finish_args *args)
 {
 	struct bgp *bgp;
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return;
+
+	/*
+	 * Non-presence container with three optional leaves: the setter
+	 * needs all of idle/interval/probes, so anything less (including
+	 * a client deleting them to disable keepalives) means unset.
+	 */
+	if (!yang_dnode_exists(args->dnode, "idle") ||
+	    !yang_dnode_exists(args->dnode, "interval") ||
+	    !yang_dnode_exists(args->dnode, "probes")) {
+		bgp_tcp_keepalive_unset(bgp);
+		return;
+	}
 
 	bgp_tcp_keepalive_set(bgp,
 			      yang_dnode_get_uint16(args->dnode, "idle"),
@@ -1487,27 +1500,6 @@ void bgp_global_tcp_keepalive_apply_finish(struct nb_cb_apply_finish_args *args)
 			      (uint16_t)yang_dnode_get_uint8(args->dnode,
 							      "probes"));
 	return;
-}
-
-int bgp_global_tcp_keepalive_destroy(struct nb_cb_destroy_args *args)
-{
-	struct bgp *bgp;
-
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-		return NB_OK;
-	case NB_EV_APPLY:
-		break;
-	}
-
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
-	if (!bgp)
-		return NB_OK;
-
-	bgp_tcp_keepalive_unset(bgp);
-	return NB_OK;
 }
 
 /*
@@ -1775,28 +1767,64 @@ int bgp_global_graceful_restart_selection_deferral_time_destroy(
  * XPath:
  *   .../bgp/global/administrative-shutdown  (presence container)
  *
- * apply_finish fires once on the container after any leaves (message)
- * are written. Calls bgp_shutdown_enable(bgp, message_or_null). Destroy
- * calls bgp_shutdown_disable.
+ * The leaf carries the enable bit; the when-guarded sibling
+ * shutdown-message carries the RFC 8203 text. The modify callback reads
+ * both from the candidate tree, so whichever order the transaction
+ * applies them in, the net state is right.
  */
-void bgp_global_administrative_shutdown_apply_finish(
-	struct nb_cb_apply_finish_args *args)
+int bgp_global_shutdown_modify(struct nb_cb_modify_args *args)
 {
 	struct bgp *bgp;
 	const char *msg = NULL;
 
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+
 	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
 	if (!bgp)
-		return;
+		return NB_ERR;
 
-	if (yang_dnode_exists(args->dnode, "message"))
-		msg = yang_dnode_get_string(args->dnode, "message");
+	if (!yang_dnode_get_bool(args->dnode, NULL)) {
+		bgp_shutdown_disable(bgp);
+		return NB_OK;
+	}
 
+	if (yang_dnode_exists(args->dnode, "../shutdown-message"))
+		msg = yang_dnode_get_string(args->dnode,
+					    "../shutdown-message");
 	bgp_shutdown_enable(bgp, msg);
-	return;
+	return NB_OK;
 }
 
-int bgp_global_administrative_shutdown_destroy(struct nb_cb_destroy_args *args)
+int bgp_global_shutdown_message_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	if (!bgp)
+		return NB_ERR;
+
+	/* when-guarded by shutdown=true; re-apply with the new message. */
+	bgp_shutdown_enable(bgp, yang_dnode_get_string(args->dnode, NULL));
+	return NB_OK;
+}
+
+int bgp_global_shutdown_message_destroy(struct nb_cb_destroy_args *args)
 {
 	struct bgp *bgp;
 
@@ -1813,7 +1841,14 @@ int bgp_global_administrative_shutdown_destroy(struct nb_cb_destroy_args *args)
 	if (!bgp)
 		return NB_OK;
 
-	bgp_shutdown_disable(bgp);
+	/*
+	 * If the same transaction also cleared the shutdown leaf, its
+	 * modify already disabled shutdown -- don't re-enable it here.
+	 */
+	if (!CHECK_FLAG(bgp->flags, BGP_FLAG_SHUTDOWN))
+		return NB_OK;
+
+	bgp_shutdown_enable(bgp, NULL);
 	return NB_OK;
 }
 
@@ -2363,7 +2398,7 @@ int bgp_global_advertisement_delay_global_modify(struct nb_cb_modify_args *args)
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_ERR;
 
@@ -2385,7 +2420,7 @@ int bgp_global_advertisement_delay_global_destroy(
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_OK;
 
@@ -2590,7 +2625,7 @@ int bgp_global_conditional_advertisement_period_modify(
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_ERR;
 
@@ -2614,7 +2649,7 @@ int bgp_global_conditional_advertisement_period_destroy(
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp || bgp->condition_check_period ==
 		    DEFAULT_CONDITIONAL_ROUTES_POLL_TIME)
 		return NB_OK;
@@ -2645,7 +2680,7 @@ int bgp_global_default_originate_timer_modify(struct nb_cb_modify_args *args)
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_ERR;
 
@@ -2670,7 +2705,7 @@ int bgp_global_default_originate_timer_destroy(
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_OK;
 
@@ -2703,7 +2738,7 @@ int bgp_global_bestpath_bandwidth_modify(struct nb_cb_modify_args *args)
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_ERR;
 
@@ -2740,7 +2775,7 @@ int bgp_global_bestpath_bandwidth_destroy(struct nb_cb_destroy_args *args)
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_OK;
 
@@ -2788,7 +2823,7 @@ int bgp_global_graceful_restart_notification_modify(
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_ERR;
 
@@ -2815,7 +2850,7 @@ int bgp_global_graceful_restart_notification_destroy(
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_OK;
 
@@ -2847,7 +2882,7 @@ int bgp_global_long_lived_graceful_restart_stale_time_modify(
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_ERR;
 
@@ -2871,7 +2906,7 @@ int bgp_global_long_lived_graceful_restart_stale_time_destroy(
 		break;
 	}
 
-	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 4);
 	if (!bgp)
 		return NB_OK;
 
@@ -4605,26 +4640,40 @@ int bgp_neighbor_capabilities_negotiate_destroy(struct nb_cb_destroy_args *args)
 /* per-AF per-peer flag toggles */
 
 /*
- * Per-AF flag leaves live at:
- *   .../neighbors/neighbor[remote-address]/afi-safis/afi-safi[afi-safi-name]/<leaf>
+ * Per-AF config nodes live under per-AFI containers inside the
+ * afi-safi list entry:
+ *   .../neighbors/neighbor[remote-address]/afi-safis/
+ *     afi-safi[afi-safi-name]/<afi-container>[/<group>]/<leaf>
  *
- * Depth from leaf to control-plane-protocol = 6.
- * neighbor xpath relative = "../../.." (up afi-safi → afi-safis → neighbor).
+ * `ups` is the number of `../` hops from the callback dnode to the
+ * afi-safi list entry: 1 for a node directly in the entry, 2 for
+ * <afi-container>/<leaf>, 3 for <afi-container>/<group>/<leaf>.
+ * The neighbor entry sits 2 more hops up, and depth-to-CPP = 5 + ups.
  *
- * AFI/SAFI extracted from the parent afi-safi-name key.
+ * AFI/SAFI extracted from the afi-safi-name key.
  */
-static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode,
+static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode, int ups,
 				 struct peer **peer_out, afi_t *afi_out,
 				 safi_t *safi_out)
 {
+	static const char *const af_rel[] = { NULL, "../", "../../",
+					      "../../../" };
+	static const char *const peer_rel[] = { NULL, "../../..",
+						"../../../..",
+						"../../../../.." };
 	struct peer *peer;
 	const char *afi_safi_id;
+	char key_xpath[64];
 
-	peer = bgp_nb_lookup_peer(dnode, "../../..", 6);
+	assert(ups >= 1 && ups <= 3);
+
+	peer = bgp_nb_lookup_peer(dnode, peer_rel[ups], 5 + ups);
 	if (!peer)
 		return -1;
 
-	afi_safi_id = yang_dnode_get_string(dnode, "../afi-safi-name");
+	snprintfrr(key_xpath, sizeof(key_xpath), "%safi-safi-name",
+		 af_rel[ups]);
+	afi_safi_id = yang_dnode_get_string(dnode, "%s", key_xpath);
 	if (!afi_safi_id)
 		return -1;
 
@@ -4653,7 +4702,7 @@ static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode,
 }
 
 static int peer_af_flag_toggle_modify(struct nb_cb_modify_args *args,
-				      uint64_t flag)
+				      uint64_t flag, int ups)
 {
 	struct peer *peer;
 	afi_t afi;
@@ -4667,7 +4716,7 @@ static int peer_af_flag_toggle_modify(struct nb_cb_modify_args *args,
 	case NB_EV_APPLY:
 		break;
 	}
-	if (bgp_nb_peer_af_lookup(args->dnode, &peer, &afi, &safi) < 0)
+	if (bgp_nb_peer_af_lookup(args->dnode, ups, &peer, &afi, &safi) < 0)
 		return NB_ERR;
 	if (yang_dnode_get_bool(args->dnode, NULL))
 		peer_af_flag_set(peer, afi, safi, flag);
@@ -4677,7 +4726,7 @@ static int peer_af_flag_toggle_modify(struct nb_cb_modify_args *args,
 }
 
 static int peer_af_flag_toggle_destroy(struct nb_cb_destroy_args *args,
-				       uint64_t flag)
+				       uint64_t flag, int ups)
 {
 	struct peer *peer;
 	afi_t afi;
@@ -4691,77 +4740,130 @@ static int peer_af_flag_toggle_destroy(struct nb_cb_destroy_args *args,
 	case NB_EV_APPLY:
 		break;
 	}
-	if (bgp_nb_peer_af_lookup(args->dnode, &peer, &afi, &safi) < 0)
+	if (bgp_nb_peer_af_lookup(args->dnode, ups, &peer, &afi, &safi) < 0)
 		return NB_OK;
 	peer_af_flag_unset(peer, afi, safi, flag);
 	return NB_OK;
 }
 
-#define BGP_NEIGHBOR_AF_FLAG_CB(_name, _flag)                                  \
+#define BGP_NEIGHBOR_AF_FLAG_CB(_name, _flag, _ups)                            \
 	int bgp_neighbor_af_##_name##_modify(struct nb_cb_modify_args *args)   \
 	{                                                                      \
-		return peer_af_flag_toggle_modify(args, (_flag));              \
+		return peer_af_flag_toggle_modify(args, (_flag), (_ups));      \
 	}                                                                      \
 	int bgp_neighbor_af_##_name##_destroy(struct nb_cb_destroy_args *args) \
 	{                                                                      \
-		return peer_af_flag_toggle_destroy(args, (_flag));             \
+		return peer_af_flag_toggle_destroy(args, (_flag), (_ups));     \
 	}
 
-BGP_NEIGHBOR_AF_FLAG_CB(soft_reconfig_in, PEER_FLAG_SOFT_RECONFIG)
-BGP_NEIGHBOR_AF_FLAG_CB(as_override, PEER_FLAG_AS_OVERRIDE)
-BGP_NEIGHBOR_AF_FLAG_CB(rr_client, PEER_FLAG_REFLECTOR_CLIENT)
-BGP_NEIGHBOR_AF_FLAG_CB(rs_client, PEER_FLAG_RSERVER_CLIENT)
-BGP_NEIGHBOR_AF_FLAG_CB(nexthop_self, PEER_FLAG_NEXTHOP_SELF)
-BGP_NEIGHBOR_AF_FLAG_CB(nexthop_self_force, PEER_FLAG_FORCE_NEXTHOP_SELF)
-BGP_NEIGHBOR_AF_FLAG_CB(remove_private_as, PEER_FLAG_REMOVE_PRIVATE_AS)
-BGP_NEIGHBOR_AF_FLAG_CB(remove_private_as_all, PEER_FLAG_REMOVE_PRIVATE_AS_ALL)
+/* ups: hops from the leaf to the afi-safi list entry (see lookup above). */
+BGP_NEIGHBOR_AF_FLAG_CB(soft_reconfig_in, PEER_FLAG_SOFT_RECONFIG, 2)
+BGP_NEIGHBOR_AF_FLAG_CB(as_override, PEER_FLAG_AS_OVERRIDE, 3)
+BGP_NEIGHBOR_AF_FLAG_CB(rr_client, PEER_FLAG_REFLECTOR_CLIENT, 3)
+BGP_NEIGHBOR_AF_FLAG_CB(rs_client, PEER_FLAG_RSERVER_CLIENT, 3)
+BGP_NEIGHBOR_AF_FLAG_CB(nexthop_self, PEER_FLAG_NEXTHOP_SELF, 3)
+BGP_NEIGHBOR_AF_FLAG_CB(nexthop_self_force, PEER_FLAG_FORCE_NEXTHOP_SELF, 3)
+BGP_NEIGHBOR_AF_FLAG_CB(remove_private_as, PEER_FLAG_REMOVE_PRIVATE_AS, 3)
+BGP_NEIGHBOR_AF_FLAG_CB(remove_private_as_all, PEER_FLAG_REMOVE_PRIVATE_AS_ALL,
+			3)
 BGP_NEIGHBOR_AF_FLAG_CB(remove_private_as_replace,
-			PEER_FLAG_REMOVE_PRIVATE_AS_REPLACE)
+			PEER_FLAG_REMOVE_PRIVATE_AS_REPLACE, 3)
 BGP_NEIGHBOR_AF_FLAG_CB(remove_private_as_all_replace,
-			PEER_FLAG_REMOVE_PRIVATE_AS_ALL_REPLACE)
+			PEER_FLAG_REMOVE_PRIVATE_AS_ALL_REPLACE, 3)
 BGP_NEIGHBOR_AF_FLAG_CB(nexthop_local_unchanged,
-			PEER_FLAG_NEXTHOP_LOCAL_UNCHANGED)
-BGP_NEIGHBOR_AF_FLAG_CB(send_community, PEER_FLAG_SEND_COMMUNITY)
-BGP_NEIGHBOR_AF_FLAG_CB(send_ext_community, PEER_FLAG_SEND_EXT_COMMUNITY)
-BGP_NEIGHBOR_AF_FLAG_CB(send_large_community, PEER_FLAG_SEND_LARGE_COMMUNITY)
-BGP_NEIGHBOR_AF_FLAG_CB(graceful_shutdown, PEER_FLAG_GRACEFUL_SHUTDOWN)
-BGP_NEIGHBOR_AF_FLAG_CB(accept_own, PEER_FLAG_ACCEPT_OWN)
-BGP_NEIGHBOR_AF_FLAG_CB(disable_addpath_rx, PEER_FLAG_DISABLE_ADDPATH_RX)
-BGP_NEIGHBOR_AF_FLAG_CB(encapsulation_srv6,
-			PEER_FLAG_CONFIG_ENCAPSULATION_SRV6)
-BGP_NEIGHBOR_AF_FLAG_CB(encapsulation_mpls,
-			PEER_FLAG_CONFIG_ENCAPSULATION_MPLS)
+			PEER_FLAG_NEXTHOP_LOCAL_UNCHANGED, 2)
+BGP_NEIGHBOR_AF_FLAG_CB(send_community, PEER_FLAG_SEND_COMMUNITY, 3)
+BGP_NEIGHBOR_AF_FLAG_CB(send_ext_community, PEER_FLAG_SEND_EXT_COMMUNITY, 3)
+BGP_NEIGHBOR_AF_FLAG_CB(send_large_community, PEER_FLAG_SEND_LARGE_COMMUNITY,
+			3)
+BGP_NEIGHBOR_AF_FLAG_CB(accept_own, PEER_FLAG_ACCEPT_OWN, 2)
+BGP_NEIGHBOR_AF_FLAG_CB(disable_addpath_rx, PEER_FLAG_DISABLE_ADDPATH_RX, 3)
 BGP_NEIGHBOR_AF_FLAG_CB(attr_unchanged_as_path,
-			PEER_FLAG_AS_PATH_UNCHANGED)
+			PEER_FLAG_AS_PATH_UNCHANGED, 3)
 BGP_NEIGHBOR_AF_FLAG_CB(attr_unchanged_next_hop,
-			PEER_FLAG_NEXTHOP_UNCHANGED)
+			PEER_FLAG_NEXTHOP_UNCHANGED, 3)
 BGP_NEIGHBOR_AF_FLAG_CB(attr_unchanged_med,
-			PEER_FLAG_MED_UNCHANGED)
+			PEER_FLAG_MED_UNCHANGED, 3)
 
 /*
- * addpath-tx-all-paths and addpath-tx-bestpath-per-as drive
- * bgp_addpath_set_peer_type with an enum strategy, not a peer flag bit.
+ * encapsulation/type is a leaf-list: each entry maps to one
+ * PEER_FLAG_CONFIG_ENCAPSULATION_* bit.
  */
-static int bgp_neighbor_af_addpath_strat_modify(struct nb_cb_modify_args *args,
-						enum bgp_addpath_strat strat)
+static uint64_t bgp_nb_encapsulation_flag(const char *type)
+{
+	if (strmatch(type, "mpls"))
+		return PEER_FLAG_CONFIG_ENCAPSULATION_MPLS;
+	if (strmatch(type, "srv6"))
+		return PEER_FLAG_CONFIG_ENCAPSULATION_SRV6;
+	if (strmatch(type, "srv6-relax"))
+		return PEER_FLAG_CONFIG_ENCAPSULATION_SRV6_RELAX;
+	return 0;
+}
+
+int bgp_neighbor_af_encapsulation_type_create(struct nb_cb_create_args *args)
 {
 	struct peer *peer;
 	afi_t afi;
 	safi_t safi;
+	uint64_t flag;
 
-	if (args->event != NB_EV_APPLY)
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
 		return NB_OK;
-	if (bgp_nb_peer_af_lookup(args->dnode, &peer, &afi, &safi) < 0)
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
 		return NB_ERR;
-	if (yang_dnode_get_bool(args->dnode, NULL))
-		bgp_addpath_set_peer_type(peer, afi, safi, strat, 0);
-	else
-		bgp_addpath_set_peer_type(peer, afi, safi, BGP_ADDPATH_NONE, 0);
+	flag = bgp_nb_encapsulation_flag(
+		yang_dnode_get_string(args->dnode, NULL));
+	if (!flag)
+		return NB_ERR;
+	peer_af_flag_set(peer, afi, safi, flag);
 	return NB_OK;
 }
 
-static int bgp_neighbor_af_addpath_strat_destroy(struct nb_cb_destroy_args *args,
-						 enum bgp_addpath_strat strat)
+int bgp_neighbor_af_encapsulation_type_destroy(struct nb_cb_destroy_args *args)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	uint64_t flag;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_OK;
+	flag = bgp_nb_encapsulation_flag(
+		yang_dnode_get_string(args->dnode, NULL));
+	if (flag)
+		peer_af_flag_unset(peer, afi, safi, flag);
+	return NB_OK;
+}
+
+/*
+ * add-paths/path-type drives bgp_addpath_set_peer_type with an enum
+ * strategy, not a peer flag bit: all -> BGP_ADDPATH_ALL, per-as ->
+ * BGP_ADDPATH_BEST_PER_AS, none -> BGP_ADDPATH_NONE.
+ */
+static enum bgp_addpath_strat bgp_nb_addpath_strat(const char *path_type)
+{
+	if (strmatch(path_type, "all"))
+		return BGP_ADDPATH_ALL;
+	if (strmatch(path_type, "per-as"))
+		return BGP_ADDPATH_BEST_PER_AS;
+	return BGP_ADDPATH_NONE;
+}
+
+int bgp_neighbor_af_add_paths_path_type_modify(struct nb_cb_modify_args *args)
 {
 	struct peer *peer;
 	afi_t afi;
@@ -4769,32 +4871,27 @@ static int bgp_neighbor_af_addpath_strat_destroy(struct nb_cb_destroy_args *args
 
 	if (args->event != NB_EV_APPLY)
 		return NB_OK;
-	if (bgp_nb_peer_af_lookup(args->dnode, &peer, &afi, &safi) < 0)
-		return NB_OK;
-	if (peer->addpath_type[afi][safi] == strat)
-		bgp_addpath_set_peer_type(peer, afi, safi, BGP_ADDPATH_NONE, 0);
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_ERR;
+	bgp_addpath_set_peer_type(peer, afi, safi,
+				  bgp_nb_addpath_strat(yang_dnode_get_string(
+					  args->dnode, NULL)),
+				  0);
 	return NB_OK;
 }
 
-int bgp_neighbor_af_addpath_tx_all_modify(struct nb_cb_modify_args *args)
+int bgp_neighbor_af_add_paths_path_type_destroy(struct nb_cb_destroy_args *args)
 {
-	return bgp_neighbor_af_addpath_strat_modify(args, BGP_ADDPATH_ALL);
-}
-int bgp_neighbor_af_addpath_tx_all_destroy(struct nb_cb_destroy_args *args)
-{
-	return bgp_neighbor_af_addpath_strat_destroy(args, BGP_ADDPATH_ALL);
-}
-int bgp_neighbor_af_addpath_tx_bestpath_per_as_modify(
-	struct nb_cb_modify_args *args)
-{
-	return bgp_neighbor_af_addpath_strat_modify(args,
-						    BGP_ADDPATH_BEST_PER_AS);
-}
-int bgp_neighbor_af_addpath_tx_bestpath_per_as_destroy(
-	struct nb_cb_destroy_args *args)
-{
-	return bgp_neighbor_af_addpath_strat_destroy(args,
-						     BGP_ADDPATH_BEST_PER_AS);
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+
+	if (args->event != NB_EV_APPLY)
+		return NB_OK;
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_OK;
+	bgp_addpath_set_peer_type(peer, afi, safi, BGP_ADDPATH_NONE, 0);
+	return NB_OK;
 }
 
 /*
@@ -4815,7 +4912,7 @@ int bgp_neighbor_af_enabled_modify(struct nb_cb_modify_args *args)
 	case NB_EV_APPLY:
 		break;
 	}
-	if (bgp_nb_peer_af_lookup(args->dnode, &peer, &afi, &safi) < 0)
+	if (bgp_nb_peer_af_lookup(args->dnode, 1, &peer, &afi, &safi) < 0)
 		return NB_ERR;
 	if (yang_dnode_get_bool(args->dnode, NULL))
 		peer_activate(peer, afi, safi);
@@ -4838,7 +4935,7 @@ int bgp_neighbor_af_enabled_destroy(struct nb_cb_destroy_args *args)
 	case NB_EV_APPLY:
 		break;
 	}
-	if (bgp_nb_peer_af_lookup(args->dnode, &peer, &afi, &safi) < 0)
+	if (bgp_nb_peer_af_lookup(args->dnode, 1, &peer, &afi, &safi) < 0)
 		return NB_OK;
 	peer_deactivate(peer, afi, safi);
 	return NB_OK;
@@ -4854,31 +4951,90 @@ BGP_NEIGHBOR_FLAG_CB(extended_optional_parameters,
 BGP_NEIGHBOR_FLAG_CB(send_nexthop_characteristics,
 		     PEER_FLAG_SEND_NHC_ATTRIBUTE)
 BGP_NEIGHBOR_FLAG_CB(rpki_strict, PEER_FLAG_RPKI_STRICT)
-BGP_NEIGHBOR_FLAG_CB(capability_fqdn, PEER_FLAG_CAPABILITY_FQDN)
-BGP_NEIGHBOR_FLAG_CB(capability_link_local, PEER_FLAG_CAPABILITY_LINK_LOCAL)
 BGP_NEIGHBOR_FLAG_CB(as_loop_detection, PEER_FLAG_AS_LOOP_DETECTION)
-
-/*
- * capability-software-version + latest-encoding variant.
- * CLI: "neighbor X capability software-version [latest-encoding]" maps to
- *      PEER_FLAG_CAPABILITY_SOFT_VERSION_OLD (no latest), or
- *      PEER_FLAG_CAPABILITY_SOFT_VERSION_NEW (with latest).
- * YANG splits into 2 leaves: capability-software-version (enables either)
- * and capability-software-version-latest-encoding (selects NEW vs OLD).
- *
- * Implementation: capability-software-version leaf wires PEER_FLAG_CAPABILITY_SOFT_VERSION_OLD;
- * latest-encoding leaf wires PEER_FLAG_CAPABILITY_SOFT_VERSION_NEW. Caller
- * is responsible for clearing OLD when NEW is set (handled in CLI dispatch).
- */
-BGP_NEIGHBOR_FLAG_CB(capability_software_version,
-		     PEER_FLAG_CAPABILITY_SOFT_VERSION_OLD)
-BGP_NEIGHBOR_FLAG_CB(capability_software_version_latest_encoding,
-		     PEER_FLAG_CAPABILITY_SOFT_VERSION_NEW)
 BGP_NEIGHBOR_FLAG_CB(peer_graceful_shutdown, PEER_FLAG_GRACEFUL_SHUTDOWN)
 
 /*
+ * Capability leaves moved under the capability-options container:
+ * neighbor[remote-address]/capability-options/<leaf>, depth-to-CPP = 5,
+ * neighbor_rel = "../..".
+ */
+#define BGP_NEIGHBOR_CAPOPT_FLAG_CB(_name, _flag)                              \
+	int bgp_neighbor_##_name##_modify(struct nb_cb_modify_args *args)      \
+	{                                                                      \
+		return peer_flag_toggle_modify(args, (_flag), "../..", 5);     \
+	}                                                                      \
+	int bgp_neighbor_##_name##_destroy(struct nb_cb_destroy_args *args)    \
+	{                                                                      \
+		return peer_flag_toggle_destroy(args, (_flag), "../..", 5);    \
+	}
+
+BGP_NEIGHBOR_CAPOPT_FLAG_CB(capability_fqdn, PEER_FLAG_CAPABILITY_FQDN)
+BGP_NEIGHBOR_CAPOPT_FLAG_CB(capability_link_local,
+			    PEER_FLAG_CAPABILITY_LINK_LOCAL)
+
+/*
+ * capability-options/software-version-capability enumeration maps onto
+ * the two peer flag bits: disabled -> neither, old-encoding ->
+ * PEER_FLAG_CAPABILITY_SOFT_VERSION_OLD, latest-encoding ->
+ * PEER_FLAG_CAPABILITY_SOFT_VERSION_NEW.
+ */
+int bgp_neighbor_capability_software_version_modify(
+	struct nb_cb_modify_args *args)
+{
+	struct peer *peer;
+	const char *val;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	peer = bgp_nb_lookup_peer(args->dnode, "../..", 5);
+	if (!peer)
+		return NB_ERR;
+
+	val = yang_dnode_get_string(args->dnode, NULL);
+	if (strmatch(val, "old-encoding")) {
+		peer_flag_unset(peer, PEER_FLAG_CAPABILITY_SOFT_VERSION_NEW);
+		peer_flag_set(peer, PEER_FLAG_CAPABILITY_SOFT_VERSION_OLD);
+	} else if (strmatch(val, "latest-encoding")) {
+		peer_flag_unset(peer, PEER_FLAG_CAPABILITY_SOFT_VERSION_OLD);
+		peer_flag_set(peer, PEER_FLAG_CAPABILITY_SOFT_VERSION_NEW);
+	} else {
+		peer_flag_unset(peer, PEER_FLAG_CAPABILITY_SOFT_VERSION_OLD);
+		peer_flag_unset(peer, PEER_FLAG_CAPABILITY_SOFT_VERSION_NEW);
+	}
+	return NB_OK;
+}
+
+int bgp_neighbor_capability_software_version_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	struct peer *peer;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	peer = bgp_nb_lookup_peer(args->dnode, "../..", 5);
+	if (!peer)
+		return NB_OK;
+	peer_flag_unset(peer, PEER_FLAG_CAPABILITY_SOFT_VERSION_OLD);
+	peer_flag_unset(peer, PEER_FLAG_CAPABILITY_SOFT_VERSION_NEW);
+	return NB_OK;
+}
+
+/*
  * XPath:
- *   .../neighbors/neighbor[remote-address]/timers-delayopen
+ *   .../neighbors/neighbor[remote-address]/timers/delayopen
  */
 int bgp_neighbor_timers_delayopen_modify(struct nb_cb_modify_args *args)
 {
@@ -4893,7 +5049,7 @@ int bgp_neighbor_timers_delayopen_modify(struct nb_cb_modify_args *args)
 	case NB_EV_APPLY:
 		break;
 	}
-	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
+	peer = bgp_nb_lookup_peer(args->dnode, "../..", 5);
 	if (!peer)
 		return NB_ERR;
 	v = yang_dnode_get_uint16(args->dnode, NULL);
@@ -4913,7 +5069,7 @@ int bgp_neighbor_timers_delayopen_destroy(struct nb_cb_destroy_args *args)
 	case NB_EV_APPLY:
 		break;
 	}
-	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
+	peer = bgp_nb_lookup_peer(args->dnode, "../..", 5);
 	if (!peer)
 		return NB_OK;
 	peer_timers_delayopen_unset(peer);
@@ -4922,9 +5078,15 @@ int bgp_neighbor_timers_delayopen_destroy(struct nb_cb_destroy_args *args)
 
 /*
  * XPath:
- *   .../neighbors/neighbor[remote-address]/shutdown-rtt (apply_finish)
+ *   .../neighbors/neighbor[remote-address]/admin-shutdown (apply_finish)
+ *
+ * Only the rtt/rtt-count leaves are wired (parity with the old
+ * shutdown-rtt container); enable/message stay stubbed. The container is
+ * non-presence, so disabling is expressed by deleting the rtt leaf --
+ * handled by the rtt destroy callback below, and guarded here so a
+ * change to a stubbed sibling can't set the flag with no rtt configured.
  */
-void bgp_neighbor_shutdown_rtt_apply_finish(
+void bgp_neighbor_admin_shutdown_apply_finish(
 	struct nb_cb_apply_finish_args *args)
 {
 	struct peer *peer;
@@ -4932,17 +5094,16 @@ void bgp_neighbor_shutdown_rtt_apply_finish(
 	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
 	if (!peer)
 		return;
-	if (yang_dnode_exists(args->dnode, "./rtt"))
-		peer->rtt_expected = yang_dnode_get_uint16(args->dnode,
-							   "./rtt");
-	if (yang_dnode_exists(args->dnode, "./count"))
-		peer->rtt_keepalive_conf = yang_dnode_get_uint8(args->dnode,
-								"./count");
+	if (!yang_dnode_exists(args->dnode, "rtt"))
+		return;
+	peer->rtt_expected = yang_dnode_get_uint16(args->dnode, "rtt");
+	peer->rtt_keepalive_conf = yang_dnode_get_uint8(args->dnode,
+							"rtt-count");
 	peer_flag_set(peer, PEER_FLAG_RTT_SHUTDOWN);
 	return;
 }
 
-int bgp_neighbor_shutdown_rtt_destroy(struct nb_cb_destroy_args *args)
+int bgp_neighbor_admin_shutdown_rtt_destroy(struct nb_cb_destroy_args *args)
 {
 	struct peer *peer;
 
@@ -4954,7 +5115,7 @@ int bgp_neighbor_shutdown_rtt_destroy(struct nb_cb_destroy_args *args)
 	case NB_EV_APPLY:
 		break;
 	}
-	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
+	peer = bgp_nb_lookup_peer(args->dnode, "../..", 5);
 	if (!peer)
 		return NB_OK;
 	peer_flag_unset(peer, PEER_FLAG_RTT_SHUTDOWN);
@@ -5007,49 +5168,7 @@ int bgp_neighbor_tcp_mss_destroy(struct nb_cb_destroy_args *args)
 	return NB_OK;
 }
 
-/*
- * XPath:
- *   .../neighbors/neighbor[remote-address]/port
- */
-int bgp_neighbor_port_modify(struct nb_cb_modify_args *args)
-{
-	struct peer *peer;
-	uint16_t port;
 
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-		return NB_OK;
-	case NB_EV_APPLY:
-		break;
-	}
-	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
-	if (!peer)
-		return NB_ERR;
-	port = yang_dnode_get_uint16(args->dnode, NULL);
-	peer_port_set(peer, port);
-	return NB_OK;
-}
-
-int bgp_neighbor_port_destroy(struct nb_cb_destroy_args *args)
-{
-	struct peer *peer;
-
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-		return NB_OK;
-	case NB_EV_APPLY:
-		break;
-	}
-	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
-	if (!peer)
-		return NB_OK;
-	peer_port_unset(peer);
-	return NB_OK;
-}
 
 /*
  * XPath:
@@ -5680,8 +5799,20 @@ BGP_NEIGHBOR_BOOL_CLI_SHOW(disable_link_bw_encoding_ieee, "disable-link-bw-encod
 BGP_NEIGHBOR_BOOL_CLI_SHOW(extended_optional_parameters, "extended-optional-parameters")
 BGP_NEIGHBOR_BOOL_CLI_SHOW(send_nexthop_characteristics, "send-nexthop-characteristics")
 BGP_NEIGHBOR_BOOL_CLI_SHOW(rpki_strict, "rpki strict")
-BGP_NEIGHBOR_BOOL_CLI_SHOW(capability_fqdn, "capability fqdn")
-BGP_NEIGHBOR_BOOL_CLI_SHOW(capability_link_local, "capability link-local")
+/* Same emitter for leaves one container below the neighbor entry
+ * (capability-options/...): the peer key is two levels up. */
+#define BGP_NEIGHBOR_SUB_BOOL_CLI_SHOW(_name, _keyword)                        \
+	void bgp_neighbor_##_name##_cli_show(struct vty *vty,                  \
+		const struct lyd_node *dnode, bool show_defaults)              \
+	{                                                                      \
+		const char *peer =                                             \
+			yang_dnode_get_string(dnode, "../../remote-address");  \
+		if (yang_dnode_get_bool(dnode, NULL))                          \
+			vty_out(vty, " neighbor %s %s\n", peer, _keyword);     \
+	}
+
+BGP_NEIGHBOR_SUB_BOOL_CLI_SHOW(capability_fqdn, "capability fqdn")
+BGP_NEIGHBOR_SUB_BOOL_CLI_SHOW(capability_link_local, "capability link-local")
 BGP_NEIGHBOR_BOOL_CLI_SHOW(as_loop_detection, "sender-as-path-loop-detection")
 BGP_NEIGHBOR_BOOL_CLI_SHOW(oad, "oad")
 BGP_NEIGHBOR_BOOL_CLI_SHOW(peer_graceful_shutdown, "graceful-shutdown")
@@ -5692,35 +5823,66 @@ BGP_NEIGHBOR_BOOL_CLI_SHOW(peer_graceful_shutdown, "graceful-shutdown")
  * responsible for emitting the surrounding `address-family ... exit-
  * address-family` block in legacy code, so cli_show here only emits
  * the inner per-neighbor command. */
-#define BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(_name, _keyword)                         \
+#define BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(_name, _keyword, _peer_rel)              \
 	void bgp_neighbor_af_##_name##_cli_show(struct vty *vty,               \
 		const struct lyd_node *dnode, bool show_defaults)              \
 	{                                                                      \
-		const char *peer = yang_dnode_get_string(dnode,                \
-				"../../../remote-address");                    \
+		const char *peer = yang_dnode_get_string(dnode, _peer_rel);    \
 		if (yang_dnode_get_bool(dnode, NULL))                          \
 			vty_out(vty, "  neighbor %s %s\n", peer, _keyword);    \
 	}
 
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(soft_reconfig_in, "soft-reconfiguration inbound")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(as_override, "as-override")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rr_client, "route-reflector-client")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rs_client, "route-server-client")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self, "next-hop-self")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self_force, "next-hop-self force")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as, "remove-private-AS")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_all, "remove-private-AS all")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_replace, "remove-private-AS replace-AS")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_all_replace, "remove-private-AS all replace-AS")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_local_unchanged, "nexthop-local unchanged")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_community, "send-community")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_ext_community, "send-community extended")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_large_community, "send-community large")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(graceful_shutdown, "graceful-shutdown")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(accept_own, "accept-own")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(disable_addpath_rx, "disable-addpath-rx")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(addpath_tx_all, "addpath-tx-all-paths")
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(addpath_tx_bestpath_per_as, "addpath-tx-bestpath-per-AS")
+/* _peer_rel: leaf -> neighbor entry. <AFI>/<leaf> nodes are 4 levels
+ * deep, <AFI>/<group>/<leaf> nodes are 5. */
+#define BGP_NB_AF_PEER_REL4 "../../../../remote-address"
+#define BGP_NB_AF_PEER_REL5 "../../../../../remote-address"
+
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(soft_reconfig_in, "soft-reconfiguration inbound",
+			      BGP_NB_AF_PEER_REL4)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(as_override, "as-override", BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rr_client, "route-reflector-client",
+			      BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rs_client, "route-server-client",
+			      BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self, "next-hop-self",
+			      BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self_force, "next-hop-self force",
+			      BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as, "remove-private-AS",
+			      BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_all, "remove-private-AS all",
+			      BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_replace,
+			      "remove-private-AS replace-AS",
+			      BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_all_replace,
+			      "remove-private-AS all replace-AS",
+			      BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_local_unchanged,
+			      "nexthop-local unchanged", BGP_NB_AF_PEER_REL4)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_community, "send-community",
+			      BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_ext_community, "send-community extended",
+			      BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_large_community, "send-community large",
+			      BGP_NB_AF_PEER_REL5)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(accept_own, "accept-own", BGP_NB_AF_PEER_REL4)
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(disable_addpath_rx, "disable-addpath-rx",
+			      BGP_NB_AF_PEER_REL5)
+
+/* add-paths/path-type enum: one emitter for both legacy keywords. */
+void bgp_neighbor_af_add_paths_path_type_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	const char *peer = yang_dnode_get_string(dnode, BGP_NB_AF_PEER_REL5);
+	const char *val = yang_dnode_get_string(dnode, NULL);
+
+	if (strmatch(val, "all"))
+		vty_out(vty, "  neighbor %s addpath-tx-all-paths\n", peer);
+	else if (strmatch(val, "per-as"))
+		vty_out(vty, "  neighbor %s addpath-tx-bestpath-per-AS\n",
+			peer);
+}
 
 /* value-style cli_show emitters. */
 
@@ -5845,14 +6007,23 @@ void bgp_neighbor_admin_shutdown_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
 	const char *peer = yang_dnode_get_string(dnode, "../remote-address");
-	if (yang_dnode_exists(dnode, "./enable") &&
-	    yang_dnode_get_bool(dnode, "./enable")) {
-		if (yang_dnode_exists(dnode, "./message"))
+
+	if (yang_dnode_exists(dnode, "enable") &&
+	    yang_dnode_get_bool(dnode, "enable")) {
+		if (yang_dnode_exists(dnode, "message"))
 			vty_out(vty, " neighbor %s shutdown message %s\n",
 				peer,
-				yang_dnode_get_string(dnode, "./message"));
+				yang_dnode_get_string(dnode, "message"));
 		else
 			vty_out(vty, " neighbor %s shutdown\n", peer);
+	}
+	if (yang_dnode_exists(dnode, "rtt")) {
+		vty_out(vty, " neighbor %s shutdown rtt %s", peer,
+			yang_dnode_get_string(dnode, "rtt"));
+		if (yang_dnode_exists(dnode, "rtt-count"))
+			vty_out(vty, " count %s",
+				yang_dnode_get_string(dnode, "rtt-count"));
+		vty_out(vty, "\n");
 	}
 }
 
@@ -5890,18 +6061,12 @@ void bgp_neighbor_tcp_mss_cli_show(struct vty *vty,
 		yang_dnode_get_string(dnode, NULL));
 }
 
-void bgp_neighbor_port_cli_show(struct vty *vty,
-	const struct lyd_node *dnode, bool show_defaults)
-{
-	const char *peer = yang_dnode_get_string(dnode, "../remote-address");
-	vty_out(vty, " neighbor %s port %s\n", peer,
-		yang_dnode_get_string(dnode, NULL));
-}
 
 void bgp_neighbor_timers_delayopen_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
-	const char *peer = yang_dnode_get_string(dnode, "../remote-address");
+	const char *peer = yang_dnode_get_string(dnode,
+						 "../../remote-address");
 	vty_out(vty, " neighbor %s timers delayopen %s\n", peer,
 		yang_dnode_get_string(dnode, NULL));
 }
@@ -5920,20 +6085,6 @@ void bgp_neighbor_ls_remote_link_id_cli_show(struct vty *vty,
 	const char *peer = yang_dnode_get_string(dnode, "../remote-address");
 	vty_out(vty, " neighbor %s remote-link-id %s\n", peer,
 		yang_dnode_get_string(dnode, NULL));
-}
-
-void bgp_neighbor_shutdown_rtt_cli_show(struct vty *vty,
-	const struct lyd_node *dnode, bool show_defaults)
-{
-	const char *peer = yang_dnode_get_string(dnode, "../remote-address");
-	if (yang_dnode_exists(dnode, "./rtt")) {
-		vty_out(vty, " neighbor %s shutdown rtt %s", peer,
-			yang_dnode_get_string(dnode, "./rtt"));
-		if (yang_dnode_exists(dnode, "./count"))
-			vty_out(vty, " count %s",
-				yang_dnode_get_string(dnode, "./count"));
-		vty_out(vty, "\n");
-	}
 }
 
 void bgp_neighbor_neighbor_remote_as_cli_show(struct vty *vty,
@@ -6010,7 +6161,9 @@ void bgp_neighbor_capabilities_negotiate_cli_show(struct vty *vty,
 void bgp_global_fast_external_failover_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
-	/* Inverted: see frr-deviations-bgp-rfc.yang. */
+	/* Inverted vs BGP_FLAG_NO_FAST_EXT_FAILOVER: true enables, but the
+	 * legacy CLI only surfaces the negative form.
+	 */
 	if (!yang_dnode_get_bool(dnode, NULL))
 		vty_out(vty, " no bgp fast-external-failover\n");
 }
@@ -6040,8 +6193,13 @@ void bgp_global_instance_id_cli_show(struct vty *vty,
 void bgp_global_default_software_version_capability_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
-	if (yang_dnode_get_bool(dnode, NULL))
+	const char *val = yang_dnode_get_string(dnode, NULL);
+
+	if (strmatch(val, "old-encoding"))
 		vty_out(vty, " bgp default software-version-capability\n");
+	else if (strmatch(val, "latest-encoding"))
+		vty_out(vty,
+			" bgp default software-version-capability latest-encoding\n");
 }
 
 void bgp_global_establish_wait_time_cli_show(struct vty *vty,
@@ -6167,17 +6325,16 @@ void bgp_global_tcp_keepalive_cli_show(struct vty *vty,
 			yang_dnode_get_string(dnode, "./count"));
 }
 
-void bgp_global_administrative_shutdown_cli_show(struct vty *vty,
+void bgp_global_shutdown_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
-	if (yang_dnode_exists(dnode, "./enable") &&
-	    yang_dnode_get_bool(dnode, "./enable")) {
-		if (yang_dnode_exists(dnode, "./message"))
-			vty_out(vty, " bgp shutdown message %s\n",
-				yang_dnode_get_string(dnode, "./message"));
-		else
-			vty_out(vty, " bgp shutdown\n");
-	}
+	if (!yang_dnode_get_bool(dnode, NULL))
+		return;
+	if (yang_dnode_exists(dnode, "../shutdown-message"))
+		vty_out(vty, " bgp shutdown message %s\n",
+			yang_dnode_get_string(dnode, "../shutdown-message"));
+	else
+		vty_out(vty, " bgp shutdown\n");
 }
 
 void bgp_global_suppress_fib_pending_cli_show(struct vty *vty,
@@ -6190,9 +6347,8 @@ void bgp_global_suppress_fib_pending_cli_show(struct vty *vty,
 void bgp_global_bgp_ls_distribute_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
-	if (yang_dnode_exists(dnode, "./enabled") &&
-	    yang_dnode_get_bool(dnode, "./enabled"))
-		vty_out(vty, " bgp ls distribute\n");
+	/* Presence container: existing means distribution is enabled. */
+	vty_out(vty, "  distribute bgp-fabric-link-state\n");
 }
 
 void bgp_neighbor_bfd_options_cli_show(struct vty *vty,
@@ -6231,16 +6387,14 @@ void bgp_neighbor_gr_disable_cli_show(struct vty *vty,
 void bgp_neighbor_capability_software_version_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
-	const char *peer = yang_dnode_get_string(dnode, "../remote-address");
-	if (yang_dnode_get_bool(dnode, NULL))
-		vty_out(vty, " neighbor %s capability software-version\n", peer);
-}
+	const char *peer = yang_dnode_get_string(dnode,
+						 "../../remote-address");
+	const char *val = yang_dnode_get_string(dnode, NULL);
 
-void bgp_neighbor_capability_software_version_latest_encoding_cli_show(
-	struct vty *vty, const struct lyd_node *dnode, bool show_defaults)
-{
-	const char *peer = yang_dnode_get_string(dnode, "../remote-address");
-	if (yang_dnode_get_bool(dnode, NULL))
+	if (strmatch(val, "old-encoding"))
+		vty_out(vty, " neighbor %s capability software-version\n",
+			peer);
+	else if (strmatch(val, "latest-encoding"))
 		vty_out(vty,
 			" neighbor %s capability software-version latest-encoding\n",
 			peer);

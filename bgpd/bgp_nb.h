@@ -120,7 +120,6 @@ int bgp_global_default_software_version_capability_modify(
 int bgp_global_default_software_version_capability_destroy(
 	struct nb_cb_destroy_args *args);
 void bgp_global_tcp_keepalive_apply_finish(struct nb_cb_apply_finish_args *args);
-int bgp_global_tcp_keepalive_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_hold_time_modify(struct nb_cb_modify_args *args);
 int bgp_global_hold_time_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_keepalive_modify(struct nb_cb_modify_args *args);
@@ -137,9 +136,9 @@ int bgp_global_graceful_restart_selection_deferral_time_modify(
 	struct nb_cb_modify_args *args);
 int bgp_global_graceful_restart_selection_deferral_time_destroy(
 	struct nb_cb_destroy_args *args);
-void bgp_global_administrative_shutdown_apply_finish(
-	struct nb_cb_apply_finish_args *args);
-int bgp_global_administrative_shutdown_destroy(struct nb_cb_destroy_args *args);
+int bgp_global_shutdown_modify(struct nb_cb_modify_args *args);
+int bgp_global_shutdown_message_modify(struct nb_cb_modify_args *args);
+int bgp_global_shutdown_message_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_enforce_first_as_global_modify(struct nb_cb_modify_args *args);
 int bgp_global_enforce_first_as_global_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_suppress_duplicates_modify(struct nb_cb_modify_args *args);
@@ -302,19 +301,16 @@ _BGP_NB_PEER_FLAG_DECL(capability_fqdn);
 _BGP_NB_PEER_FLAG_DECL(capability_link_local);
 _BGP_NB_PEER_FLAG_DECL(as_loop_detection);
 _BGP_NB_PEER_FLAG_DECL(capability_software_version);
-_BGP_NB_PEER_FLAG_DECL(capability_software_version_latest_encoding);
 _BGP_NB_PEER_FLAG_DECL(peer_graceful_shutdown);
 #undef _BGP_NB_PEER_FLAG_DECL
 
 int bgp_neighbor_timers_delayopen_modify(struct nb_cb_modify_args *args);
 int bgp_neighbor_timers_delayopen_destroy(struct nb_cb_destroy_args *args);
-void bgp_neighbor_shutdown_rtt_apply_finish(
+void bgp_neighbor_admin_shutdown_apply_finish(
 	struct nb_cb_apply_finish_args *args);
-int bgp_neighbor_shutdown_rtt_destroy(struct nb_cb_destroy_args *args);
+int bgp_neighbor_admin_shutdown_rtt_destroy(struct nb_cb_destroy_args *args);
 int bgp_neighbor_tcp_mss_modify(struct nb_cb_modify_args *args);
 int bgp_neighbor_tcp_mss_destroy(struct nb_cb_destroy_args *args);
-int bgp_neighbor_port_modify(struct nb_cb_modify_args *args);
-int bgp_neighbor_port_destroy(struct nb_cb_destroy_args *args);
 void bgp_neighbor_local_role_apply_finish(struct nb_cb_apply_finish_args *args);
 int bgp_neighbor_local_role_destroy(struct nb_cb_destroy_args *args);
 int bgp_neighbor_gr_enable_modify(struct nb_cb_modify_args *args);
@@ -350,14 +346,15 @@ _BGP_NB_PEER_AF_FLAG_DECL(nexthop_local_unchanged);
 _BGP_NB_PEER_AF_FLAG_DECL(send_community);
 _BGP_NB_PEER_AF_FLAG_DECL(send_ext_community);
 _BGP_NB_PEER_AF_FLAG_DECL(send_large_community);
-_BGP_NB_PEER_AF_FLAG_DECL(graceful_shutdown);
 _BGP_NB_PEER_AF_FLAG_DECL(accept_own);
 _BGP_NB_PEER_AF_FLAG_DECL(disable_addpath_rx);
-_BGP_NB_PEER_AF_FLAG_DECL(addpath_tx_all);
-_BGP_NB_PEER_AF_FLAG_DECL(addpath_tx_bestpath_per_as);
+int bgp_neighbor_af_add_paths_path_type_modify(struct nb_cb_modify_args *args);
+int bgp_neighbor_af_add_paths_path_type_destroy(
+	struct nb_cb_destroy_args *args);
 _BGP_NB_PEER_AF_FLAG_DECL(enabled);
-_BGP_NB_PEER_AF_FLAG_DECL(encapsulation_srv6);
-_BGP_NB_PEER_AF_FLAG_DECL(encapsulation_mpls);
+int bgp_neighbor_af_encapsulation_type_create(struct nb_cb_create_args *args);
+int bgp_neighbor_af_encapsulation_type_destroy(
+	struct nb_cb_destroy_args *args);
 _BGP_NB_PEER_AF_FLAG_DECL(attr_unchanged_as_path);
 _BGP_NB_PEER_AF_FLAG_DECL(attr_unchanged_next_hop);
 _BGP_NB_PEER_AF_FLAG_DECL(attr_unchanged_med);
@@ -440,7 +437,7 @@ _BGP_CLI(bgp_global_preserve_fw_entry);
 _BGP_CLI(bgp_global_stale_routes_time);
 _BGP_CLI(bgp_global_med_config);
 _BGP_CLI(bgp_global_tcp_keepalive);
-_BGP_CLI(bgp_global_administrative_shutdown);
+_BGP_CLI(bgp_global_shutdown);
 _BGP_CLI(bgp_global_suppress_fib_pending);
 _BGP_CLI(bgp_global_bgp_ls_distribute);
 
@@ -468,11 +465,10 @@ _BGP_CLI(bgp_neighbor_admin_shutdown);
 _BGP_CLI(bgp_neighbor_ebgp_multihop);
 _BGP_CLI(bgp_neighbor_ttl_security);
 _BGP_CLI(bgp_neighbor_tcp_mss);
-_BGP_CLI(bgp_neighbor_port);
 _BGP_CLI(bgp_neighbor_timers_delayopen);
 _BGP_CLI(bgp_neighbor_ls_local_link_id);
 _BGP_CLI(bgp_neighbor_ls_remote_link_id);
-_BGP_CLI(bgp_neighbor_shutdown_rtt);
+_BGP_CLI(bgp_neighbor_admin_shutdown);
 _BGP_CLI(bgp_neighbor_neighbor_remote_as);
 _BGP_CLI(bgp_neighbor_update_source);
 _BGP_CLI(bgp_neighbor_capabilities_dynamic);
@@ -485,7 +481,6 @@ _BGP_CLI(bgp_neighbor_gr_enable);
 _BGP_CLI(bgp_neighbor_gr_helper);
 _BGP_CLI(bgp_neighbor_gr_disable);
 _BGP_CLI(bgp_neighbor_capability_software_version);
-_BGP_CLI(bgp_neighbor_capability_software_version_latest_encoding);
 
 _BGP_CLI(bgp_neighbor_af_soft_reconfig_in);
 _BGP_CLI(bgp_neighbor_af_as_override);
@@ -501,11 +496,9 @@ _BGP_CLI(bgp_neighbor_af_nexthop_local_unchanged);
 _BGP_CLI(bgp_neighbor_af_send_community);
 _BGP_CLI(bgp_neighbor_af_send_ext_community);
 _BGP_CLI(bgp_neighbor_af_send_large_community);
-_BGP_CLI(bgp_neighbor_af_graceful_shutdown);
 _BGP_CLI(bgp_neighbor_af_accept_own);
 _BGP_CLI(bgp_neighbor_af_disable_addpath_rx);
-_BGP_CLI(bgp_neighbor_af_addpath_tx_all);
-_BGP_CLI(bgp_neighbor_af_addpath_tx_bestpath_per_as);
+_BGP_CLI(bgp_neighbor_af_add_paths_path_type);
 
 _BGP_CLI(bgp_peer_group);
 _BGP_CLI(bgp_peer_group_ipv4_listen_range);
