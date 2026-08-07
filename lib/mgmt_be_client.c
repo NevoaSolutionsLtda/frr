@@ -428,7 +428,7 @@ static bool mgmt_be_txn_cfg_prepare(struct mgmt_be_client *client_ctx, uint64_t 
 	int err;
 
 	num_processed = 0;
-	nb_ctx.client = NB_CLIENT_CLI;
+	nb_ctx.client = NB_CLIENT_MGMTD_BE;
 	nb_ctx.user = (void *)client_ctx->user_data;
 	err_buf[0] = 0;
 

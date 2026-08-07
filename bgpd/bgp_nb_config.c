@@ -4732,19 +4732,24 @@ static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode, int ups,
 	if (!afi_safi_id)
 		return -1;
 
-	/* afi_safi_id is e.g. "frr-rt:ipv4-unicast" — strip prefix and map. */
-	if (strstr(afi_safi_id, "ipv4-unicast")) {
-		*afi_out = AFI_IP;  *safi_out = SAFI_UNICAST;
-	} else if (strstr(afi_safi_id, "ipv6-unicast")) {
-		*afi_out = AFI_IP6; *safi_out = SAFI_UNICAST;
+	/*
+	 * afi_safi_id is a prefixed identity, e.g.
+	 * "frr-routing:ipv4-unicast" — match the more specific ids
+	 * first: "l3vpn-ipv4-unicast" contains "ipv4-unicast" as a
+	 * substring, so the plain-unicast checks must come last.
+	 */
+	if (strstr(afi_safi_id, "l3vpn-ipv4-unicast")) {
+		*afi_out = AFI_IP;  *safi_out = SAFI_MPLS_VPN;
+	} else if (strstr(afi_safi_id, "l3vpn-ipv6-unicast")) {
+		*afi_out = AFI_IP6; *safi_out = SAFI_MPLS_VPN;
 	} else if (strstr(afi_safi_id, "ipv4-labeled-unicast")) {
 		*afi_out = AFI_IP;  *safi_out = SAFI_LABELED_UNICAST;
 	} else if (strstr(afi_safi_id, "ipv6-labeled-unicast")) {
 		*afi_out = AFI_IP6; *safi_out = SAFI_LABELED_UNICAST;
-	} else if (strstr(afi_safi_id, "l3vpn-ipv4-unicast")) {
-		*afi_out = AFI_IP;  *safi_out = SAFI_MPLS_VPN;
-	} else if (strstr(afi_safi_id, "l3vpn-ipv6-unicast")) {
-		*afi_out = AFI_IP6; *safi_out = SAFI_MPLS_VPN;
+	} else if (strstr(afi_safi_id, "ipv4-unicast")) {
+		*afi_out = AFI_IP;  *safi_out = SAFI_UNICAST;
+	} else if (strstr(afi_safi_id, "ipv6-unicast")) {
+		*afi_out = AFI_IP6; *safi_out = SAFI_UNICAST;
 	} else if (strstr(afi_safi_id, "l2vpn-evpn")) {
 		*afi_out = AFI_L2VPN; *safi_out = SAFI_EVPN;
 	} else if (strstr(afi_safi_id, "l2vpn-vpls")) {
