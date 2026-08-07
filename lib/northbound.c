@@ -30,6 +30,7 @@ DEFINE_MTYPE_STATIC(LIB, NB_TRANS, "NB transaction");
 struct nb_config *running_config;
 
 static nb_rpc_dispatch_async_cb nb_rpc_dispatcher_async;
+static nb_oper_get_dispatch_async_cb nb_oper_get_dispatcher_async;
 static nb_config_get_dispatch_cb nb_config_get_dispatcher;
 static nb_config_root_borrow_dispatch_cb nb_config_root_borrow_dispatcher;
 static nb_config_commit_async_cb nb_config_commit_dispatcher_async;
@@ -1976,6 +1977,23 @@ int nb_rpc_dispatch_async(const char *xpath, const struct lyd_node *input,
 		return -EOPNOTSUPP;
 
 	return nb_rpc_dispatcher_async(xpath, input, done, arg, errmsg, errmsg_len);
+}
+
+void nb_oper_get_dispatch_async_set(nb_oper_get_dispatch_async_cb cb)
+{
+	/* Single owner by design: one frontend owns backend oper-state reads. */
+	nb_oper_get_dispatcher_async = cb;
+}
+
+int nb_oper_get_dispatch_async(const char *xpath, bool include_config, uint32_t timeout_ms,
+			       nb_oper_get_dispatch_done_cb done, void *arg, char *errmsg,
+			       size_t errmsg_len)
+{
+	if (!nb_oper_get_dispatcher_async)
+		return -EOPNOTSUPP;
+
+	return nb_oper_get_dispatcher_async(xpath, include_config, timeout_ms, done, arg, errmsg,
+					    errmsg_len);
 }
 
 void nb_config_get_dispatch_set(nb_config_get_dispatch_cb cb)

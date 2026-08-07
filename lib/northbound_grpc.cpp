@@ -35,6 +35,9 @@
 #define GRPC_SUBSCRIBE_MIN_INTERVAL_MS	   100
 #define GRPC_SUBSCRIBE_DEFAULT_MAX_PENDING 128
 
+/* Deadline handed to the async oper-get dispatcher for Get() reads. */
+#define GRPC_GET_OPER_TIMEOUT_MS 10000
+
 
 // ------------------------------------------------------
 //                 File Local Variables
@@ -785,46 +788,145 @@ grpc::Status HandleUnaryGetCapabilities(
 	return grpc::Status::OK;
 }
 
-// Define the context variable type for this streaming handler
-typedef std::list<std::string> GetContextType;
+static grpc::Status status_from_errno(int error, const char *errmsg);
 
-bool HandleStreamingGet(
-	StreamRpcState<frr::GetRequest, frr::GetResponse, GetContextType> *tag)
+/*
+ * Get streaming RPC.
+ *
+ * One GetResponse is written per requested path.  CONFIG reads and local
+ * operational state stay synchronous on the main thread.  When the daemon
+ * registers an async oper-get dispatcher (mgmtd bridging to its backends),
+ * STATE and ALL reads of a path dispatch to the backend machinery instead:
+ * run_mainthread() returns MORE with no completion-queue operation
+ * outstanding, and the dispatcher's done callback -- invoked on the main
+ * thread -- writes the response, whose completion drives the next path.
+ *
+ * Threading: run_mainthread() and oper_done() both run on the main thread;
+ * cmux guards async_pending/cancelled/reposted against the completion-queue
+ * pthread (handle_cq_error() on stream failure or shutdown).
+ */
+class GetRpcState : public RpcStateBase
+{
+      public:
+	GetRpcState() : RpcStateBase("Get"), async_responder(&ctx) {}
+
+	void do_request(::frr::Northbound::AsyncService *service,
+			::grpc::ServerCompletionQueue *cq, bool no_copy) override
+	{
+		grpc_debug("%s, posting a request for: %s", __func__, name);
+		auto copy = no_copy ? this : new GetRpcState();
+
+		copy->service = service;
+		copy->cq = cq;
+		service->RequestGet(&copy->ctx, &copy->request, &copy->async_responder, cq, cq,
+				    copy);
+	}
+
+	CallState run_mainthread(struct event *event) override;
+
+	bool handle_cq_error(void) override
+	{
+		bool keep_until_async_done = false;
+		bool repost = false;
+
+		pthread_mutex_lock(&cmux);
+		cancelled = true;
+		if (async_pending) {
+			keep_until_async_done = true;
+			repost = !reposted && grpc_is_running();
+			if (repost)
+				reposted = true;
+		}
+		pthread_mutex_unlock(&cmux);
+
+		if (repost)
+			do_request(service, cq, false);
+
+		return !keep_until_async_done;
+	}
+
+	bool repost_on_cq_error(void) const override
+	{
+		/*
+		 * A mid-stream failure also consumes the only pending tag for
+		 * this RPC type: the next listener is otherwise only posted
+		 * when the stream reaches FINISH.  A tag already in FINISH had
+		 * its listener reposted (by run() or by oper_done()), so a
+		 * failed final write must not post a second one.
+		 */
+		return !reposted && state != FINISH;
+	}
+
+	frr::GetRequest request;
+	grpc::ServerAsyncWriter<frr::GetResponse> async_responder;
+
+      private:
+	static void oper_done(int error, const char *errmsg, const struct lyd_node *result,
+			      void *arg);
+
+	::frr::Northbound::AsyncService *service = NULL;
+	::grpc::ServerCompletionQueue *cq = NULL;
+	std::list<std::string> paths;
+	bool async_pending = false;
+	bool cancelled = false;
+	bool reposted = false;
+};
+
+CallState GetRpcState::run_mainthread(struct event *event)
 {
 	grpc_debug("%s: entered", __func__);
 
-	auto mypathps = &tag->context;
-	if (tag->is_initial_process()) {
-		// Fill our context container first time through
+	if (is_initial_process()) {
 		grpc_debug("%s: initialize streaming state", __func__);
-		auto paths = tag->request.path();
-		for (const std::string &path : paths) {
-			mypathps->push_back(std::string(path));
-		}
-		if (mypathps->empty())
-			mypathps->push_back("/");
+		for (const std::string &path : request.path())
+			paths.push_back(std::string(path));
+		if (paths.empty())
+			paths.push_back("/");
 	}
 
 	// Request: DataType type = 1;
-	int type = tag->request.type();
+	int type = request.type();
 	// Request: Encoding encoding = 2;
-	frr::Encoding encoding = tag->request.encoding();
+	frr::Encoding encoding = request.encoding();
 	LYD_FORMAT lyd_format;
 	// Request: bool with_defaults = 3;
-	bool with_defaults = tag->request.with_defaults();
+	bool with_defaults = request.with_defaults();
 
-	if (mypathps->empty()) {
-		tag->async_responder.Finish(grpc::Status::OK, tag);
-		return false;
+	if (paths.empty()) {
+		async_responder.Finish(grpc::Status::OK, this);
+		return FINISH;
 	}
 
 	frr::GetResponse response;
 	grpc::Status status;
 
 	if (!encoding2lyd_format(encoding, &lyd_format)) {
-		tag->async_responder.WriteAndFinish(response, grpc::WriteOptions(),
-						    invalid_encoding_status(encoding), tag);
-		return false;
+		async_responder.WriteAndFinish(response, grpc::WriteOptions(),
+					       invalid_encoding_status(encoding), this);
+		return FINISH;
+	}
+
+	const std::string &path = paths.back();
+
+	if (type == frr::GetRequest_DataType_STATE || type == frr::GetRequest_DataType_ALL) {
+		char errmsg[BUFSIZ] = { 0 };
+		int ret;
+
+		ret = nb_oper_get_dispatch_async(path.c_str(),
+						 type == frr::GetRequest_DataType_ALL,
+						 GRPC_GET_OPER_TIMEOUT_MS, oper_done, this,
+						 errmsg, sizeof(errmsg));
+		if (!ret) {
+			/* run_mainthread() runs with cmux held. */
+			async_pending = true;
+			return MORE;
+		}
+		if (ret != -EOPNOTSUPP) {
+			async_responder.WriteAndFinish(response, grpc::WriteOptions(),
+						       status_from_errno(ret, errmsg), this);
+			return FINISH;
+		}
+		/* No dispatcher registered: fall back to the local read. */
 	}
 
 	// Response: int64 timestamp = 1;
@@ -832,29 +934,98 @@ bool HandleStreamingGet(
 
 	// Response: DataTree data = 2;
 	auto *data = response.mutable_data();
-	data->set_encoding(tag->request.encoding());
-	data->set_path(mypathps->back());
+	data->set_encoding(encoding);
+	data->set_path(path);
 	if (type == frr::GetRequest_DataType_STATE)
-		status = get_state_snapshot_path(data, mypathps->back().c_str(), lyd_format,
-						 with_defaults);
+		status = get_state_snapshot_path(data, path.c_str(), lyd_format, with_defaults);
 	else
-		status = get_path(data, mypathps->back().c_str(), type, lyd_format, with_defaults);
+		status = get_path(data, path.c_str(), type, lyd_format, with_defaults);
 
 	if (!status.ok()) {
-		tag->async_responder.WriteAndFinish(
-			response, grpc::WriteOptions(), status, tag);
-		return false;
+		async_responder.WriteAndFinish(response, grpc::WriteOptions(), status, this);
+		return FINISH;
 	}
 
-	mypathps->pop_back();
-	if (mypathps->empty()) {
-		tag->async_responder.WriteAndFinish(
-			response, grpc::WriteOptions(), grpc::Status::OK, tag);
-		return false;
-	} else {
-		tag->async_responder.Write(response, tag);
-		return true;
+	paths.pop_back();
+	if (paths.empty()) {
+		async_responder.WriteAndFinish(response, grpc::WriteOptions(), grpc::Status::OK,
+					       this);
+		return FINISH;
 	}
+	async_responder.Write(response, this);
+	return MORE;
+}
+
+void GetRpcState::oper_done(int error, const char *errmsg, const struct lyd_node *result,
+			    void *arg)
+{
+	auto *tag = static_cast<GetRpcState *>(arg);
+	frr::GetResponse response;
+	grpc::Status status = status_from_errno(error, errmsg);
+	bool running = grpc_is_running();
+	bool repost = false;
+	bool finish;
+
+	grpc_debug("%s: entered, error %d", __func__, error);
+
+	if (status.ok()) {
+		LYD_FORMAT lyd_format = LYD_JSON;
+
+		(void)encoding2lyd_format(tag->request.encoding(), &lyd_format);
+		response.set_timestamp(time(NULL));
+
+		auto *data = response.mutable_data();
+		data->set_encoding(tag->request.encoding());
+		data->set_path(tag->paths.back());
+		if (result) {
+			LY_ERR err = data_tree_from_dnode(data, result, lyd_format,
+							  tag->request.with_defaults());
+			if (err)
+				status = grpc::Status(grpc::StatusCode::INTERNAL,
+						      "Failed to dump data");
+		} else {
+			/* Valid path with no data: empty result, not an error. */
+			data->set_data("");
+		}
+	}
+
+	pthread_mutex_lock(&tag->cmux);
+	tag->async_pending = false;
+	if (tag->cancelled || !running) {
+		/*
+		 * The client went away or gRPC is shutting down; there is no
+		 * completion-queue operation outstanding, so this callback is
+		 * the final owner of the tag.
+		 */
+		repost = !tag->reposted && running;
+		if (repost)
+			tag->reposted = true;
+		pthread_mutex_unlock(&tag->cmux);
+
+		if (repost)
+			tag->do_request(tag->service, tag->cq, false);
+		delete tag;
+		return;
+	}
+
+	if (status.ok())
+		tag->paths.pop_back();
+	finish = !status.ok() || tag->paths.empty();
+	if (finish) {
+		tag->state = FINISH;
+		repost = !tag->reposted;
+		if (repost)
+			tag->reposted = true;
+	}
+	pthread_mutex_unlock(&tag->cmux);
+
+	if (repost)
+		tag->do_request(tag->service, tag->cq, false);
+
+	if (finish)
+		tag->async_responder.WriteAndFinish(response, grpc::WriteOptions(), status, tag);
+	else
+		tag->async_responder.Write(response, tag);
 }
 
 grpc::Status HandleUnaryCreateCandidate(
@@ -896,8 +1067,8 @@ grpc::Status HandleUnaryCreateCandidate(
  * Locking:
  *   - RpcStateBase::cmux protects the SubscribeRpcState::sub pointer and RPC
  *     state transitions coordinated with the completion-queue pthread.
- *   - Subscription::mtx protects pending, write_in_flight, timer handles,
- *     cancelled and the mgmtd unsubscribe handle.
+ *   - Subscription::mtx protects pending, side_buffer, write_in_flight,
+ *     timer handles, cancelled and the mgmtd unsubscribe handle.
  *
  *   gRPC's per-stream Write must be serialised by the caller; that is
  *   enforced by write_in_flight: the notification callback only posts a new
@@ -906,12 +1077,24 @@ grpc::Status HandleUnaryCreateCandidate(
  *
  * Modes:
  *   ON_CHANGE  -- implemented here.
- *   STREAM     -- send initial operational-state snapshot, then notifications.
- *   SAMPLE     -- periodically send operational-state snapshots.
+ *   STREAM     -- send initial snapshot, then notifications.
+ *   SAMPLE     -- periodically send snapshots.
  *   POLL       -- requires a client-streaming request shape; unimplemented.
+ *
+ * STREAM/SAMPLE snapshots serve operational state by default;
+ * SubscribeRequest.snapshot_type selects CONFIG or ALL with the Get()
+ * data-type semantics.  When the daemon registers an async oper-get
+ * dispatcher (mgmtd bridging to its backends), STATE and ALL snapshots
+ * collect through it: one selector at a time on the main thread, with the
+ * built updates flushed in a single pass at completion (SubscribeSnapshot).
+ * Heartbeats keep flowing while a collection is in flight, so they can
+ * precede the baseline on the wire.  CONFIG snapshots and daemon-local
+ * frontends keep the synchronous main-thread read, so the config datastore
+ * access needs no additional synchronisation.
  */
 
 struct Subscription;
+struct SubscribeSnapshot;
 
 class SubscribeRpcState : public RpcStateBase {
       public:
@@ -947,7 +1130,11 @@ class SubscribeRpcState : public RpcStateBase {
 	void close_subscription(grpc::Status status);
 	bool enqueue_response(frr::SubscribeResponse &&resp, bool resets_heartbeat,
 			      grpc::Status *status = NULL);
-	grpc::Status enqueue_state_snapshot(bool sync_response);
+	grpc::Status enqueue_snapshot(bool sync_response);
+	int snapshot_collect_async(bool sync_response, bool sample, char *errmsg,
+				   size_t errmsg_len);
+	static void snapshot_oper_done(int error, const char *errmsg,
+				       const struct lyd_node *result, void *arg);
 	bool subscription_finish_deferred(void);
 	void schedule_sample_timer(void);
 	void schedule_heartbeat_timer(void);
@@ -963,6 +1150,29 @@ class SubscribeRpcState : public RpcStateBase {
 	bool accepted_stream = false;
 };
 
+/*
+ * One in-flight asynchronous snapshot collection: the selectors are read one
+ * at a time through the oper-get dispatch seam (serial collection bounds
+ * backend load and keeps a deterministic update order) and the built updates
+ * are flushed to the stream in a single main-thread pass at completion.
+ *
+ * All fields are main-thread only.  Ownership: while a dispatch is in flight
+ * the seam holds the only live reference and the completion callback frees
+ * the object; teardown paths only detach (cancelled set, sub cleared), they
+ * never free.
+ */
+struct SubscribeSnapshot {
+	struct Subscription *sub;
+	bool cancelled;
+	bool sample;	     /* SAMPLE flow: tolerate timeouts, re-arm the tick */
+	bool sync_response;  /* STREAM initial: emit sync_response at flush */
+	bool include_config; /* ALL snapshot_type: dispatcher merges config */
+	bool partial;	     /* at least one selector read timed out */
+	uint32_t timeout_ms;
+	std::list<std::string> paths;
+	std::vector<frr::SubscribeResponse> responses;
+};
+
 struct Subscription {
 	pthread_mutex_t mtx;
 
@@ -972,9 +1182,36 @@ struct Subscription {
 	frr::Encoding encoding;
 	LYD_FORMAT lyd_format;
 
+	/* Snapshot data type for STREAM/SAMPLE (Get() semantics). */
+	frr::GetRequest::DataType snapshot_type;
+
+	/*
+	 * Async snapshot collection in flight (main thread only).  Every
+	 * teardown path detaches the collection before the subscription is
+	 * released; a collection that outlives its subscription is freed by
+	 * its own completion callback.
+	 */
+	struct SubscribeSnapshot *snapshot;
+
+	/*
+	 * Edge trigger for the sampling partial-data warning (main thread
+	 * only): warn once per stall episode, re-armed by the first fully
+	 * healthy collection, so a stalled backend is not a per-tick log
+	 * flood any client can sustain.
+	 */
+	bool sample_partial_logged;
+
 	/* gRPC write-serialisation. */
 	std::deque<frr::SubscribeResponse> pending;
 	bool write_in_flight;
+
+	/*
+	 * Deltas held back while a STREAM initial snapshot collects, so the
+	 * baseline reaches the client before any notification (mtx).  The
+	 * buffer shares the pending-queue budget: together they never exceed
+	 * the slow-consumer limit.
+	 */
+	std::deque<frr::SubscribeResponse> side_buffer;
 
 	bool cancelled;
 	bool main_released;
@@ -1133,18 +1370,34 @@ static void subscription_destroy(struct Subscription *sub)
 	delete sub;
 }
 
+static void subscription_snapshot_detach(struct Subscription *sub)
+{
+	/*
+	 * Abandon an in-flight collection (main thread): its completion
+	 * callback observes cancelled, drops the result and frees it.
+	 */
+	if (!sub->snapshot)
+		return;
+
+	sub->snapshot->cancelled = true;
+	sub->snapshot->sub = NULL;
+	sub->snapshot = NULL;
+}
+
 static void subscription_release_main_resources(struct Subscription *sub)
 {
 	void *mgmt_notify_handle = NULL;
 
 	event_cancel(&sub->sample_timer);
 	event_cancel(&sub->heartbeat_timer);
+	subscription_snapshot_detach(sub);
 	pthread_mutex_lock(&sub->mtx);
 	if (!sub->main_released) {
 		sub->main_released = true;
 		sub->cancelled = true;
 		mgmt_notify_handle = sub->mgmt_notify_handle;
 		sub->mgmt_notify_handle = NULL;
+		sub->side_buffer.clear();
 		if (sub->write_in_flight) {
 			if (sub->pending.size() > 1)
 				sub->pending.erase(std::next(sub->pending.begin()),
@@ -1354,6 +1607,7 @@ void SubscribeRpcState::close_subscription(grpc::Status status)
 
 	event_cancel(&sub->sample_timer);
 	event_cancel(&sub->heartbeat_timer);
+	subscription_snapshot_detach(sub);
 
 	pthread_mutex_lock(&sub->mtx);
 	if (!sub->cancelled) {
@@ -1363,6 +1617,7 @@ void SubscribeRpcState::close_subscription(grpc::Status status)
 	}
 
 	sub->finish_status = status;
+	sub->side_buffer.clear();
 	if (sub->write_in_flight) {
 		sub->finish_after_write = true;
 		if (sub->pending.size() > 1)
@@ -1434,7 +1689,7 @@ bool SubscribeRpcState::enqueue_response(frr::SubscribeResponse &&resp, bool res
 	return true;
 }
 
-grpc::Status SubscribeRpcState::enqueue_state_snapshot(bool sync_response)
+grpc::Status SubscribeRpcState::enqueue_snapshot(bool sync_response)
 {
 	std::vector<frr::SubscribeResponse> responses;
 
@@ -1442,10 +1697,15 @@ grpc::Status SubscribeRpcState::enqueue_state_snapshot(bool sync_response)
 	for (const auto &path : sub->selectors) {
 		frr::SubscribeResponse resp;
 		auto *update = resp.mutable_update();
+		grpc::Status status;
 
 		update->set_encoding(sub->encoding);
 		update->set_path(path);
-		grpc::Status status = get_state_snapshot_path(update, path, sub->lyd_format, false);
+		if (sub->snapshot_type == frr::GetRequest_DataType_STATE)
+			status = get_state_snapshot_path(update, path, sub->lyd_format, false);
+		else
+			status = get_path(update, path, sub->snapshot_type, sub->lyd_format,
+					  false);
 		if (!status.ok())
 			return status;
 
@@ -1470,6 +1730,207 @@ grpc::Status SubscribeRpcState::enqueue_state_snapshot(bool sync_response)
 	}
 
 	return grpc::Status::OK;
+}
+
+/*
+ * Start an asynchronous snapshot collection through the oper-get dispatch
+ * seam.  Returns 0 with the collection in flight (the completion callback
+ * flushes the updates), -EOPNOTSUPP when the snapshot must use the
+ * synchronous local path (no dispatcher registered, or a CONFIG snapshot,
+ * which reads the local running datastore), or a negative errno on dispatch
+ * failure.
+ */
+int SubscribeRpcState::snapshot_collect_async(bool sync_response, bool sample,
+					      char *errmsg, size_t errmsg_len)
+{
+	struct SubscribeSnapshot *snap;
+	uint32_t timeout_ms = GRPC_GET_OPER_TIMEOUT_MS;
+	int ret;
+
+	/* Caller must hold cmux; sub is dereferenced below. */
+	if (sub->snapshot_type == frr::GetRequest_DataType_CONFIG)
+		return -EOPNOTSUPP;
+
+	/*
+	 * Bound the read by the sampling cadence: a snapshot slower than the
+	 * interval can only coalesce ticks, never pile up behind them.
+	 */
+	if (sample && sub->sample_interval_ms && sub->sample_interval_ms < timeout_ms)
+		timeout_ms = sub->sample_interval_ms;
+
+	snap = new SubscribeSnapshot();
+	snap->sub = sub;
+	snap->cancelled = false;
+	snap->sample = sample;
+	snap->sync_response = sync_response;
+	snap->include_config = sub->snapshot_type == frr::GetRequest_DataType_ALL;
+	snap->partial = false;
+	snap->timeout_ms = timeout_ms;
+	snap->paths = sub->selectors;
+
+	ret = nb_oper_get_dispatch_async(snap->paths.front().c_str(), snap->include_config,
+					 snap->timeout_ms, snapshot_oper_done, snap, errmsg,
+					 errmsg_len);
+	if (ret) {
+		delete snap;
+		return ret;
+	}
+
+	sub->snapshot = snap;
+	return 0;
+}
+
+void SubscribeRpcState::snapshot_oper_done(int error, const char *errmsg,
+					   const struct lyd_node *result, void *arg)
+{
+	auto *snap = static_cast<struct SubscribeSnapshot *>(arg);
+	struct Subscription *sub;
+	SubscribeRpcState *tag;
+	grpc::Status close_status = grpc::Status::OK;
+
+	/* Runs on the libfrr main thread; see SubscribeSnapshot ownership. */
+	if (snap->cancelled) {
+		delete snap;
+		return;
+	}
+	sub = snap->sub;
+
+	pthread_mutex_lock(&sub->mtx);
+	tag = sub->tag;
+	pthread_mutex_unlock(&sub->mtx);
+
+	/*
+	 * The tag detached on the completion-queue pthread (stream error);
+	 * the queued main-thread cleanup releases the subscription.  Same
+	 * lifetime argument as grpc_notification_data_dispatch(): sub and a
+	 * non-NULL tag stay valid here because every path that frees either
+	 * one runs on this thread and detaches this collection first.
+	 */
+	if (!tag) {
+		sub->snapshot = NULL;
+		delete snap;
+		return;
+	}
+
+	pthread_mutex_lock(&tag->cmux);
+	if (tag->sub != sub) {
+		/* Shutdown parked the subscription between callbacks. */
+		sub->snapshot = NULL;
+		pthread_mutex_unlock(&tag->cmux);
+		delete snap;
+		return;
+	}
+
+	if (error == -ETIMEDOUT && snap->sample) {
+		/*
+		 * A sampling read that timed out still carries whatever the
+		 * backends merged before the deadline.  Deliver the partial
+		 * snapshot and keep the stream: the next tick self-heals.  A
+		 * STREAM initial snapshot closes instead -- deltas build on
+		 * the baseline, and a silently holed baseline corrupts the
+		 * client.
+		 */
+		if (!sub->sample_partial_logged) {
+			sub->sample_partial_logged = true;
+			flog_warn(EC_LIB_GRPC_INIT,
+				  "%s: sample snapshot for %s timed out; delivering partial data",
+				  __func__, snap->paths.front().c_str());
+		}
+		snap->partial = true;
+		error = 0;
+	}
+
+	if (error) {
+		close_status = status_from_errno(error, errmsg);
+	} else {
+		frr::SubscribeResponse resp;
+		auto *update = resp.mutable_update();
+
+		update->set_encoding(sub->encoding);
+		update->set_path(snap->paths.front());
+		if (result) {
+			if (data_tree_from_dnode(update, result, sub->lyd_format, false))
+				close_status = grpc::Status(grpc::StatusCode::INTERNAL,
+							    "Failed to dump data");
+		} else {
+			/* Valid path with no data: empty update, not an error. */
+			update->set_data("");
+		}
+		if (close_status.ok()) {
+			snap->responses.push_back(std::move(resp));
+			snap->paths.pop_front();
+		}
+	}
+
+	if (close_status.ok() && !snap->paths.empty()) {
+		char dispatch_errmsg[BUFSIZ] = { 0 };
+		int ret;
+
+		ret = nb_oper_get_dispatch_async(snap->paths.front().c_str(),
+						 snap->include_config, snap->timeout_ms,
+						 snapshot_oper_done, snap, dispatch_errmsg,
+						 sizeof(dispatch_errmsg));
+		if (!ret) {
+			/* Next selector in flight. */
+			pthread_mutex_unlock(&tag->cmux);
+			return;
+		}
+		close_status = status_from_errno(ret, dispatch_errmsg);
+	}
+
+	sub->snapshot = NULL;
+
+	if (!close_status.ok()) {
+		tag->close_subscription(close_status);
+		pthread_mutex_unlock(&tag->cmux);
+		delete snap;
+		return;
+	}
+
+	/* Collection complete: flush in one main-thread pass. */
+	bool ok = true;
+
+	for (auto &resp : snap->responses) {
+		if (!tag->enqueue_response(std::move(resp), true)) {
+			ok = false;
+			break;
+		}
+	}
+	if (ok && snap->sync_response) {
+		frr::SubscribeResponse sync;
+
+		sync.mutable_sync_response();
+		ok = tag->enqueue_response(std::move(sync), false);
+	}
+	if (ok && snap->sync_response) {
+		/*
+		 * Drain the deltas held back during the collection.  The
+		 * contract is at-least-once post-baseline: an event whose
+		 * effect the baseline already contains may still be
+		 * delivered.
+		 */
+		std::deque<frr::SubscribeResponse> buffered;
+
+		pthread_mutex_lock(&sub->mtx);
+		buffered.swap(sub->side_buffer);
+		pthread_mutex_unlock(&sub->mtx);
+		for (auto &resp : buffered) {
+			if (!tag->enqueue_response(std::move(resp), true)) {
+				ok = false;
+				break;
+			}
+		}
+	}
+	if (ok && snap->sample) {
+		/* A fully healthy collection re-arms the stall warning. */
+		if (!snap->partial)
+			sub->sample_partial_logged = false;
+		/* Re-arms coalesced ticks skipped during the collection. */
+		tag->schedule_sample_timer();
+	}
+
+	pthread_mutex_unlock(&tag->cmux);
+	delete snap;
 }
 
 bool SubscribeRpcState::subscription_finish_deferred(void)
@@ -1532,7 +1993,34 @@ void SubscribeRpcState::sample_timer_event(struct event *event)
 	cancelled = tag->sub->cancelled;
 	pthread_mutex_unlock(&tag->sub->mtx);
 	if (!cancelled) {
-		grpc::Status status = tag->enqueue_state_snapshot(false);
+		char errmsg[BUFSIZ] = { 0 };
+		int ret;
+
+		if (tag->sub->snapshot) {
+			/*
+			 * Defensive: the timer is consumed at tick start and
+			 * only re-armed by the completion flush or the sync
+			 * fallback, so it cannot be pending mid-collection
+			 * today.  Kept because an arming path that missed
+			 * this guard would start concurrent collections.
+			 */
+			pthread_mutex_unlock(&tag->cmux);
+			return;
+		}
+
+		ret = tag->snapshot_collect_async(false, true, errmsg, sizeof(errmsg));
+		if (!ret) {
+			/* Collection in flight: completion re-arms the timer. */
+			pthread_mutex_unlock(&tag->cmux);
+			return;
+		}
+		if (ret != -EOPNOTSUPP) {
+			tag->close_subscription(status_from_errno(ret, errmsg));
+			pthread_mutex_unlock(&tag->cmux);
+			return;
+		}
+
+		grpc::Status status = tag->enqueue_snapshot(false);
 		if (!status.ok()) {
 			if (tag->subscription_finish_deferred()) {
 				pthread_mutex_unlock(&tag->cmux);
@@ -1579,6 +2067,33 @@ void SubscribeRpcState::heartbeat_timer_event(struct event *event)
 
 void SubscribeRpcState::enqueue_notification(frr::SubscribeResponse &&resp)
 {
+	/* Caller must hold cmux; sub is dereferenced below. */
+	if (sub && sub->snapshot && sub->snapshot->sync_response) {
+		bool overflow;
+
+		/*
+		 * A STREAM initial snapshot is still collecting: hold the
+		 * notification back so the baseline reaches the client before
+		 * any delta.  The completion flush drains the buffer right
+		 * after sync_response.  Held deltas count against the same
+		 * pending limit -- a consumer that cannot absorb the baseline
+		 * closes just like a slow one.
+		 */
+		pthread_mutex_lock(&sub->mtx);
+		overflow = !sub->cancelled &&
+			   sub->pending.size() + sub->side_buffer.size() >=
+				   grpc_subscribe_max_pending;
+		if (!overflow && !sub->cancelled)
+			sub->side_buffer.push_back(std::move(resp));
+		pthread_mutex_unlock(&sub->mtx);
+
+		if (overflow)
+			close_subscription(
+				grpc::Status(grpc::StatusCode::OUT_OF_RANGE,
+					     "Subscribe stream pending queue limit exceeded"));
+		return;
+	}
+
 	enqueue_response(std::move(resp), true);
 }
 
@@ -1640,6 +2155,21 @@ CallState SubscribeRpcState::run_mainthread(struct event *event)
 			return FINISH;
 		}
 
+		if (request.has_snapshot_type()) {
+			if (!frr::GetRequest_DataType_IsValid(request.snapshot_type())) {
+				finish_from_event_thread(grpc::Status(
+					grpc::StatusCode::INVALID_ARGUMENT,
+					"snapshot_type must be ALL, CONFIG or STATE"));
+				return FINISH;
+			}
+			if (mode == frr::SubscribeRequest::ON_CHANGE) {
+				finish_from_event_thread(grpc::Status(
+					grpc::StatusCode::INVALID_ARGUMENT,
+					"snapshot_type is only valid for STREAM and SAMPLE subscriptions"));
+				return FINISH;
+			}
+		}
+
 		sub = new Subscription();
 		pthread_mutex_init(&sub->mtx, NULL);
 		sub->tag = this;
@@ -1657,28 +2187,55 @@ CallState SubscribeRpcState::run_mainthread(struct event *event)
 		sub->main_released = false;
 		sub->finish_after_write = false;
 		sub->mgmt_notify_handle = NULL;
+		sub->snapshot = NULL;
+		sub->sample_partial_logged = false;
 		sub->sample_timer = NULL;
 		sub->heartbeat_timer = NULL;
 		sub->sample_interval_ms = request.sample_interval_ms();
 		sub->heartbeat_interval_ms = request.heartbeat_interval_ms();
+		/*
+		 * Explicit presence matters: DataType.ALL == 0, so an absent
+		 * field must keep the pre-extension STATE behavior.
+		 */
+		sub->snapshot_type = request.has_snapshot_type()
+					     ? request.snapshot_type()
+					     : frr::GetRequest_DataType_STATE;
 		for (const auto &p : request.path())
 			sub->selectors.push_back(p);
 
 		if (mode == frr::SubscribeRequest::SAMPLE) {
-			grpc::Status status = enqueue_state_snapshot(false);
-			if (!status.ok()) {
-				if (subscription_finish_deferred()) {
-					accepted_stream = true;
-					do_request(service, cq, false);
-					return MORE;
-				}
-				if (!sub)
-					return FINISH;
+			char errmsg[BUFSIZ] = { 0 };
+			int ret;
+
+			ret = snapshot_collect_async(false, true, errmsg, sizeof(errmsg));
+			if (ret && ret != -EOPNOTSUPP) {
 				deregister_subscription();
-				finish_from_event_thread(status);
+				finish_from_event_thread(status_from_errno(ret, errmsg));
 				return FINISH;
 			}
-			schedule_sample_timer();
+			if (ret == -EOPNOTSUPP) {
+				/* Synchronous local read (no dispatcher, or a
+				 * CONFIG snapshot).
+				 */
+				grpc::Status status = enqueue_snapshot(false);
+
+				if (!status.ok()) {
+					if (subscription_finish_deferred()) {
+						accepted_stream = true;
+						do_request(service, cq, false);
+						return MORE;
+					}
+					if (!sub)
+						return FINISH;
+					deregister_subscription();
+					finish_from_event_thread(status);
+					return FINISH;
+				}
+				schedule_sample_timer();
+			}
+			/* ret == 0: collection in flight; its completion
+			 * flushes the updates and arms the sample timer.
+			 */
 		} else {
 			std::vector<const char *> selectors;
 			selectors.reserve(sub->selectors.size());
@@ -1709,19 +2266,40 @@ CallState SubscribeRpcState::run_mainthread(struct event *event)
 			}
 
 			if (mode == frr::SubscribeRequest::STREAM) {
-				grpc::Status status = enqueue_state_snapshot(true);
-				if (!status.ok()) {
-					if (subscription_finish_deferred()) {
-						accepted_stream = true;
-						do_request(service, cq, false);
-						return MORE;
-					}
-					if (!sub)
-						return FINISH;
+				char snap_errmsg[BUFSIZ] = { 0 };
+				int ret;
+
+				ret = snapshot_collect_async(true, false, snap_errmsg,
+							     sizeof(snap_errmsg));
+				if (ret && ret != -EOPNOTSUPP) {
 					deregister_subscription();
-					finish_from_event_thread(status);
+					finish_from_event_thread(
+						status_from_errno(ret, snap_errmsg));
 					return FINISH;
 				}
+				if (ret == -EOPNOTSUPP) {
+					/* Synchronous local read (no dispatcher,
+					 * or a CONFIG snapshot).
+					 */
+					grpc::Status status = enqueue_snapshot(true);
+
+					if (!status.ok()) {
+						if (subscription_finish_deferred()) {
+							accepted_stream = true;
+							do_request(service, cq, false);
+							return MORE;
+						}
+						if (!sub)
+							return FINISH;
+						deregister_subscription();
+						finish_from_event_thread(status);
+						return FINISH;
+					}
+				}
+				/* ret == 0: collection in flight; notifications
+				 * side-buffer until the flush emits the baseline
+				 * and sync_response.
+				 */
 			}
 		}
 
@@ -2818,7 +3396,10 @@ static void *grpc_pthread_start(void *arg)
 	}
 
 	/* Schedule streaming RPC handlers */
-	REQUEST_NEWRPC_STREAMING(Get);
+	{
+		auto _rpcState = new GetRpcState();
+		_rpcState->do_request(&service, cq.get(), true);
+	}
 	REQUEST_NEWRPC_STREAMING(ListTransactions);
 	{
 		auto _rpcState = new SubscribeRpcState();

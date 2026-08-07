@@ -227,6 +227,11 @@ static int mgmt_fe_send_session_req(struct mgmt_fe_client *client,
 	msg->code = MGMT_MSG_CODE_SESSION_REQ;
 	msg->req_id = session->client_id;
 	if (create) {
+		/*
+		 * Register the client name with the adapter; append before
+		 * queueing the message as appending may reallocate it.
+		 */
+		mgmt_msg_native_add_str(msg, client->name);
 		debug_fe_client("Sending SESSION_REQ create message for client-id %" PRIu64,
 				session->client_id);
 		/* we need to queue before sending short-circuit so it's there when replied to */
