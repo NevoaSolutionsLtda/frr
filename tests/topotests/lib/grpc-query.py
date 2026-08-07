@@ -387,6 +387,65 @@ class GRPCClient:
 
         raise AssertionError(f"expected {expected}, got OK")
 
+    def subscribe_sample_cancel(self, xpath, interval_ms, delay, encoding, timeout):
+        request = frr_northbound_pb2.SubscribeRequest()
+        request.mode = frr_northbound_pb2.SubscribeRequest.SAMPLE
+        request.response_encoding = encoding
+        request.sample_interval_ms = interval_ms
+        request.path.append(xpath)
+
+        call = self.stub.Subscribe(request, timeout=timeout)
+        time.sleep(delay)
+        call.cancel()
+
+        try:
+            list(call)
+        except grpc.RpcError as error:
+            return error.code().name
+
+        return "OK"
+
+    def subscribe_stream_paths_order(self, xpaths, encoding, timeout):
+        request = frr_northbound_pb2.SubscribeRequest()
+        request.mode = frr_northbound_pb2.SubscribeRequest.STREAM
+        request.response_encoding = encoding
+        for xpath in xpaths:
+            request.path.append(xpath)
+
+        events = []
+        synced = False
+        for response in self.stub.Subscribe(request, timeout=timeout):
+            if response.HasField("update"):
+                events.append(
+                    {
+                        "update": response.update.path,
+                        "empty": not response.update.data,
+                    }
+                )
+                if synced:
+                    return json.dumps(events)
+            elif response.HasField("sync_response"):
+                synced = True
+                events.append({"sync_response": True})
+        return json.dumps(events)
+
+    def subscribe_stream_paths_expect_error(self, xpaths, expected, encoding, timeout):
+        request = frr_northbound_pb2.SubscribeRequest()
+        request.mode = frr_northbound_pb2.SubscribeRequest.STREAM
+        request.response_encoding = encoding
+        for xpath in xpaths:
+            request.path.append(xpath)
+
+        try:
+            list(self.stub.Subscribe(request, timeout=timeout))
+        except grpc.RpcError as error:
+            code = error.code().name
+            if code != expected:
+                raise AssertionError(f"expected {expected}, got {code}") from error
+            return code
+
+        raise AssertionError(f"expected {expected}, got OK")
+
 
 def next_action(action_list=None):
     "Get next action from list or STDIN"
@@ -618,6 +677,27 @@ def main(*args):
             print(
                 c.subscribe_stream_repeat_expect_error(
                     xpath, int(repeat), expected, encoding, float(timeout)
+                )
+            )
+        elif action.startswith("subscribe-sample-cancel,"):
+            _, xpath, interval_ms, delay, timeout = raw_action.split(",", 4)
+            print(
+                c.subscribe_sample_cancel(
+                    xpath, int(interval_ms), float(delay), encoding, float(timeout)
+                )
+            )
+        elif action.startswith("subscribe-stream-paths-order,"):
+            _, xpaths, timeout = raw_action.split(",", 2)
+            print(
+                c.subscribe_stream_paths_order(
+                    xpaths.split(";"), encoding, float(timeout)
+                )
+            )
+        elif action.startswith("subscribe-stream-paths-expect-error,"):
+            _, xpaths, expected, timeout = raw_action.split(",", 3)
+            print(
+                c.subscribe_stream_paths_expect_error(
+                    xpaths.split(";"), expected, encoding, float(timeout)
                 )
             )
 

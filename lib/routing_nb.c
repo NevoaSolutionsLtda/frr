@@ -9,7 +9,21 @@
 #include "libfrr.h"
 #include "routing_nb.h"
 
+static const void *cpp_get_next(struct nb_cb_get_next_args *args)
+{
+	return NULL;
+}
 
+static int cpp_get_keys(struct nb_cb_get_keys_args *args)
+{
+	args->keys->num = 0;
+	return NB_OK;
+}
+
+static const void *cpp_lookup_entry(struct nb_cb_lookup_entry_args *args)
+{
+	return NULL;
+}
 
 /* clang-format off */
 const struct frr_yang_module_info frr_routing_info = {
@@ -20,6 +34,9 @@ const struct frr_yang_module_info frr_routing_info = {
 			.cbs = {
 				.create = routing_control_plane_protocols_control_plane_protocol_create,
 				.destroy = routing_control_plane_protocols_control_plane_protocol_destroy,
+				.get_next = cpp_get_next,
+				.get_keys = cpp_get_keys,
+				.lookup_entry = cpp_lookup_entry,
 			}
 		},
 		{

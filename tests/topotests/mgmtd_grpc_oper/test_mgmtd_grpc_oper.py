@@ -234,9 +234,7 @@ def test_get_state_multiple_paths(tgen):
     step("One Get(STATE) request with two paths streams one response per path")
     check_backend_oper_served(r1)
 
-    output = run_grpc_client(
-        r1, "GET-STATE-PATHS,/frr-vrf:lib;/frr-interface:lib"
-    )
+    output = run_grpc_client(r1, "GET-STATE-PATHS,/frr-vrf:lib;/frr-interface:lib")
     responses = output.split("===RESPONSE===")
     assert len(responses) == 2
     assert '"if-index"' in output
@@ -252,3 +250,70 @@ def test_get_state_mgmtd_local_backend(tgen):
     clients = out_json["frr-backend:clients"]["client"]
     names = {c["name"] for c in clients}
     assert "zebra" in names
+
+
+def _run_until_sync(r, xpath, timeout=15):
+    cmd = f"SUBSCRIBE-UNTIL-SYNC,{xpath},{timeout}\n"
+    return r.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
+
+
+def _run_sample_count(r, xpath, interval_ms=200, count=3, timeout=5):
+    cmd = f"SUBSCRIBE-SAMPLE-COUNT,{xpath},{interval_ms},{count},{timeout}\n"
+    return r.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
+
+
+def _run_sample_count_typed(
+    r, xpath, snapshot_type, interval_ms=200, count=3, timeout=5
+):
+    cmd = (
+        "SUBSCRIBE-SAMPLE-COUNT-TYPED,"
+        f"{xpath},{interval_ms},{count},{snapshot_type},{timeout}\n"
+    )
+    return r.net.cmd_raises([script_path, f"--port={GRPCP_MGMTD}"], stdin=cmd)
+
+
+def test_subscribe_stream_backend_state(tgen):
+    r1 = tgen.gears["r1"]
+
+    step("A STREAM initial snapshot serves zebra-owned interface state")
+    check_backend_oper_served(r1)
+
+    raw = _run_until_sync(r1, "/frr-interface:lib", timeout=15).strip()
+    responses = json.loads(raw.splitlines()[-1])
+    assert responses, "STREAM Subscribe returned no responses"
+    assert responses[-1] == {"sync_response": True}
+    updates = [item for item in responses if "update" in item]
+    assert updates, "STREAM Subscribe returned no initial snapshot"
+    assert all(update["path"] == "/frr-interface:lib" for update in updates)
+    assert any('"if-index"' in update["update"] for update in updates)
+
+
+def test_subscribe_sample_backend_state(tgen):
+    r1 = tgen.gears["r1"]
+
+    step("SAMPLE snapshots serve zebra-owned interface state periodically")
+    check_backend_oper_served(r1)
+
+    raw = _run_sample_count(
+        r1, "/frr-interface:lib", interval_ms=200, count=3, timeout=5
+    ).strip()
+    responses = json.loads(raw.splitlines()[-1])
+    assert len(responses) >= 3
+    assert all('"if-index"' in response["data"] for response in responses)
+
+
+def test_subscribe_sample_all_merges_config_and_state(tgen):
+    r1 = tgen.gears["r1"]
+
+    step("SAMPLE ALL snapshots merge running config with backend state")
+    check_backend_oper_served(r1)
+
+    raw = _run_sample_count_typed(r1, "/frr-interface:lib", "ALL").strip()
+    responses = json.loads(raw.splitlines()[-1])
+    assert len(responses) >= 3
+    for response in responses:
+        byname = interfaces_by_name(response["data"])
+        r1_eth0 = byname["r1-eth0"]
+        assert "if-index" in r1_eth0["state"]
+        addrs = r1_eth0["frr-zebra:zebra"]["ipv4-addrs"]
+        assert any(a["ip"] == "192.0.2.1" for a in addrs)
