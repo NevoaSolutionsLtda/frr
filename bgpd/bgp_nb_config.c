@@ -178,11 +178,20 @@ int bgp_router_create(struct nb_cb_create_args *args)
 	}
 	as = (as_t)yang_dnode_get_uint32(args->dnode, "global/local-as");
 
-	ret = bgp_get(&bgp, &as, bgp_name, inst_type, NULL,
-		      ASNOTATION_UNDEFINED);
+	/*
+	 * bgp_get_vty (no vty involved despite the name) layers the
+	 * frr-defaults profile flags (RFC 8212 ebgp-requires-policy,
+	 * enforce-first-as, suppress-duplicates, ...) on top of bgp_get()
+	 * for freshly created instances, exactly like DEFUN(router_bgp).
+	 * Plain bgp_get() would leave an NB-created instance without the
+	 * secure defaults: mgmtd never delivers default-valued leaves
+	 * (no diff), so nothing else applies them.
+	 */
+	ret = bgp_get_vty(&bgp, &as, bgp_name, inst_type, NULL,
+			  ASNOTATION_UNDEFINED);
 	if (ret < 0 || !bgp) {
 		snprintf(args->errmsg, args->errmsg_len,
-			 "bgp_get() failed for AS %u vrf %s (ret %d)", as,
+			 "bgp_get_vty() failed for AS %u vrf %s (ret %d)", as,
 			 vrf_key, ret);
 		return NB_ERR;
 	}
