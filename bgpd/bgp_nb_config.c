@@ -4761,12 +4761,29 @@ static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode, int ups,
 	return 0;
 }
 
+/*
+ * Turn a legacy bgpd setter result into a northbound result: semantic
+ * failures (e.g. route-reflector-client on an eBGP peer) must fail the
+ * commit with the daemon's own error text instead of returning a false
+ * commit-OK. NULL from bgp_create_error_str() means success.
+ */
+static int bgp_nb_setter_result(int ret, char *errmsg, size_t errmsg_len)
+{
+	const char *str = bgp_create_error_str(ret);
+
+	if (!str)
+		return NB_OK;
+	snprintf(errmsg, errmsg_len, "%s", str);
+	return NB_ERR;
+}
+
 static int peer_af_flag_toggle_modify(struct nb_cb_modify_args *args,
 				      uint64_t flag, int ups)
 {
 	struct peer *peer;
 	afi_t afi;
 	safi_t safi;
+	int ret;
 
 	switch (args->event) {
 	case NB_EV_VALIDATE:
@@ -4779,10 +4796,10 @@ static int peer_af_flag_toggle_modify(struct nb_cb_modify_args *args,
 	if (bgp_nb_peer_af_lookup(args->dnode, ups, &peer, &afi, &safi) < 0)
 		return NB_ERR;
 	if (yang_dnode_get_bool(args->dnode, NULL))
-		peer_af_flag_set(peer, afi, safi, flag);
+		ret = peer_af_flag_set(peer, afi, safi, flag);
 	else
-		peer_af_flag_unset(peer, afi, safi, flag);
-	return NB_OK;
+		ret = peer_af_flag_unset(peer, afi, safi, flag);
+	return bgp_nb_setter_result(ret, args->errmsg, args->errmsg_len);
 }
 
 static int peer_af_flag_toggle_destroy(struct nb_cb_destroy_args *args,
@@ -4802,8 +4819,8 @@ static int peer_af_flag_toggle_destroy(struct nb_cb_destroy_args *args,
 	}
 	if (bgp_nb_peer_af_lookup(args->dnode, ups, &peer, &afi, &safi) < 0)
 		return NB_OK;
-	peer_af_flag_unset(peer, afi, safi, flag);
-	return NB_OK;
+	return bgp_nb_setter_result(peer_af_flag_unset(peer, afi, safi, flag),
+				    args->errmsg, args->errmsg_len);
 }
 
 #define BGP_NEIGHBOR_AF_FLAG_CB(_name, _flag, _ups)                            \
@@ -4881,8 +4898,8 @@ int bgp_neighbor_af_encapsulation_type_create(struct nb_cb_create_args *args)
 		yang_dnode_get_string(args->dnode, NULL));
 	if (!flag)
 		return NB_ERR;
-	peer_af_flag_set(peer, afi, safi, flag);
-	return NB_OK;
+	return bgp_nb_setter_result(peer_af_flag_set(peer, afi, safi, flag),
+				    args->errmsg, args->errmsg_len);
 }
 
 int bgp_neighbor_af_encapsulation_type_destroy(struct nb_cb_destroy_args *args)
@@ -4904,9 +4921,10 @@ int bgp_neighbor_af_encapsulation_type_destroy(struct nb_cb_destroy_args *args)
 		return NB_OK;
 	flag = bgp_nb_encapsulation_flag(
 		yang_dnode_get_string(args->dnode, NULL));
-	if (flag)
-		peer_af_flag_unset(peer, afi, safi, flag);
-	return NB_OK;
+	if (!flag)
+		return NB_OK;
+	return bgp_nb_setter_result(peer_af_flag_unset(peer, afi, safi, flag),
+				    args->errmsg, args->errmsg_len);
 }
 
 /*

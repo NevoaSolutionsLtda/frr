@@ -1059,7 +1059,7 @@ struct peer *peer_and_group_lookup_vty(struct vty *vty, const char *peer_str)
 	return NULL;
 }
 
-int bgp_vty_return(struct vty *vty, enum bgp_create_error_code ret)
+const char *bgp_create_error_str(enum bgp_create_error_code ret)
 {
 	const char *str = NULL;
 
@@ -1163,6 +1163,13 @@ int bgp_vty_return(struct vty *vty, enum bgp_create_error_code ret)
 		str = "External roles can be set only on eBGP session";
 		break;
 	}
+	return str;
+}
+
+int bgp_vty_return(struct vty *vty, enum bgp_create_error_code ret)
+{
+	const char *str = bgp_create_error_str(ret);
+
 	if (str) {
 		vty_out(vty, "%% %s\n", str);
 		return CMD_WARNING_CONFIG_FAILED;
