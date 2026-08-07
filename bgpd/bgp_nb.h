@@ -105,6 +105,13 @@ int bgp_global_bgp_ls_distribute_create(struct nb_cb_create_args *args);
 int bgp_global_bgp_ls_distribute_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_bgp_ls_distribute_instance_id_modify(
 	struct nb_cb_modify_args *args);
+int bgp_global_af_redistribution_list_create(struct nb_cb_create_args *args);
+int bgp_global_af_redistribution_list_destroy(struct nb_cb_destroy_args *args);
+int bgp_global_af_redistribution_metric_modify(struct nb_cb_modify_args *args);
+int bgp_global_af_redistribution_metric_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_global_af_redistribution_rmap_modify(struct nb_cb_modify_args *args);
+int bgp_global_af_redistribution_rmap_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_bestpath_aigp_modify(struct nb_cb_modify_args *args);
 int bgp_global_bestpath_aigp_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_bestpath_use_imported_attributes_modify(
@@ -444,6 +451,7 @@ _BGP_CLI(bgp_global_tcp_keepalive);
 _BGP_CLI(bgp_global_shutdown);
 _BGP_CLI(bgp_global_suppress_fib_pending);
 _BGP_CLI(bgp_global_bgp_ls_distribute);
+_BGP_CLI(bgp_global_af_redistribution_list);
 
 _BGP_CLI(bgp_neighbor_passive_mode);
 _BGP_CLI(bgp_neighbor_solo);

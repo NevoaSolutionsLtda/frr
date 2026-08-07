@@ -205,6 +205,54 @@ const struct frr_yang_module_info frr_bgp_info = {
 				.cli_show = bgp_nb_handled_by_parent_cli_show,
 			},
 		},
+#define BGP_NB_GLOBAL_AF_XPATH(_af, _leaf)                                     \
+	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/" \
+	"frr-bgp:bgp/global/afi-safis/afi-safi/" _af "/" _leaf
+		{ .xpath = BGP_NB_GLOBAL_AF_XPATH("ipv4-unicast",
+						  "redistribution-list"),
+		  .cbs = {
+			  .create = bgp_global_af_redistribution_list_create,
+			  .destroy = bgp_global_af_redistribution_list_destroy,
+			  .cli_show = bgp_global_af_redistribution_list_cli_show,
+		  } },
+		{ .xpath = BGP_NB_GLOBAL_AF_XPATH("ipv4-unicast",
+						  "redistribution-list/metric"),
+		  .cbs = {
+			  .modify = bgp_global_af_redistribution_metric_modify,
+			  .destroy = bgp_global_af_redistribution_metric_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_GLOBAL_AF_XPATH(
+			  "ipv4-unicast",
+			  "redistribution-list/rmap-policy-import"),
+		  .cbs = {
+			  .modify = bgp_global_af_redistribution_rmap_modify,
+			  .destroy = bgp_global_af_redistribution_rmap_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_GLOBAL_AF_XPATH("ipv6-unicast",
+						  "redistribution-list"),
+		  .cbs = {
+			  .create = bgp_global_af_redistribution_list_create,
+			  .destroy = bgp_global_af_redistribution_list_destroy,
+			  .cli_show = bgp_global_af_redistribution_list_cli_show,
+		  } },
+		{ .xpath = BGP_NB_GLOBAL_AF_XPATH("ipv6-unicast",
+						  "redistribution-list/metric"),
+		  .cbs = {
+			  .modify = bgp_global_af_redistribution_metric_modify,
+			  .destroy = bgp_global_af_redistribution_metric_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_GLOBAL_AF_XPATH(
+			  "ipv6-unicast",
+			  "redistribution-list/rmap-policy-import"),
+		  .cbs = {
+			  .modify = bgp_global_af_redistribution_rmap_modify,
+			  .destroy = bgp_global_af_redistribution_rmap_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+#undef BGP_NB_GLOBAL_AF_XPATH
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/route-selection-options/compare-aigp",
 			.cbs = {
