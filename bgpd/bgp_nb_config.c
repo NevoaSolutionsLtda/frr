@@ -1513,10 +1513,11 @@ int bgp_global_tcp_keepalive_destroy(struct nb_cb_destroy_args *args)
 /*
  * `timers bgp KEEPALIVE HOLDTIME` legacy DEFUN calls bgp_timers_set with
  * all 4 params (keepalive, holdtime, connect_retry, delayopen). YANG has
- * leaves hold-time, keepalive, connect-retry-interval as direct children
- * of global. Per-leaf modify callback reads all sibling leaves (or uses
- * defaults) and calls the setter. Bit wasteful when 2 leaves change in
- * the same transaction (setter runs twice) but correct in all cases.
+ * leaves hold-time, keepalive and connect-retry-interval all under the
+ * global/global-config-timers container. Per-leaf modify callback reads
+ * all sibling leaves (or uses defaults) and calls the setter. Bit
+ * wasteful when 2 leaves change in the same transaction (setter runs
+ * twice) but correct in all cases.
  */
 static int bgp_global_timers_apply(const struct lyd_node *dnode)
 {
@@ -1525,7 +1526,7 @@ static int bgp_global_timers_apply(const struct lyd_node *dnode)
 	uint32_t holdtime = DFLT_BGP_HOLDTIME;
 	uint32_t connect_retry = DFLT_BGP_CONNECT_RETRY;
 
-	bgp = bgp_nb_lookup_from_dnode(dnode, 3);
+	bgp = bgp_nb_lookup_from_dnode(dnode, 4);
 	if (!bgp)
 		return NB_ERR;
 
@@ -1533,11 +1534,9 @@ static int bgp_global_timers_apply(const struct lyd_node *dnode)
 		keepalive = yang_dnode_get_uint16(dnode, "../keepalive");
 	if (yang_dnode_exists(dnode, "../hold-time"))
 		holdtime = yang_dnode_get_uint16(dnode, "../hold-time");
-	if (yang_dnode_exists(dnode,
-			      "../global-config-timers/connect-retry-interval"))
+	if (yang_dnode_exists(dnode, "../connect-retry-interval"))
 		connect_retry = yang_dnode_get_uint16(
-			dnode,
-			"../global-config-timers/connect-retry-interval");
+			dnode, "../connect-retry-interval");
 
 	bgp_timers_set(NULL, bgp, keepalive, holdtime, connect_retry,
 		       BGP_DEFAULT_DELAYOPEN);
