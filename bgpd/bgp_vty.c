@@ -1716,21 +1716,21 @@ static void bgp_nb_peer_value_dual(struct vty *vty, const char *peer_arg,
 static const char *bgp_nb_af_yang_name(afi_t afi, safi_t safi)
 {
 	if (afi == AFI_IP && safi == SAFI_UNICAST)
-		return "frr-rt:ipv4-unicast";
+		return "frr-routing:ipv4-unicast";
 	if (afi == AFI_IP6 && safi == SAFI_UNICAST)
-		return "frr-rt:ipv6-unicast";
+		return "frr-routing:ipv6-unicast";
 	if (afi == AFI_IP && safi == SAFI_LABELED_UNICAST)
-		return "frr-rt:ipv4-labeled-unicast";
+		return "frr-routing:ipv4-labeled-unicast";
 	if (afi == AFI_IP6 && safi == SAFI_LABELED_UNICAST)
-		return "frr-rt:ipv6-labeled-unicast";
+		return "frr-routing:ipv6-labeled-unicast";
 	if (afi == AFI_IP && safi == SAFI_MPLS_VPN)
-		return "frr-rt:l3vpn-ipv4-unicast";
+		return "frr-routing:l3vpn-ipv4-unicast";
 	if (afi == AFI_IP6 && safi == SAFI_MPLS_VPN)
-		return "frr-rt:l3vpn-ipv6-unicast";
+		return "frr-routing:l3vpn-ipv6-unicast";
 	if (afi == AFI_L2VPN && safi == SAFI_EVPN)
-		return "frr-rt:l2vpn-evpn";
+		return "frr-routing:l2vpn-evpn";
 	if (afi == AFI_L2VPN && safi == SAFI_UNICAST)
-		return "frr-rt:l2vpn-vpls";
+		return "frr-routing:l2vpn-vpls";
 	return NULL;
 }
 
