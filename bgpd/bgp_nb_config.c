@@ -123,9 +123,9 @@ int bgp_router_create(struct nb_cb_create_args *args)
 		if (yang_dnode_exists(args->dnode, "global/instance-type-view")
 		    && yang_dnode_get_bool(args->dnode,
 					    "global/instance-type-view")) {
-			snprintf(args->errmsg, args->errmsg_len,
-				 "view instances not yet supported via NB; "
-				 "use vtysh `router bgp ASN view NAME`");
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "view instances not yet supported via NB; "
+				   "use vtysh `router bgp ASN view NAME`");
 			return NB_ERR_VALIDATION;
 		}
 		/*
@@ -138,8 +138,8 @@ int bgp_router_create(struct nb_cb_create_args *args)
 		bgp_name = bgp_nb_vrf_to_name(vrf_key);
 		if (!bgp_lookup_by_name(bgp_name)
 		    && !yang_dnode_exists(args->dnode, "global/local-as")) {
-			snprintf(args->errmsg, args->errmsg_len,
-				 "local-as is mandatory when creating a new BGP instance via NB");
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "local-as is mandatory when creating a new BGP instance via NB");
 			return NB_ERR_VALIDATION;
 		}
 		return NB_OK;
@@ -172,8 +172,8 @@ int bgp_router_create(struct nb_cb_create_args *args)
 	 * NB_EV_VALIDATE; an internal bug if it's missing now.
 	 */
 	if (!yang_dnode_exists(args->dnode, "global/local-as")) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "internal error: local-as missing at apply; validate stage skipped?");
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "internal error: local-as missing at apply; validate stage skipped?");
 		return NB_ERR;
 	}
 	as = (as_t)yang_dnode_get_uint32(args->dnode, "global/local-as");
@@ -190,9 +190,9 @@ int bgp_router_create(struct nb_cb_create_args *args)
 	ret = bgp_get_vty(&bgp, &as, bgp_name, inst_type, NULL,
 			  ASNOTATION_UNDEFINED);
 	if (ret < 0 || !bgp) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "bgp_get_vty() failed for AS %u vrf %s (ret %d)", as,
-			 vrf_key, ret);
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bgp_get_vty() failed for AS %u vrf %s (ret %d)", as,
+			   vrf_key, ret);
 		return NB_ERR;
 	}
 
@@ -264,8 +264,8 @@ int bgp_global_router_id_modify(struct nb_cb_modify_args *args)
 	/* router-id leaf -> 3 hops to control-plane-protocol entry. */
 	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
 	if (!bgp) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "bgp instance not found for router-id modify");
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bgp instance not found for router-id modify");
 		return NB_ERR;
 	}
 
@@ -912,7 +912,7 @@ int bgp_global_confederation_identifier_modify(struct nb_cb_modify_args *args)
 		return NB_ERR;
 
 	as = (as_t)yang_dnode_get_uint32(args->dnode, NULL);
-	snprintf(as_str, sizeof(as_str), "%u", as);
+	snprintfrr(as_str, sizeof(as_str), "%u", as);
 	bgp_confederation_id_set(bgp, as, as_str);
 	return NB_OK;
 }
@@ -959,7 +959,7 @@ int bgp_global_confederation_member_as_create(struct nb_cb_create_args *args)
 		return NB_ERR;
 
 	as = (as_t)yang_dnode_get_uint32(args->dnode, NULL);
-	snprintf(as_buf, sizeof(as_buf), "%u", as);
+	snprintfrr(as_buf, sizeof(as_buf), "%u", as);
 	bgp_confederation_peers_add(bgp, as, as_buf);
 	return NB_OK;
 }
@@ -1183,8 +1183,8 @@ int bgp_global_bgp_ls_distribute_create(struct nb_cb_create_args *args)
 		return NB_ERR;
 
 	if (!bgp->ls_info) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "BGP-LS not initialized for this instance");
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "BGP-LS not initialized for this instance");
 		return NB_ERR;
 	}
 
@@ -2056,9 +2056,9 @@ int bgp_global_deterministic_med_modify(struct nb_cb_modify_args *args)
 				FOREACH_AFI_SAFI (afi, safi)
 					if (bgp_addpath_dmed_required(
 						    peer->addpath_type[afi][safi])) {
-						snprintf(args->errmsg,
-							 args->errmsg_len,
-							 "deterministic-med cannot be disabled while addpath-tx-bestpath-per-AS is in use");
+						snprintfrr(args->errmsg,
+							   args->errmsg_len,
+							   "deterministic-med cannot be disabled while addpath-tx-bestpath-per-AS is in use");
 						return NB_ERR_VALIDATION;
 					}
 		}
@@ -2285,8 +2285,8 @@ int bgp_global_graceful_shutdown_enable_modify(struct nb_cb_modify_args *args)
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 		if (CHECK_FLAG(bm->flags, BM_FLAG_GRACEFUL_SHUTDOWN)) {
-			snprintf(args->errmsg, args->errmsg_len,
-				 "per-vrf graceful-shutdown not permitted with global graceful-shutdown");
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "per-vrf graceful-shutdown not permitted with global graceful-shutdown");
 			return NB_ERR_VALIDATION;
 		}
 		return NB_OK;
@@ -2505,8 +2505,8 @@ int bgp_global_update_delay_time_modify(struct nb_cb_modify_args *args)
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 		if (bm->v_update_delay) {
-			snprintf(args->errmsg, args->errmsg_len,
-				 "per-vrf update-delay not permitted with global update-delay");
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "per-vrf update-delay not permitted with global update-delay");
 			return NB_ERR_VALIDATION;
 		}
 		return NB_OK;
@@ -2528,8 +2528,8 @@ int bgp_global_update_delay_time_modify(struct nb_cb_modify_args *args)
 		establish_wait = yang_dnode_get_uint16(args->dnode,
 						       "../establish-wait-time");
 		if (update_delay < establish_wait) {
-			snprintf(args->errmsg, args->errmsg_len,
-				 "update-delay less than establish-wait");
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "update-delay less than establish-wait");
 			return NB_ERR;
 		}
 		bgp->v_establish_wait = establish_wait;
@@ -3077,9 +3077,9 @@ int bgp_global_route_reflector_cluster_id_modify(struct nb_cb_modify_args *args)
 		 * value is rejected before apply. */
 		value = yang_dnode_get_string(args->dnode, NULL);
 		if (inet_aton(value, &cluster) == 0) {
-			snprintf(args->errmsg, args->errmsg_len,
-				 "malformed route-reflector-cluster-id: %s",
-				 value);
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "malformed route-reflector-cluster-id: %s",
+				   value);
 			return NB_ERR_VALIDATION;
 		}
 		return NB_OK;
@@ -3098,8 +3098,8 @@ int bgp_global_route_reflector_cluster_id_modify(struct nb_cb_modify_args *args)
 	if (inet_aton(value, &cluster) == 0) {
 		/* Shouldn't happen — validated above. Return NB_ERR (not
 		 * VALIDATION) since apply-stage errors are not validation. */
-		snprintf(args->errmsg, args->errmsg_len,
-			 "internal: cluster-id reparse failed: %s", value);
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "internal: cluster-id reparse failed: %s", value);
 		return NB_ERR;
 	}
 
@@ -3513,25 +3513,25 @@ int bgp_neighbor_create(struct nb_cb_create_args *args)
 		remote_addr = yang_dnode_get_string(args->dnode,
 						    "remote-address");
 		if (str2sockunion(remote_addr, &su) < 0) {
-			snprintf(args->errmsg, args->errmsg_len,
-				 "invalid neighbor remote-address: %s",
-				 remote_addr);
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "invalid neighbor remote-address: %s",
+				   remote_addr);
 			return NB_ERR_VALIDATION;
 		}
 		as_type_str = yang_dnode_get_string(
 			args->dnode, "neighbor-remote-as/remote-as-type");
 		as_type = bgp_nb_yang_as_type(as_type_str);
 		if (as_type == AS_UNSPECIFIED) {
-			snprintf(args->errmsg, args->errmsg_len,
-				 "unsupported remote-as-type: %s",
-				 as_type_str);
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "unsupported remote-as-type: %s",
+				   as_type_str);
 			return NB_ERR_VALIDATION;
 		}
 		if (as_type == AS_SPECIFIED &&
 		    !yang_dnode_exists(args->dnode,
 				       "neighbor-remote-as/remote-as")) {
-			snprintf(args->errmsg, args->errmsg_len,
-				 "remote-as required when remote-as-type is as-specified");
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "remote-as required when remote-as-type is as-specified");
 			return NB_ERR_VALIDATION;
 		}
 		return NB_OK;
@@ -3544,16 +3544,16 @@ int bgp_neighbor_create(struct nb_cb_create_args *args)
 
 	bgp = bgp_nb_lookup_from_dnode(args->dnode, 3);
 	if (!bgp) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "bgp instance not found for neighbor create");
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bgp instance not found for neighbor create");
 		return NB_ERR;
 	}
 
 	remote_addr = yang_dnode_get_string(args->dnode, "remote-address");
 	if (str2sockunion(remote_addr, &su) < 0) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "internal: remote-address reparse failed: %s",
-			 remote_addr);
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "internal: remote-address reparse failed: %s",
+			   remote_addr);
 		return NB_ERR;
 	}
 
@@ -3561,31 +3561,31 @@ int bgp_neighbor_create(struct nb_cb_create_args *args)
 					    "neighbor-remote-as/remote-as-type");
 	as_type = bgp_nb_yang_as_type(as_type_str);
 	if (as_type == AS_UNSPECIFIED) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "internal: bad remote-as-type at apply: %s",
-			 as_type_str);
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "internal: bad remote-as-type at apply: %s",
+			   as_type_str);
 		return NB_ERR;
 	}
 
 	if (as_type == AS_SPECIFIED) {
 		if (!yang_dnode_exists(args->dnode,
 				       "neighbor-remote-as/remote-as")) {
-			snprintf(args->errmsg, args->errmsg_len,
-				 "internal: remote-as missing at apply");
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "internal: remote-as missing at apply");
 			return NB_ERR;
 		}
 		as = (as_t)yang_dnode_get_uint32(
 			args->dnode, "neighbor-remote-as/remote-as");
-		snprintf(as_buf, sizeof(as_buf), "%u", as);
+		snprintfrr(as_buf, sizeof(as_buf), "%u", as);
 		as_str = as_buf;
 	}
 
 	bgp_need_listening(bgp, NULL);
 	ret = peer_remote_as(bgp, &su, NULL, &as, as_type, as_str);
 	if (ret < 0) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "peer_remote_as failed for %s (ret %d)", remote_addr,
-			 ret);
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "peer_remote_as failed for %s (ret %d)", remote_addr,
+			   ret);
 		return NB_ERR;
 	}
 
@@ -3669,7 +3669,7 @@ int bgp_neighbor_remote_as_type_modify(struct nb_cb_modify_args *args)
 	if (new_type == AS_SPECIFIED &&
 	    yang_dnode_exists(args->dnode, "../remote-as")) {
 		as = (as_t)yang_dnode_get_uint32(args->dnode, "../remote-as");
-		snprintf(as_buf, sizeof(as_buf), "%u", as);
+		snprintfrr(as_buf, sizeof(as_buf), "%u", as);
 		as_str = as_buf;
 	}
 
@@ -3704,7 +3704,7 @@ int bgp_neighbor_remote_as_modify(struct nb_cb_modify_args *args)
 		return NB_OK;
 
 	as = (as_t)yang_dnode_get_uint32(args->dnode, NULL);
-	snprintf(as_buf, sizeof(as_buf), "%u", as);
+	snprintfrr(as_buf, sizeof(as_buf), "%u", as);
 	peer_as_change(peer, as, AS_SPECIFIED, as_buf);
 	return NB_OK;
 }
@@ -3733,8 +3733,8 @@ int bgp_neighbor_remote_as_destroy(struct nb_cb_destroy_args *args)
  * remote-address key). Returns NULL if peer not found.
  */
 static struct peer *bgp_nb_lookup_peer(const struct lyd_node *dnode,
-				        const char *neighbor_rel_xpath,
-				        unsigned int depth_to_cpp)
+				       const char *neighbor_rel_xpath,
+				       unsigned int depth_to_cpp)
 {
 	struct bgp *bgp;
 	union sockunion su;
@@ -3745,8 +3745,8 @@ static struct peer *bgp_nb_lookup_peer(const struct lyd_node *dnode,
 	if (!bgp)
 		return NULL;
 
-	snprintf(xpath_buf, sizeof(xpath_buf), "%s/remote-address",
-		 neighbor_rel_xpath);
+	snprintfrr(xpath_buf, sizeof(xpath_buf), "%s/remote-address",
+		   neighbor_rel_xpath);
 	remote_addr = yang_dnode_get_string(dnode, "%s", xpath_buf);
 	if (str2sockunion(remote_addr, &su) < 0)
 		return NULL;
@@ -3837,8 +3837,8 @@ int bgp_neighbor_password_modify(struct nb_cb_modify_args *args)
 
 	pwd = yang_dnode_get_string(args->dnode, NULL);
 	if (peer_password_set(peer, pwd) != 0) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "peer_password_set failed");
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "peer_password_set failed");
 		return NB_ERR;
 	}
 	return NB_OK;
@@ -3988,8 +3988,8 @@ int bgp_neighbor_ttl_security_modify(struct nb_cb_modify_args *args)
 
 	hops = yang_dnode_get_uint8(args->dnode, NULL);
 	if (peer_ttl_security_hops_set(peer, hops) != 0) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "peer_ttl_security_hops_set failed");
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "peer_ttl_security_hops_set failed");
 		return NB_ERR;
 	}
 	return NB_OK;
@@ -4159,8 +4159,8 @@ int bgp_neighbor_ebgp_multihop_ttl_modify(struct nb_cb_modify_args *args)
 	if (peer_ebgp_multihop_set(peer,
 				   yang_dnode_get_uint8(args->dnode, NULL),
 				   true) != 0) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "peer_ebgp_multihop_set failed");
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "peer_ebgp_multihop_set failed");
 		return NB_ERR;
 	}
 	return NB_OK;
@@ -4221,8 +4221,8 @@ int bgp_neighbor_update_source_ip_modify(struct nb_cb_modify_args *args)
 	case NB_EV_VALIDATE:
 		ip = yang_dnode_get_string(args->dnode, NULL);
 		if (str2sockunion(ip, &su) < 0) {
-			snprintf(args->errmsg, args->errmsg_len,
-				 "invalid update-source ip: %s", ip);
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "invalid update-source ip: %s", ip);
 			return NB_ERR_VALIDATION;
 		}
 		return NB_OK;
@@ -4239,8 +4239,8 @@ int bgp_neighbor_update_source_ip_modify(struct nb_cb_modify_args *args)
 
 	ip = yang_dnode_get_string(args->dnode, NULL);
 	if (str2sockunion(ip, &su) < 0) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "internal: update-source ip reparse failed: %s", ip);
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "internal: update-source ip reparse failed: %s", ip);
 		return NB_ERR;
 	}
 
@@ -4293,8 +4293,8 @@ int bgp_neighbor_update_source_interface_modify(struct nb_cb_modify_args *args)
 	if (peer_update_source_if_set(peer,
 				      yang_dnode_get_string(args->dnode, NULL)) !=
 	    0) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "peer_update_source_if_set failed");
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "peer_update_source_if_set failed");
 		return NB_ERR;
 	}
 	return NB_OK;
@@ -4346,8 +4346,8 @@ int bgp_neighbor_timers_connect_time_modify(struct nb_cb_modify_args *args)
 	if (peer_timers_connect_set(peer,
 				    yang_dnode_get_uint16(args->dnode, NULL)) !=
 	    0) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "peer_timers_connect_set failed");
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "peer_timers_connect_set failed");
 		return NB_ERR;
 	}
 	return NB_OK;
@@ -4398,8 +4398,8 @@ int bgp_neighbor_timers_advertise_interval_modify(
 
 	if (peer_advertise_interval_set(
 		    peer, yang_dnode_get_uint16(args->dnode, NULL)) != 0) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "peer_advertise_interval_set failed");
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "peer_advertise_interval_set failed");
 		return NB_ERR;
 	}
 	return NB_OK;
@@ -4452,7 +4452,7 @@ void bgp_neighbor_local_as_apply_finish(struct nb_cb_apply_finish_args *args)
 
 	if (yang_dnode_exists(args->dnode, "local-as")) {
 		as = (as_t)yang_dnode_get_uint32(args->dnode, "local-as");
-		snprintf(as_buf, sizeof(as_buf), "%u", as);
+		snprintfrr(as_buf, sizeof(as_buf), "%u", as);
 	}
 	if (yang_dnode_exists(args->dnode, "no-prepend"))
 		no_prepend = yang_dnode_get_bool(args->dnode, "no-prepend");
@@ -5595,8 +5595,8 @@ int bgp_peer_group_create(struct nb_cb_create_args *args)
 
 	name = yang_dnode_get_string(args->dnode, "peer-group-name");
 	if (!peer_group_get(bgp, name)) {
-		snprintf(args->errmsg, args->errmsg_len,
-			 "peer_group_get failed for %s", name);
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "peer_group_get failed for %s", name);
 		return NB_ERR;
 	}
 	return NB_OK;
@@ -5681,8 +5681,8 @@ static int peer_group_listen_range_validate(const struct lyd_node *dnode,
 	struct prefix p = {};
 
 	if (str2prefix(prefix_str, &p) == 0) {
-		snprintf(errmsg, errmsg_len,
-			 "invalid listen-range prefix: %s", prefix_str);
+		snprintfrr(errmsg, errmsg_len,
+			   "invalid listen-range prefix: %s", prefix_str);
 		return NB_ERR_VALIDATION;
 	}
 	return NB_OK;
@@ -6058,9 +6058,12 @@ void bgp_neighbor_local_as_cli_show(struct vty *vty,
 		dual = yang_dnode_get_bool(dnode, "./dual-as");
 
 	vty_out(vty, " neighbor %s local-as %s", peer, as);
-	if (noprep) vty_out(vty, " no-prepend");
-	if (repas)  vty_out(vty, " replace-as");
-	if (dual)   vty_out(vty, " dual-as");
+	if (noprep)
+		vty_out(vty, " no-prepend");
+	if (repas)
+		vty_out(vty, " replace-as");
+	if (dual)
+		vty_out(vty, " dual-as");
 	vty_out(vty, "\n");
 }
 
