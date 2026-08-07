@@ -4019,9 +4019,9 @@ int bgp_neighbor_ebgp_multihop_enabled_modify(struct nb_cb_modify_args *args)
 		return NB_ERR;
 
 	if (yang_dnode_get_bool(args->dnode, NULL))
-		peer_ebgp_multihop_set(peer, MAXTTL);
+		peer_ebgp_multihop_set(peer, MAXTTL, true);
 	else
-		peer_ebgp_multihop_unset(peer);
+		peer_ebgp_multihop_unset(peer, true);
 	return NB_OK;
 }
 
@@ -4042,7 +4042,7 @@ int bgp_neighbor_ebgp_multihop_enabled_destroy(struct nb_cb_destroy_args *args)
 	if (!peer)
 		return NB_OK;
 
-	peer_ebgp_multihop_unset(peer);
+	peer_ebgp_multihop_unset(peer, true);
 	return NB_OK;
 }
 
@@ -4068,8 +4068,8 @@ int bgp_neighbor_ebgp_multihop_ttl_modify(struct nb_cb_modify_args *args)
 		return NB_ERR;
 
 	if (peer_ebgp_multihop_set(peer,
-				   yang_dnode_get_uint8(args->dnode, NULL)) !=
-	    0) {
+				   yang_dnode_get_uint8(args->dnode, NULL),
+				   true) != 0) {
 		snprintf(args->errmsg, args->errmsg_len,
 			 "peer_ebgp_multihop_set failed");
 		return NB_ERR;
@@ -4094,7 +4094,7 @@ int bgp_neighbor_ebgp_multihop_ttl_destroy(struct nb_cb_destroy_args *args)
 	if (!peer)
 		return NB_OK;
 
-	peer_ebgp_multihop_unset(peer);
+	peer_ebgp_multihop_unset(peer, true);
 	return NB_OK;
 }
 
