@@ -424,11 +424,21 @@ static const struct frr_yang_module_info *const bgpd_yang_modules[] = {
 /*
  * XPath subscriptions for the mgmt backend client. Writes against any
  * xpath listed here are routed to bgpd. Writes to a leaf without a
- * registered callback error with NB_ERR. Shared modules (frr-host,
- * frr-logging, frr-vrf, frr-interface) are intentionally not subscribed
- * — bgpd reads them via its own legacy config path.
+ * registered callback error with NB_ERR. frr-filter and frr-route-map
+ * are subscribed so the policy objects BGP references (prefix-lists,
+ * route-maps) can be provisioned through mgmtd, mirroring zebra's
+ * subscriptions; vtysh still delivers those commands to bgpd directly
+ * (VTYSH_ACL_CONFIG), and the duplicate backend apply converges to an
+ * empty diff. The frr-bgp-filter augmentations of frr-filter are not
+ * implemented or loaded by any daemon, so mgmtd rejects writes to
+ * their nodes at the frontend edge and this subscription only ever
+ * receives access-list and prefix-list changes.
+ * Shared modules without a bgpd northbound consumer
+ * (frr-host, frr-logging, frr-vrf, frr-interface) are intentionally
+ * not subscribed — bgpd reads them via its own legacy config path.
  */
 static const char *const bgpd_config_xpaths[] = {
+	"/frr-filter:lib",
 	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp",
 	"/frr-route-map:lib",
 };
