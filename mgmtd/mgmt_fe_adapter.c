@@ -2278,6 +2278,17 @@ struct mgmt_commit_stats *mgmt_fe_get_session_commit_stats(uint64_t session_id)
 	return &session->adapter->cmt_stats;
 }
 
+const char *mgmt_fe_session_client_name(uint64_t session_id)
+{
+	struct mgmt_fe_session_ctx *session;
+
+	session = fe_session_lookup(session_id);
+	if (!session || !session->adapter)
+		return NULL;
+
+	return session->adapter->name;
+}
+
 static void _cmt_stats_write(struct vty *vty, struct mgmt_fe_client_adapter *adapter)
 {
 	char buf[MGMT_LONG_TIME_MAX_LEN];

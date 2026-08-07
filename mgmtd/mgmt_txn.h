@@ -39,6 +39,15 @@ typedef void (*mgmt_txn_rpc_done_cb)(uint64_t txn_id, uint64_t req_id, int error
 				     const struct lyd_node *result, void *arg);
 typedef void (*mgmt_txn_commit_done_cb)(uint64_t txn_id, uint64_t req_id, int error,
 					const char *errstr, bool running_updated, void *arg);
+/*
+ * Called when a get-tree transaction completes.  The result tree is borrowed
+ * for the duration of the callback; callers that need it after return must
+ * copy it.  A non-zero error with a non-NULL result means partial data was
+ * gathered before the error (e.g. a backend timed out).
+ */
+typedef void (*mgmt_txn_get_tree_done_cb)(uint64_t txn_id, uint64_t req_id, int error,
+					  const char *errstr, const struct lyd_node *result,
+					  void *arg);
 
 enum mgmt_txn_type {
 	MGMTD_TXN_TYPE_NONE = 0,
@@ -163,6 +172,20 @@ extern int mgmt_txn_send_get_tree(uint64_t txn_id, uint64_t req_id, uint64_t cli
 				  uint32_t wd_options, bool simple_xpath, struct lyd_node **ylib,
 				  const char *xpath);
 
+/*
+ * Send a get-tree request and notify the caller on completion instead of
+ * replying through the frontend adapter.  The transaction is destroyed after
+ * done returns.  The caller must keep arg valid until done is invoked.  A
+ * timeout_ms of zero selects MGMTD_TXN_GET_TREE_MAX_DELAY_SEC.
+ */
+int mgmt_txn_send_get_tree_cb(uint64_t txn_id, uint64_t req_id, uint64_t clients,
+			      enum mgmt_ds_id ds_id, LYD_FORMAT result_type, uint8_t flags,
+			      uint32_t wd_options, bool simple_xpath, struct lyd_node **ylib,
+			      const char *xpath, uint32_t timeout_ms,
+			      mgmt_txn_get_tree_done_cb done, void *arg);
+bool mgmt_txn_cancel_get_tree_notify(uint64_t txn_id, uint64_t req_id, int error,
+				     const char *errstr);
+
 /**
  * mgmt_txn_send_rpc() - Send RPC request.
  * @txn_id: Transaction identifier.
@@ -205,10 +228,14 @@ extern void mgmt_txn_send_notify_selectors(uint64_t req_id, uint64_t session_id,
 /*
  * Trigger rollback config apply.
  *
- * Creates a new transaction and commit request for rollback.
+ * Creates a new transaction and commit request for rollback.  @user is the
+ * client identity of the rollback initiator reported as changed-by in the
+ * RFC 6470 netconf-config-change notification and @session_id its front-end
+ * session; a NULL @user attributes the change to the server instead.
  */
 extern int mgmt_txn_rollback_trigger_cfg_apply(struct mgmt_ds_ctx *src_ds_ctx,
-					       struct mgmt_ds_ctx *dst_ds_ctx);
+					       struct mgmt_ds_ctx *dst_ds_ctx, const char *user,
+					       uint64_t session_id);
 
 /* ---------------------------------------- */
 /* Txn API for Backend messages and events. */

@@ -13,6 +13,7 @@
 #include "mgmt_fe_client.h"
 #include "mgmtd/mgmt.h"
 #include "mgmtd/mgmt_ds.h"
+#include "mgmtd/mgmt_fe_adapter.h"
 #include "mgmtd/mgmt_history.h"
 
 struct mgmt_cmt_info_t {
@@ -194,6 +195,7 @@ static int mgmt_history_rollback_to_cmt(struct vty *vty,
 {
 	struct mgmt_ds_ctx *src_ds_ctx;
 	struct mgmt_ds_ctx *dst_ds_ctx;
+	const char *user;
 	int ret = 0;
 
 	if (rollback_vty) {
@@ -231,7 +233,9 @@ static int mgmt_history_rollback_to_cmt(struct vty *vty,
 	}
 
 	/* Internally trigger a commit-request. */
-	ret = mgmt_txn_rollback_trigger_cfg_apply(src_ds_ctx, dst_ds_ctx);
+	user = mgmt_fe_session_client_name(vty->mgmt_session_id);
+	ret = mgmt_txn_rollback_trigger_cfg_apply(src_ds_ctx, dst_ds_ctx, user,
+						  vty->mgmt_session_id);
 	if (ret != 0) {
 		vty_out(vty,
 			"Error with creating commit apply txn with error code %d\n",
