@@ -4692,6 +4692,13 @@ int bgp_neighbor_capabilities_negotiate_destroy(struct nb_cb_destroy_args *args)
 		return peer_flag_toggle_destroy(args, (_flag), "..", 4);       \
 	}
 
+/* For leaves with a yang default: the framework never delivers destroy. */
+#define BGP_NEIGHBOR_FLAG_MOD_CB(_name, _flag)                                 \
+	int bgp_neighbor_##_name##_modify(struct nb_cb_modify_args *args)      \
+	{                                                                      \
+		return peer_flag_toggle_modify(args, (_flag), "..", 4);        \
+	}
+
 /* per-AF per-peer flag toggles */
 
 /*
@@ -4833,33 +4840,40 @@ static int peer_af_flag_toggle_destroy(struct nb_cb_destroy_args *args,
 		return peer_af_flag_toggle_destroy(args, (_flag), (_ups));     \
 	}
 
+/* For leaves with a yang default: the framework never delivers destroy. */
+#define BGP_NEIGHBOR_AF_FLAG_MOD_CB(_name, _flag, _ups)                        \
+	int bgp_neighbor_af_##_name##_modify(struct nb_cb_modify_args *args)   \
+	{                                                                      \
+		return peer_af_flag_toggle_modify(args, (_flag), (_ups));      \
+	}
+
 /* ups: hops from the leaf to the afi-safi list entry (see lookup above). */
-BGP_NEIGHBOR_AF_FLAG_CB(soft_reconfig_in, PEER_FLAG_SOFT_RECONFIG, 2)
-BGP_NEIGHBOR_AF_FLAG_CB(as_override, PEER_FLAG_AS_OVERRIDE, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(rr_client, PEER_FLAG_REFLECTOR_CLIENT, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(rs_client, PEER_FLAG_RSERVER_CLIENT, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(nexthop_self, PEER_FLAG_NEXTHOP_SELF, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(nexthop_self_force, PEER_FLAG_FORCE_NEXTHOP_SELF, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(remove_private_as, PEER_FLAG_REMOVE_PRIVATE_AS, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(remove_private_as_all, PEER_FLAG_REMOVE_PRIVATE_AS_ALL,
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(soft_reconfig_in, PEER_FLAG_SOFT_RECONFIG, 2)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(as_override, PEER_FLAG_AS_OVERRIDE, 3)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(rr_client, PEER_FLAG_REFLECTOR_CLIENT, 3)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(rs_client, PEER_FLAG_RSERVER_CLIENT, 3)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(nexthop_self, PEER_FLAG_NEXTHOP_SELF, 3)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(nexthop_self_force, PEER_FLAG_FORCE_NEXTHOP_SELF, 3)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(remove_private_as, PEER_FLAG_REMOVE_PRIVATE_AS, 3)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(remove_private_as_all, PEER_FLAG_REMOVE_PRIVATE_AS_ALL,
 			3)
-BGP_NEIGHBOR_AF_FLAG_CB(remove_private_as_replace,
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(remove_private_as_replace,
 			PEER_FLAG_REMOVE_PRIVATE_AS_REPLACE, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(remove_private_as_all_replace,
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(remove_private_as_all_replace,
 			PEER_FLAG_REMOVE_PRIVATE_AS_ALL_REPLACE, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(nexthop_local_unchanged,
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(nexthop_local_unchanged,
 			PEER_FLAG_NEXTHOP_LOCAL_UNCHANGED, 2)
-BGP_NEIGHBOR_AF_FLAG_CB(send_community, PEER_FLAG_SEND_COMMUNITY, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(send_ext_community, PEER_FLAG_SEND_EXT_COMMUNITY, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(send_large_community, PEER_FLAG_SEND_LARGE_COMMUNITY,
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(send_community, PEER_FLAG_SEND_COMMUNITY, 3)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(send_ext_community, PEER_FLAG_SEND_EXT_COMMUNITY, 3)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(send_large_community, PEER_FLAG_SEND_LARGE_COMMUNITY,
 			3)
-BGP_NEIGHBOR_AF_FLAG_CB(accept_own, PEER_FLAG_ACCEPT_OWN, 2)
-BGP_NEIGHBOR_AF_FLAG_CB(disable_addpath_rx, PEER_FLAG_DISABLE_ADDPATH_RX, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(attr_unchanged_as_path,
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(accept_own, PEER_FLAG_ACCEPT_OWN, 2)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(disable_addpath_rx, PEER_FLAG_DISABLE_ADDPATH_RX, 3)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(attr_unchanged_as_path,
 			PEER_FLAG_AS_PATH_UNCHANGED, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(attr_unchanged_next_hop,
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(attr_unchanged_next_hop,
 			PEER_FLAG_NEXTHOP_UNCHANGED, 3)
-BGP_NEIGHBOR_AF_FLAG_CB(attr_unchanged_med,
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(attr_unchanged_med,
 			PEER_FLAG_MED_UNCHANGED, 3)
 
 /*
@@ -5019,32 +5033,32 @@ int bgp_neighbor_af_enabled_destroy(struct nb_cb_destroy_args *args)
 	return NB_OK;
 }
 
-BGP_NEIGHBOR_FLAG_CB(aigp, PEER_FLAG_AIGP)
-BGP_NEIGHBOR_FLAG_CB(ip_transparent, PEER_FLAG_IP_TRANSPARENT)
-BGP_NEIGHBOR_FLAG_CB(extended_link_bandwidth, PEER_FLAG_EXTENDED_LINK_BANDWIDTH)
-BGP_NEIGHBOR_FLAG_CB(disable_link_bw_encoding_ieee,
+BGP_NEIGHBOR_FLAG_MOD_CB(aigp, PEER_FLAG_AIGP)
+BGP_NEIGHBOR_FLAG_MOD_CB(ip_transparent, PEER_FLAG_IP_TRANSPARENT)
+BGP_NEIGHBOR_FLAG_MOD_CB(extended_link_bandwidth, PEER_FLAG_EXTENDED_LINK_BANDWIDTH)
+BGP_NEIGHBOR_FLAG_MOD_CB(disable_link_bw_encoding_ieee,
 		     PEER_FLAG_DISABLE_LINK_BW_ENCODING_IEEE)
-BGP_NEIGHBOR_FLAG_CB(extended_optional_parameters,
+BGP_NEIGHBOR_FLAG_MOD_CB(extended_optional_parameters,
 		     PEER_FLAG_EXTENDED_OPT_PARAMS)
-BGP_NEIGHBOR_FLAG_CB(send_nexthop_characteristics,
+BGP_NEIGHBOR_FLAG_MOD_CB(send_nexthop_characteristics,
 		     PEER_FLAG_SEND_NHC_ATTRIBUTE)
-BGP_NEIGHBOR_FLAG_CB(rpki_strict, PEER_FLAG_RPKI_STRICT)
-BGP_NEIGHBOR_FLAG_CB(as_loop_detection, PEER_FLAG_AS_LOOP_DETECTION)
-BGP_NEIGHBOR_FLAG_CB(peer_graceful_shutdown, PEER_FLAG_GRACEFUL_SHUTDOWN)
+BGP_NEIGHBOR_FLAG_MOD_CB(rpki_strict, PEER_FLAG_RPKI_STRICT)
+BGP_NEIGHBOR_FLAG_MOD_CB(as_loop_detection, PEER_FLAG_AS_LOOP_DETECTION)
+BGP_NEIGHBOR_FLAG_MOD_CB(peer_graceful_shutdown, PEER_FLAG_GRACEFUL_SHUTDOWN)
 
 /*
  * Capability leaves moved under the capability-options container:
  * neighbor[remote-address]/capability-options/<leaf>, depth-to-CPP = 5,
  * neighbor_rel = "../..".
  */
+/*
+ * Capability-option leaves all carry yang defaults: the framework
+ * never delivers destroy, so only the modify half is generated.
+ */
 #define BGP_NEIGHBOR_CAPOPT_FLAG_CB(_name, _flag)                              \
 	int bgp_neighbor_##_name##_modify(struct nb_cb_modify_args *args)      \
 	{                                                                      \
 		return peer_flag_toggle_modify(args, (_flag), "../..", 5);     \
-	}                                                                      \
-	int bgp_neighbor_##_name##_destroy(struct nb_cb_destroy_args *args)    \
-	{                                                                      \
-		return peer_flag_toggle_destroy(args, (_flag), "../..", 5);    \
 	}
 
 BGP_NEIGHBOR_CAPOPT_FLAG_CB(capability_fqdn, PEER_FLAG_CAPABILITY_FQDN)
