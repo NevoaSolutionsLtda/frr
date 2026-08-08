@@ -2153,6 +2153,19 @@ DEFUN_NOSH (router_bgp,
 		nb_cli_enqueue_change(vty, ".", NB_OP_CREATE, NULL);
 		nb_cli_enqueue_change(vty, "./global/local-as", NB_OP_MODIFY,
 				      as_str);
+		/*
+		 * The YANG model defaults these to false while the
+		 * traditional-profile instance starts with them enabled.
+		 * Write them explicitly so a later "no ..." DEFPY_YANG
+		 * (leaf destroy) produces a real diff instead of a silent
+		 * empty one.
+		 */
+		nb_cli_enqueue_change(vty, "./global/ebgp-requires-policy",
+				      NB_OP_MODIFY, "true");
+		nb_cli_enqueue_change(vty, "./global/enforce-first-as",
+				      NB_OP_MODIFY, "true");
+		nb_cli_enqueue_change(vty, "./global/suppress-duplicates",
+				      NB_OP_MODIFY, "true");
 		nbret = nb_cli_apply_changes(vty, BGP_CONTAINER_XPATH,
 					     "frr-bgp:bgp",
 					     bgp_nb_cpp_name(bgp),
