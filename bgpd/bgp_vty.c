@@ -2153,6 +2153,13 @@ DEFUN_NOSH (router_bgp,
 		nb_cli_enqueue_change(vty, ".", NB_OP_CREATE, NULL);
 		nb_cli_enqueue_change(vty, "./global/local-as", NB_OP_MODIFY,
 				      as_str);
+		/*
+		 * The YANG model defaults enforce-first-as to false while a
+		 * traditional-profile instance starts with it enabled; write
+		 * it explicitly so datastore and daemon agree.
+		 */
+		nb_cli_enqueue_change(vty, "./global/enforce-first-as",
+				      NB_OP_MODIFY, "true");
 		nbret = nb_cli_apply_changes(vty, BGP_CONTAINER_XPATH,
 					     "frr-bgp:bgp",
 					     bgp_nb_cpp_name(bgp),
@@ -3686,7 +3693,7 @@ DEFPY_YANG (no_bgp_ebgp_requires_policy, no_bgp_ebgp_requires_policy_cmd,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
 	nb_cli_enqueue_change(vty, "./ebgp-requires-policy",
-			      NB_OP_DESTROY, NULL);
+			      NB_OP_MODIFY, "false");
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
 				    bgp_nb_vrf_key(bgp));
@@ -3764,7 +3771,7 @@ DEFPY_YANG (no_bgp_suppress_duplicates, no_bgp_suppress_duplicates_cmd,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
 	nb_cli_enqueue_change(vty, "./suppress-duplicates",
-			      NB_OP_DESTROY, NULL);
+			      NB_OP_MODIFY, "false");
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
 				    bgp_nb_vrf_key(bgp));
