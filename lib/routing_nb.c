@@ -34,6 +34,14 @@ const struct frr_yang_module_info frr_routing_info = {
 			.cbs = {
 				.create = routing_control_plane_protocols_control_plane_protocol_create,
 				.destroy = routing_control_plane_protocols_control_plane_protocol_destroy,
+				/*
+				 * Deleting the list entry must also run the
+				 * destroy callbacks of the per-protocol child
+				 * containers (e.g. frr-bgp:bgp), otherwise the
+				 * daemon keeps the live instance while the
+				 * config datastore loses it.
+				 */
+				.flags = F_NB_CB_DESTROY_RECURSE,
 				.get_next = cpp_get_next,
 				.get_keys = cpp_get_keys,
 				.lookup_entry = cpp_lookup_entry,
