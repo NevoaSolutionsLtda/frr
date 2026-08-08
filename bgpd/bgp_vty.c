@@ -2154,12 +2154,29 @@ DEFUN_NOSH (router_bgp,
 		nb_cli_enqueue_change(vty, "./global/local-as", NB_OP_MODIFY,
 				      as_str);
 		/*
-		 * The YANG model defaults enforce-first-as to false while a
-		 * traditional-profile instance starts with it enabled; write
-		 * it explicitly so datastore and daemon agree.
+		 * The YANG defaults of these knobs do not follow the frr
+		 * defaults profile the live instance was created with.
+		 * Sync them explicitly from the daemon state so datastore
+		 * and daemon agree on any profile.
 		 */
+		nb_cli_enqueue_change(vty, "./global/ebgp-requires-policy",
+				      NB_OP_MODIFY,
+				      CHECK_FLAG(bgp->flags,
+						 BGP_FLAG_EBGP_REQUIRES_POLICY)
+					      ? "true"
+					      : "false");
 		nb_cli_enqueue_change(vty, "./global/enforce-first-as",
-				      NB_OP_MODIFY, "true");
+				      NB_OP_MODIFY,
+				      CHECK_FLAG(bgp->flags,
+						 BGP_FLAG_ENFORCE_FIRST_AS)
+					      ? "true"
+					      : "false");
+		nb_cli_enqueue_change(vty, "./global/suppress-duplicates",
+				      NB_OP_MODIFY,
+				      CHECK_FLAG(bgp->flags,
+						 BGP_FLAG_SUPPRESS_DUPLICATES)
+					      ? "true"
+					      : "false");
 		nbret = nb_cli_apply_changes(vty, BGP_CONTAINER_XPATH,
 					     "frr-bgp:bgp",
 					     bgp_nb_cpp_name(bgp),
