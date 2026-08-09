@@ -2575,7 +2575,7 @@ DEFPY_YANG (bgp_confederation_identifier,
 	 * YANG leaf type is inet:as-number (uint32). Render as plain decimal
 	 * so the NB callback can yang_dnode_get_uint32().
 	 */
-	snprintf(numbuf, sizeof(numbuf), "%u", as);
+	snprintfrr(numbuf, sizeof(numbuf), "%u", as);
 	nb_cli_enqueue_change(vty, "./confederation/identifier",
 			      NB_OP_MODIFY, numbuf);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
@@ -2620,8 +2620,8 @@ DEFPY_YANG (bgp_confederation_peers,
 				argv[i]->arg);
 			continue;
 		}
-		snprintf(xp, sizeof(xp), "./confederation/member-as[.='%u']",
-			 as);
+		snprintfrr(xp, sizeof(xp), "./confederation/member-as[.='%u']",
+			   as);
 		nb_cli_enqueue_change(vty, xp, NB_OP_CREATE, NULL);
 	}
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
@@ -2649,8 +2649,8 @@ DEFPY_YANG (no_bgp_confederation_peers,
 				argv[i]->arg);
 			continue;
 		}
-		snprintf(xp, sizeof(xp), "./confederation/member-as[.='%u']",
-			 as);
+		snprintfrr(xp, sizeof(xp), "./confederation/member-as[.='%u']",
+			   as);
 		nb_cli_enqueue_change(vty, xp, NB_OP_DESTROY, NULL);
 	}
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
@@ -3988,7 +3988,7 @@ DEFPY_YANG (bgp_graceful_restart_stalepath_time,
 	}
 
 	char buf[16];
-	snprintf(buf, sizeof(buf), "%ld", stalepath);
+	snprintfrr(buf, sizeof(buf), "%ld", stalepath);
 	nb_cli_enqueue_change(vty, "./graceful-restart/stale-routes-time",
 			      NB_OP_MODIFY, buf);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
@@ -4077,7 +4077,7 @@ DEFPY_YANG (bgp_graceful_restart_restart_time,
 		vty_out(vty, "%% restart-time 0 not representable in YANG (min 1)\n");
 		restart = 1;
 	}
-	snprintf(buf, sizeof(buf), "%ld", restart);
+	snprintfrr(buf, sizeof(buf), "%ld", restart);
 	nb_cli_enqueue_change(vty, "./graceful-restart/restart-time",
 			      NB_OP_MODIFY, buf);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
@@ -4141,7 +4141,7 @@ DEFPY_YANG (bgp_graceful_restart_select_defer_time,
 	if (!bgp)
 		return CMD_WARNING_CONFIG_FAILED;
 
-	snprintf(buf, sizeof(buf), "%ld", defer_time);
+	snprintfrr(buf, sizeof(buf), "%ld", defer_time);
 	nb_cli_enqueue_change(vty,
 		"./graceful-restart/selection-deferral-time",
 		NB_OP_MODIFY, buf);
@@ -7111,11 +7111,11 @@ DEFPY_YANG(neighbor_shutdown_rtt,
 	if (ret == CMD_SUCCESS && bgp_arg_is_ip_peer(peer)) {
 		struct bgp *bgp = VTY_GET_CONTEXT(bgp);
 		if (bgp) {
-			snprintf(rbuf, sizeof(rbuf), "%ld", rtt);
+			snprintfrr(rbuf, sizeof(rbuf), "%ld", rtt);
 			nb_cli_enqueue_change(vty, "./admin-shutdown/rtt",
 					      NB_OP_MODIFY, rbuf);
 			if (ct) {
-				snprintf(cbuf, sizeof(cbuf), "%ld", ct);
+				snprintfrr(cbuf, sizeof(cbuf), "%ld", ct);
 				nb_cli_enqueue_change(vty,
 					"./admin-shutdown/rtt-count",
 					NB_OP_MODIFY, cbuf);
@@ -8635,7 +8635,7 @@ DEFPY_YANG (neighbor_ebgp_multihop_ttl,
 	if (ret == CMD_SUCCESS) {
 		bgp_nb_peer_value_dual(vty, peer, "./ebgp-multihop/enabled",
 				       "true");
-		snprintf(buf, sizeof(buf), "%ld", ttl);
+		snprintfrr(buf, sizeof(buf), "%ld", ttl);
 		bgp_nb_peer_value_dual(vty, peer,
 				       "./ebgp-multihop/multihop-ttl", buf);
 	}
@@ -9436,8 +9436,8 @@ DEFPY_YANG (neighbor_timers,
 	if (ret == CMD_SUCCESS && bgp_arg_is_ip_peer(peer)) {
 		struct bgp *bgp = VTY_GET_CONTEXT(bgp);
 		if (bgp) {
-			snprintf(kbuf, sizeof(kbuf), "%ld", keep);
-			snprintf(hbuf, sizeof(hbuf), "%ld", hold);
+			snprintfrr(kbuf, sizeof(kbuf), "%ld", keep);
+			snprintfrr(hbuf, sizeof(hbuf), "%ld", hold);
 			nb_cli_enqueue_change(vty, "./timers/keepalive",
 					      NB_OP_MODIFY, kbuf);
 			nb_cli_enqueue_change(vty, "./timers/hold-time",
@@ -9523,7 +9523,7 @@ DEFPY_YANG (neighbor_timers_connect,
 
 	ret = peer_timers_connect_set_vty(vty, peer, ct_str);
 	if (ret == CMD_SUCCESS) {
-		snprintf(buf, sizeof(buf), "%ld", ct);
+		snprintfrr(buf, sizeof(buf), "%ld", ct);
 		bgp_nb_peer_value_dual(vty, peer, "./timers/connect-time", buf);
 	}
 	return ret;
@@ -9569,7 +9569,7 @@ DEFPY_YANG (neighbor_timers_delayopen,
 	} else {
 		if (peer_timers_delayopen_set(peer, interval))
 			return CMD_WARNING_CONFIG_FAILED;
-		snprintf(buf, sizeof(buf), "%ld", interval);
+		snprintfrr(buf, sizeof(buf), "%ld", interval);
 		bgp_nb_peer_value_dual(vty, neighbor, "./timers/delayopen",
 				       buf);
 	}
@@ -9633,7 +9633,7 @@ DEFPY_YANG (neighbor_advertise_interval,
 
 	ret = peer_advertise_interval_vty(vty, peer, ival_str, 1);
 	if (ret == CMD_SUCCESS) {
-		snprintf(buf, sizeof(buf), "%ld", ival);
+		snprintfrr(buf, sizeof(buf), "%ld", ival);
 		bgp_nb_peer_value_dual(vty, peer,
 				       "./timers/advertise-interval", buf);
 	}
@@ -10780,7 +10780,7 @@ DEFPY_YANG (neighbor_allowas_in,
 				  allow_num_val, origin, rmap_name);
 	if (ret == 0 && !origin) {
 		char buf[8];
-		snprintf(buf, sizeof(buf), "%d", allow_num_val);
+		snprintfrr(buf, sizeof(buf), "%d", allow_num_val);
 		bgp_nb_peer_af_value_dual(vty, neighbor, "as-path-options/allow-own-as", buf);
 	}
 	return bgp_vty_return(vty, ret);
@@ -10858,7 +10858,7 @@ DEFPY_YANG (neighbor_ttl_security,
 
 	ret = peer_ttl_security_hops_set(p, hops);
 	if (ret == 0) {
-		snprintf(buf, sizeof(buf), "%ld", hops);
+		snprintfrr(buf, sizeof(buf), "%ld", hops);
 		bgp_nb_peer_value_dual(vty, peer, "./ttl-security", buf);
 	}
 	return bgp_vty_return(vty, ret);
@@ -21613,7 +21613,7 @@ DEFPY_YANG(neighbor_tcp_mss, neighbor_tcp_mss_cmd,
 		" Warning: Reset BGP session for tcp-mss value to take effect\n");
 	ret = peer_tcp_mss_vty(vty, peer, mss_str);
 	if (ret == CMD_SUCCESS) {
-		snprintf(buf, sizeof(buf), "%ld", mss);
+		snprintfrr(buf, sizeof(buf), "%ld", mss);
 		bgp_nb_peer_value_dual(vty, peer, "./tcp-mss", buf);
 	}
 	return ret;
@@ -21714,7 +21714,7 @@ DEFPY_YANG(bgp_ls_distribute_bgp_fabric,
 	nb_cli_enqueue_change(vty, "./afi-safis/afi-safi[afi-safi-name='frr-rt:link-state']/link-state/distribute/bgp-fabric-link-state", NB_OP_CREATE, NULL);
 	if (instance_id_str) {
 		char buf[32];
-		snprintf(buf, sizeof(buf), "%" PRIu64, instance_id);
+		snprintfrr(buf, sizeof(buf), "%" PRIu64, instance_id);
 		nb_cli_enqueue_change(vty, "./afi-safis/afi-safi[afi-safi-name='frr-rt:link-state']/link-state/distribute/bgp-fabric-link-state/instance-id",
 				      NB_OP_MODIFY, buf);
 	}
@@ -21804,7 +21804,7 @@ DEFPY_YANG(neighbor_ls_local_link_id,
 
 	if (bgp_arg_is_ip_peer(peer_str)) {
 		char buf[16];
-		snprintf(buf, sizeof(buf), "%ld", link_id);
+		snprintfrr(buf, sizeof(buf), "%ld", link_id);
 		bgp_nb_peer_value_dual(vty, peer_str, "./local-link-id",
 				       buf);
 	}
@@ -21880,7 +21880,7 @@ DEFPY_YANG(neighbor_ls_remote_link_id,
 
 	if (bgp_arg_is_ip_peer(peer_str)) {
 		char buf[16];
-		snprintf(buf, sizeof(buf), "%ld", link_id);
+		snprintfrr(buf, sizeof(buf), "%ld", link_id);
 		bgp_nb_peer_value_dual(vty, peer_str, "./remote-link-id",
 				       buf);
 	}
