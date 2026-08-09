@@ -10195,9 +10195,19 @@ DEFPY_YANG (neighbor_route_map,
 	int idx_peer = 1;
 	int idx_word = 3;
 	int idx_in_out = 4;
-	return peer_route_map_set_vty(
-		vty, argv[idx_peer]->arg, bgp_node_afi(vty), bgp_node_safi(vty),
-		argv[idx_word]->arg, argv[idx_in_out]->arg);
+	int ret = peer_route_map_set_vty(vty, argv[idx_peer]->arg,
+					 bgp_node_afi(vty), bgp_node_safi(vty),
+					 argv[idx_word]->arg,
+					 argv[idx_in_out]->arg);
+
+	if (ret == CMD_SUCCESS)
+		bgp_nb_peer_af_value_dual(vty, argv[idx_peer]->arg,
+					  strncmp(argv[idx_in_out]->arg, "in",
+						  2) == 0
+						  ? "filter-config/rmap-import"
+						  : "filter-config/rmap-export",
+					  argv[idx_word]->arg);
+	return ret;
 }
 
 ALIAS_HIDDEN(neighbor_route_map, neighbor_route_map_hidden_cmd,
@@ -10221,9 +10231,19 @@ DEFPY_YANG (no_neighbor_route_map,
 {
 	int idx_peer = 2;
 	int idx_in_out = 5;
-	return peer_route_map_unset_vty(vty, argv[idx_peer]->arg,
-					bgp_node_afi(vty), bgp_node_safi(vty),
-					argv[idx_in_out]->arg);
+	int ret = peer_route_map_unset_vty(vty, argv[idx_peer]->arg,
+					   bgp_node_afi(vty),
+					   bgp_node_safi(vty),
+					   argv[idx_in_out]->arg);
+
+	if (ret == CMD_SUCCESS)
+		bgp_nb_peer_af_value_dual(vty, argv[idx_peer]->arg,
+					  strncmp(argv[idx_in_out]->arg, "in",
+						  2) == 0
+						  ? "filter-config/rmap-import"
+						  : "filter-config/rmap-export",
+					  NULL);
+	return ret;
 }
 
 ALIAS_HIDDEN(no_neighbor_route_map, no_neighbor_route_map_hidden_cmd,

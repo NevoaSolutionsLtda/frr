@@ -9,6 +9,7 @@
 
 #include "lib/log.h"
 #include "lib/northbound.h"
+#include "lib/routemap.h"
 #include "lib/yang.h"
 #include "lib/yang_wrappers.h"
 #include "lib/vrf.h"
@@ -1256,6 +1257,231 @@ int bgp_global_bgp_ls_distribute_instance_id_modify(
 	bgp->ls_info->instance_id = new_id;
 	if (bgp->ls_info->enable_distribution)
 		(void)bgp_ls_export_bgp_topology(bgp);
+	return NB_OK;
+}
+
+/*
+ * XPath:
+ *   .../bgp/global/afi-safis/afi-safi/{ipv4,ipv6}-unicast/
+ *     redistribution-list[route-type][route-instance]
+ *
+ * The schema only places the list inside the two unicast containers,
+ * so the AFI comes straight from the afi-safi identity. ups_to_af is
+ * the hop count from dnode to the afi-safi list entry (2 for the list
+ * entry itself, 3 for its metric/rmap-policy-import leaves); the
+ * control-plane-protocol node sits 4 hops above that.
+ */
+static int bgp_nb_redist_lookup(const struct lyd_node *dnode, int ups_to_af,
+				struct bgp **bgp_out, afi_t *afi_out,
+				int *type_out, unsigned short *instance_out)
+{
+	static const char *const af_rel[] = { NULL, "../", "../../",
+					      "../../../" };
+	static const char *const list_rel[] = { NULL, "", "", "../" };
+	const char *afi_safi_id;
+	char rel_xpath[64];
+	struct bgp *bgp;
+
+	assert(ups_to_af >= 2 && ups_to_af <= 3);
+
+	bgp = bgp_nb_lookup_from_dnode(dnode, ups_to_af + 4);
+	if (!bgp)
+		return -1;
+
+	snprintfrr(rel_xpath, sizeof(rel_xpath), "%safi-safi-name",
+		   af_rel[ups_to_af]);
+	afi_safi_id = yang_dnode_get_string(dnode, "%s", rel_xpath);
+	if (!afi_safi_id)
+		return -1;
+	if (strstr(afi_safi_id, "ipv4-unicast"))
+		*afi_out = AFI_IP;
+	else if (strstr(afi_safi_id, "ipv6-unicast"))
+		*afi_out = AFI_IP6;
+	else
+		return -1;
+
+	snprintfrr(rel_xpath, sizeof(rel_xpath), "%sroute-type",
+		   list_rel[ups_to_af]);
+	*type_out = yang_dnode_get_enum(dnode, "%s", rel_xpath);
+	snprintfrr(rel_xpath, sizeof(rel_xpath), "%sroute-instance",
+		   list_rel[ups_to_af]);
+	*instance_out = yang_dnode_get_uint16(dnode, "%s", rel_xpath);
+	*bgp_out = bgp;
+	return 0;
+}
+
+int bgp_global_af_redistribution_list_create(struct nb_cb_create_args *args)
+{
+	struct bgp *bgp;
+	afi_t afi;
+	int type;
+	unsigned short instance;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		if (yang_dnode_get_enum(args->dnode, "route-type") ==
+		    ZEBRA_ROUTE_BGP) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "cannot redistribute bgp into bgp");
+			return NB_ERR_VALIDATION;
+		}
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_redist_lookup(args->dnode, 2, &bgp, &afi, &type,
+				 &instance) < 0)
+		return NB_ERR;
+	bgp_redist_add(bgp, afi, type, instance);
+	if (bgp_redistribute_set(bgp, afi, type, instance, false) !=
+	    CMD_SUCCESS) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "failed to register redistribution with zebra");
+		return NB_ERR;
+	}
+	return NB_OK;
+}
+
+int bgp_global_af_redistribution_list_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+	afi_t afi;
+	int type;
+	unsigned short instance;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_redist_lookup(args->dnode, 2, &bgp, &afi, &type,
+				 &instance) < 0)
+		return NB_OK;
+	bgp_redistribute_unset(bgp, afi, type, instance);
+	return NB_OK;
+}
+
+int bgp_global_af_redistribution_metric_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	struct bgp_redist *red;
+	afi_t afi;
+	int type;
+	unsigned short instance;
+	bool changed;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_redist_lookup(args->dnode, 3, &bgp, &afi, &type,
+				 &instance) < 0)
+		return NB_ERR;
+	red = bgp_redist_lookup(bgp, afi, type, instance);
+	if (!red)
+		return NB_ERR;
+	changed = bgp_redistribute_metric_set(bgp, red, afi, type,
+					      yang_dnode_get_uint32(args->dnode,
+								    NULL));
+	(void)bgp_redistribute_set(bgp, afi, type, instance, changed);
+	return NB_OK;
+}
+
+int bgp_global_af_redistribution_metric_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+	struct bgp_redist *red;
+	afi_t afi;
+	int type;
+	unsigned short instance;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_redist_lookup(args->dnode, 3, &bgp, &afi, &type,
+				 &instance) < 0)
+		return NB_OK;
+	red = bgp_redist_lookup(bgp, afi, type, instance);
+	if (!red || !red->redist_metric_flag)
+		return NB_OK;
+	red->redist_metric_flag = 0;
+	red->redist_metric = 0;
+	(void)bgp_redistribute_set(bgp, afi, type, instance, true);
+	return NB_OK;
+}
+
+int bgp_global_af_redistribution_rmap_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	struct bgp_redist *red;
+	afi_t afi;
+	int type;
+	unsigned short instance;
+	const char *name;
+	bool changed;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_redist_lookup(args->dnode, 3, &bgp, &afi, &type,
+				 &instance) < 0)
+		return NB_ERR;
+	red = bgp_redist_lookup(bgp, afi, type, instance);
+	if (!red)
+		return NB_ERR;
+	name = yang_dnode_get_string(args->dnode, NULL);
+	changed = bgp_redistribute_rmap_set(red, name,
+					    route_map_lookup_by_name(name));
+	(void)bgp_redistribute_set(bgp, afi, type, instance, changed);
+	return NB_OK;
+}
+
+int bgp_global_af_redistribution_rmap_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+	struct bgp_redist *red;
+	afi_t afi;
+	int type;
+	unsigned short instance;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_redist_lookup(args->dnode, 3, &bgp, &afi, &type,
+				 &instance) < 0)
+		return NB_OK;
+	red = bgp_redist_lookup(bgp, afi, type, instance);
+	if (!red || !red->rmap.name)
+		return NB_OK;
+	XFREE(MTYPE_ROUTE_MAP_NAME, red->rmap.name);
+	route_map_counter_decrement(red->rmap.map);
+	red->rmap.map = NULL;
+	(void)bgp_redistribute_set(bgp, afi, type, instance, true);
 	return NB_OK;
 }
 
@@ -4757,6 +4983,14 @@ static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode, int ups,
 		*afi_out = AFI_IP;  *safi_out = SAFI_UNICAST;
 	} else if (strstr(afi_safi_id, "ipv6-unicast")) {
 		*afi_out = AFI_IP6; *safi_out = SAFI_UNICAST;
+	} else if (strstr(afi_safi_id, "ipv4-multicast")) {
+		*afi_out = AFI_IP;  *safi_out = SAFI_MULTICAST;
+	} else if (strstr(afi_safi_id, "ipv6-multicast")) {
+		*afi_out = AFI_IP6; *safi_out = SAFI_MULTICAST;
+	} else if (strstr(afi_safi_id, "ipv4-flowspec")) {
+		*afi_out = AFI_IP;  *safi_out = SAFI_FLOWSPEC;
+	} else if (strstr(afi_safi_id, "ipv6-flowspec")) {
+		*afi_out = AFI_IP6; *safi_out = SAFI_FLOWSPEC;
 	} else if (strstr(afi_safi_id, "l2vpn-evpn")) {
 		*afi_out = AFI_L2VPN; *safi_out = SAFI_EVPN;
 	} else if (strstr(afi_safi_id, "l2vpn-vpls")) {
@@ -5031,6 +5265,82 @@ int bgp_neighbor_af_enabled_destroy(struct nb_cb_destroy_args *args)
 		return NB_OK;
 	peer_deactivate(peer, afi, safi);
 	return NB_OK;
+}
+
+/*
+ * Per-AF route-map filters:
+ * neighbor/afi-safis/afi-safi/<AF>/filter-config/{rmap-import,rmap-export}.
+ * peer_route_map_set() propagates to peer-group members and schedules
+ * the policy refresh (peer_on_policy_change), so modify/destroy map 1:1
+ * onto the legacy setters. Like the CLI path, the filter binds by name:
+ * the referenced route-map does not have to exist yet.
+ */
+static int bgp_neighbor_af_rmap_filter_modify(struct nb_cb_modify_args *args,
+					      int direct)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const char *name;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_ERR;
+	name = yang_dnode_get_string(args->dnode, NULL);
+	return bgp_nb_setter_result(peer_route_map_set(peer, afi, safi, direct,
+						       name,
+						       route_map_lookup_by_name(
+							       name)),
+				    args->errmsg, args->errmsg_len);
+}
+
+static int bgp_neighbor_af_rmap_filter_destroy(struct nb_cb_destroy_args *args,
+					       int direct)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_OK;
+	return bgp_nb_setter_result(peer_route_map_unset(peer, afi, safi,
+							 direct),
+				    args->errmsg, args->errmsg_len);
+}
+
+int bgp_neighbor_af_rmap_import_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_neighbor_af_rmap_filter_modify(args, RMAP_IN);
+}
+
+int bgp_neighbor_af_rmap_import_destroy(struct nb_cb_destroy_args *args)
+{
+	return bgp_neighbor_af_rmap_filter_destroy(args, RMAP_IN);
+}
+
+int bgp_neighbor_af_rmap_export_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_neighbor_af_rmap_filter_modify(args, RMAP_OUT);
+}
+
+int bgp_neighbor_af_rmap_export_destroy(struct nb_cb_destroy_args *args)
+{
+	return bgp_neighbor_af_rmap_filter_destroy(args, RMAP_OUT);
 }
 
 BGP_NEIGHBOR_FLAG_MOD_CB(aigp, PEER_FLAG_AIGP)
@@ -5976,6 +6286,33 @@ void bgp_neighbor_af_add_paths_path_type_cli_show(struct vty *vty,
 			peer);
 }
 
+/*
+ * Per-AF route-map filter: "neighbor X route-map NAME in|out". The
+ * rmap leaves sit under filter-config, so the peer key is 5 levels up
+ * like the <AFI>/<group>/<leaf> nodes.
+ */
+static void bgp_neighbor_af_rmap_filter_cli_show(struct vty *vty,
+						 const struct lyd_node *dnode,
+						 const char *direct)
+{
+	const char *peer = yang_dnode_get_string(dnode, BGP_NB_AF_PEER_REL5);
+
+	vty_out(vty, "  neighbor %s route-map %s %s\n", peer,
+		yang_dnode_get_string(dnode, NULL), direct);
+}
+
+void bgp_neighbor_af_rmap_import_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_neighbor_af_rmap_filter_cli_show(vty, dnode, "in");
+}
+
+void bgp_neighbor_af_rmap_export_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_neighbor_af_rmap_filter_cli_show(vty, dnode, "out");
+}
+
 /* value-style cli_show emitters. */
 
 /* uint global leaf → `bgp <keyword> <value>` */
@@ -6453,6 +6790,29 @@ void bgp_global_bgp_ls_distribute_cli_show(struct vty *vty,
 {
 	/* Presence container: existing means distribution is enabled. */
 	vty_out(vty, "  distribute bgp-fabric-link-state\n");
+}
+
+/*
+ * One emitter on the redistribution-list entry renders the whole legacy
+ * line; the metric and rmap-policy-import leaves are handled here and
+ * register bgp_nb_handled_by_parent_cli_show.
+ */
+void bgp_global_af_redistribution_list_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	uint16_t instance = yang_dnode_get_uint16(dnode, "route-instance");
+
+	vty_out(vty, "  redistribute %s",
+		yang_dnode_get_string(dnode, "route-type"));
+	if (instance)
+		vty_out(vty, " %u", instance);
+	if (yang_dnode_exists(dnode, "metric"))
+		vty_out(vty, " metric %s",
+			yang_dnode_get_string(dnode, "metric"));
+	if (yang_dnode_exists(dnode, "rmap-policy-import"))
+		vty_out(vty, " route-map %s",
+			yang_dnode_get_string(dnode, "rmap-policy-import"));
+	vty_out(vty, "\n");
 }
 
 void bgp_neighbor_bfd_options_cli_show(struct vty *vty,

@@ -105,6 +105,13 @@ int bgp_global_bgp_ls_distribute_create(struct nb_cb_create_args *args);
 int bgp_global_bgp_ls_distribute_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_bgp_ls_distribute_instance_id_modify(
 	struct nb_cb_modify_args *args);
+int bgp_global_af_redistribution_list_create(struct nb_cb_create_args *args);
+int bgp_global_af_redistribution_list_destroy(struct nb_cb_destroy_args *args);
+int bgp_global_af_redistribution_metric_modify(struct nb_cb_modify_args *args);
+int bgp_global_af_redistribution_metric_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_global_af_redistribution_rmap_modify(struct nb_cb_modify_args *args);
+int bgp_global_af_redistribution_rmap_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_bestpath_aigp_modify(struct nb_cb_modify_args *args);
 int bgp_global_bestpath_aigp_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_bestpath_use_imported_attributes_modify(
@@ -360,6 +367,8 @@ int bgp_neighbor_af_encapsulation_type_destroy(
 _BGP_NB_PEER_AF_FLAG_DECL(attr_unchanged_as_path);
 _BGP_NB_PEER_AF_FLAG_DECL(attr_unchanged_next_hop);
 _BGP_NB_PEER_AF_FLAG_DECL(attr_unchanged_med);
+_BGP_NB_PEER_AF_FLAG_DECL(rmap_import);
+_BGP_NB_PEER_AF_FLAG_DECL(rmap_export);
 #undef _BGP_NB_PEER_AF_FLAG_DECL
 
 /* peer-group */
@@ -442,6 +451,7 @@ _BGP_CLI(bgp_global_tcp_keepalive);
 _BGP_CLI(bgp_global_shutdown);
 _BGP_CLI(bgp_global_suppress_fib_pending);
 _BGP_CLI(bgp_global_bgp_ls_distribute);
+_BGP_CLI(bgp_global_af_redistribution_list);
 
 _BGP_CLI(bgp_neighbor_passive_mode);
 _BGP_CLI(bgp_neighbor_solo);
@@ -501,6 +511,8 @@ _BGP_CLI(bgp_neighbor_af_send_large_community);
 _BGP_CLI(bgp_neighbor_af_accept_own);
 _BGP_CLI(bgp_neighbor_af_disable_addpath_rx);
 _BGP_CLI(bgp_neighbor_af_add_paths_path_type);
+_BGP_CLI(bgp_neighbor_af_rmap_import);
+_BGP_CLI(bgp_neighbor_af_rmap_export);
 
 _BGP_CLI(bgp_peer_group);
 _BGP_CLI(bgp_peer_group_ipv4_listen_range);
