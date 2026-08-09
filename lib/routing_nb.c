@@ -34,6 +34,20 @@ const struct frr_yang_module_info frr_routing_info = {
 			.cbs = {
 				.create = routing_control_plane_protocols_control_plane_protocol_create,
 				.destroy = routing_control_plane_protocols_control_plane_protocol_destroy,
+				/*
+				 * Deleting the list entry must also run the
+				 * destroy callbacks of the per-protocol child
+				 * containers (e.g. frr-bgp:bgp), otherwise the
+				 * daemon keeps the live instance while the
+				 * config datastore loses it. Children run
+				 * first; the per-daemon routing_destroy hook
+				 * (e.g. staticd) still runs exactly once,
+				 * afterwards, on a table the child callbacks
+				 * already emptied (verified live: staticd
+				 * survives an entry delete with its routes
+				 * cleanly withdrawn).
+				 */
+				.flags = F_NB_CB_DESTROY_RECURSE,
 				.get_next = cpp_get_next,
 				.get_keys = cpp_get_keys,
 				.lookup_entry = cpp_lookup_entry,

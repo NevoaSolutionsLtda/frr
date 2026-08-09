@@ -2134,6 +2134,57 @@ DEFUN_NOSH (router_bgp,
 
 	/* unset the auto created flag as the user config is now present */
 	UNSET_FLAG(bgp->vrf_flags, BGP_VRF_AUTO);
+
+	/*
+	 * Dual-write: make sure the NB node for this instance exists, so the
+	 * DEFPY_YANG sub-commands can resolve their xpaths. An instance
+	 * created only through this legacy DEFUN is invisible to the local
+	 * NB datastore and every YANG-based sub-command fails or no-ops.
+	 * View instances stay legacy-only (rejected by bgp_router_create).
+	 */
+	if (bgp->inst_type != BGP_INSTANCE_TYPE_VIEW &&
+	    !yang_dnode_existsf(vty->candidate_config->dnode,
+				BGP_CONTAINER_XPATH, "frr-bgp:bgp",
+				bgp_nb_cpp_name(bgp), bgp_nb_vrf_key(bgp))) {
+		char as_str[16];
+		int nbret;
+
+		snprintfrr(as_str, sizeof(as_str), "%u", bgp->as);
+		nb_cli_enqueue_change(vty, ".", NB_OP_CREATE, NULL);
+		nb_cli_enqueue_change(vty, "./global/local-as", NB_OP_MODIFY,
+				      as_str);
+		/*
+		 * The YANG defaults of these knobs do not follow the frr
+		 * defaults profile the live instance was created with.
+		 * Sync them explicitly from the daemon state so datastore
+		 * and daemon agree on any profile.
+		 */
+		nb_cli_enqueue_change(vty, "./global/ebgp-requires-policy",
+				      NB_OP_MODIFY,
+				      CHECK_FLAG(bgp->flags,
+						 BGP_FLAG_EBGP_REQUIRES_POLICY)
+					      ? "true"
+					      : "false");
+		nb_cli_enqueue_change(vty, "./global/enforce-first-as",
+				      NB_OP_MODIFY,
+				      CHECK_FLAG(bgp->flags,
+						 BGP_FLAG_ENFORCE_FIRST_AS)
+					      ? "true"
+					      : "false");
+		nb_cli_enqueue_change(vty, "./global/suppress-duplicates",
+				      NB_OP_MODIFY,
+				      CHECK_FLAG(bgp->flags,
+						 BGP_FLAG_SUPPRESS_DUPLICATES)
+					      ? "true"
+					      : "false");
+		nbret = nb_cli_apply_changes(vty, BGP_CONTAINER_XPATH,
+					     "frr-bgp:bgp",
+					     bgp_nb_cpp_name(bgp),
+					     bgp_nb_vrf_key(bgp));
+		if (nbret != CMD_SUCCESS)
+			return nbret;
+	}
+
 	VTY_PUSH_CONTEXT(BGP_NODE, bgp);
 
 	return CMD_SUCCESS;
@@ -2265,6 +2316,23 @@ DEFUN (no_router_bgp,
 				}
 			}
 		}
+	}
+
+	/*
+	 * Dual-write: when the instance exists in the local NB datastore,
+	 * destroy it through NB so the datastore and the daemon stay in
+	 * sync (the control-plane-protocol entry destroy recurses into
+	 * bgp_router_destroy, which tears the instance down). Legacy-only
+	 * instances (e.g. views) keep the direct path below.
+	 */
+	if (yang_dnode_existsf(vty->candidate_config->dnode,
+			       BGP_INSTANCE_KEY_XPATH, "frr-bgp:bgp",
+			       bgp_nb_cpp_name(bgp), bgp_nb_vrf_key(bgp))) {
+		nb_cli_enqueue_change(vty, ".", NB_OP_DESTROY, NULL);
+		return nb_cli_apply_changes(vty, BGP_INSTANCE_KEY_XPATH,
+					    "frr-bgp:bgp",
+					    bgp_nb_cpp_name(bgp),
+					    bgp_nb_vrf_key(bgp));
 	}
 
 	bgp_delete(bgp);
@@ -3642,7 +3710,7 @@ DEFPY_YANG (no_bgp_ebgp_requires_policy, no_bgp_ebgp_requires_policy_cmd,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
 	nb_cli_enqueue_change(vty, "./ebgp-requires-policy",
-			      NB_OP_DESTROY, NULL);
+			      NB_OP_MODIFY, "false");
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
 				    bgp_nb_vrf_key(bgp));
@@ -3720,7 +3788,7 @@ DEFPY_YANG (no_bgp_suppress_duplicates, no_bgp_suppress_duplicates_cmd,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 
 	nb_cli_enqueue_change(vty, "./suppress-duplicates",
-			      NB_OP_DESTROY, NULL);
+			      NB_OP_MODIFY, "false");
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
 				    bgp_nb_cpp_name(bgp),
 				    bgp_nb_vrf_key(bgp));
