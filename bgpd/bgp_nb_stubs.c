@@ -74,9 +74,9 @@ static int bgp_nb_stub_reject(const struct nb_context *context,
 		return NB_OK;
 
 	yang_dnode_get_path(dnode, xpath, sizeof(xpath));
-	snprintf(errmsg, errmsg_len,
-		 "unimplemented in bgpd northbound (reject-strict class): %s",
-		 xpath);
+	snprintfrr(errmsg, errmsg_len,
+		   "unimplemented in bgpd northbound (reject-strict class): %s",
+		   xpath);
 	return NB_ERR_VALIDATION;
 }
 
