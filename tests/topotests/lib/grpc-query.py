@@ -155,6 +155,34 @@ class GRPCClient:
         with concurrent.futures.ThreadPoolExecutor(max_workers=count) as executor:
             return json.dumps(list(executor.map(lambda _: run_one(), range(count))))
 
+    def list_transactions(self, timeout):
+        request = frr_northbound_pb2.ListTransactionsRequest()
+        try:
+            ids = [r.id for r in self.stub.ListTransactions(request, timeout=timeout)]
+        except grpc.RpcError as error:
+            return error.code().name
+        return json.dumps(ids)
+
+    def list_transactions_cancel(self, delay, timeout):
+        """Cancel a ListTransactions stream mid-flight.
+
+        Fails the server-side write while the stream is still streaming,
+        which is the completion-queue error path that must repost the
+        listener for this RPC type.
+        """
+        request = frr_northbound_pb2.ListTransactionsRequest()
+        call = self.stub.ListTransactions(request, timeout=timeout)
+        if delay:
+            time.sleep(delay)
+        call.cancel()
+
+        try:
+            list(call)
+        except grpc.RpcError as error:
+            return error.code().name
+
+        return "OK"
+
     def commit_changes(self, updates, deletes, phase_name):
         candidate_id = None
 
@@ -574,6 +602,12 @@ def main(*args):
                 path, value = item.split("=", 1)
                 input_values.append((path, value))
             print(c.execute_concurrent(xpath, input_values, count, timeout))
+        elif action.startswith("list-transactions-cancel,"):
+            _, delay, timeout = raw_action.split(",", 2)
+            print(c.list_transactions_cancel(float(delay), float(timeout)))
+        elif action.startswith("list-transactions,"):
+            _, timeout = raw_action.split(",", 1)
+            print(c.list_transactions(float(timeout)))
         elif action.startswith("commit-set,"):
             parts = raw_action.split(",")
             updates = []

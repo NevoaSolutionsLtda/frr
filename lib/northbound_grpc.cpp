@@ -378,6 +378,24 @@ class StreamRpcState : public RpcStateBase
 			return FINISH;
 	}
 
+	bool repost_on_cq_error(void) const override
+	{
+		/*
+		 * A streaming RPC only posts its next listener when the stream
+		 * reaches FINISH, so a failed write mid-stream (state == MORE)
+		 * consumes the only pending tag for this RPC type: without a
+		 * repost here that RPC is never served again for the life of
+		 * the daemon.  A tag already in FINISH had its listener posted
+		 * by run(), so a failed final write must not post a second one.
+		 *
+		 * Unlike GetRpcState and CommitRpcState this class needs no
+		 * `reposted` guard: it never posts a listener outside the
+		 * completion-queue path, and a tag is deleted after its first
+		 * error, so no second repost can reach the same tag.
+		 */
+		return state != FINISH;
+	}
+
 	Q request;
 	S response;
 	grpc::ServerAsyncWriter<S> async_responder;
