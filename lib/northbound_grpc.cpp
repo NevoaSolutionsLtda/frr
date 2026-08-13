@@ -3335,6 +3335,14 @@ class ExecuteRpcState : public RpcStateBase {
 		_rpcState->do_request(&service, cq.get(), true);               \
 	} while (0)
 
+/*
+ * The streaming callback must not post a listener itself (no do_request()
+ * call): StreamRpcState::repost_on_cq_error() reposts on any pre-FINISH
+ * error without a `reposted` guard, which is only safe while the
+ * completion-queue path is the sole poster.  A callback that posts on its
+ * own -- as SubscribeRpcState does from its own class -- would leak a tag
+ * per error and needs that guard added first.
+ */
 #define REQUEST_NEWRPC_STREAMING(NAME)                                         \
 	do {                                                                   \
 		auto _rpcState = new StreamRpcState<frr::NAME##Request,        \
