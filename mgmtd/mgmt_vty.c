@@ -532,12 +532,19 @@ DEFPY(mgmt_rollback,
       "Rollbak n commits\n"
       "Number of commits\n")
 {
-	if (commit)
-		mgmt_history_rollback_by_id(vty, commit);
-	else
-		mgmt_history_rollback_n(vty, last);
+	int ret;
 
-	return CMD_SUCCESS;
+	if (commit)
+		ret = mgmt_history_rollback_by_id(vty, commit);
+	else
+		ret = mgmt_history_rollback_n(vty, last);
+
+	/*
+	 * A rollback that completes on this stack returns its result here
+	 * instead of resuming the command, so the failure has to reach vtysh
+	 * through the return value.
+	 */
+	return ret ? CMD_WARNING_CONFIG_FAILED : CMD_SUCCESS;
 }
 
 DEFPY_NOSH(show_debugging_mgmt, show_debugging_mgmt_cmd,
