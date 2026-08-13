@@ -232,11 +232,36 @@ static int mgmt_history_rollback_to_cmt(struct vty *vty,
 		}
 	}
 
+	/*
+	 * Block the rollback command from returning till the rollback
+	 * is completed. On rollback completion mgmt_history_rollback_complete()
+	 * shall be called to resume the rollback command return to VTYSH.
+	 *
+	 * Both are published BEFORE triggering: the trigger can fail
+	 * synchronously, and that path completes the rollback from inside
+	 * mgmt_txn_rollback_trigger_cfg_apply(), where it needs the pending
+	 * command and the vty already in place.
+	 */
+	vty->mgmt_req_pending_cmd = "ROLLBACK";
+	rollback_vty = vty;
+
 	/* Internally trigger a commit-request. */
 	user = mgmt_fe_session_client_name(vty->mgmt_session_id);
 	ret = mgmt_txn_rollback_trigger_cfg_apply(src_ds_ctx, dst_ds_ctx, user,
 						  vty->mgmt_session_id);
 	if (ret != 0) {
+		/*
+		 * A synchronous failure already ran the completion, which
+		 * unlocks, resumes the command and clears rollback_vty. Only
+		 * unlock here when it did not run: unlocking twice trips the
+		 * ownership assert in mgmt_ds_unlock() once another session
+		 * takes the lock.
+		 */
+		if (!rollback_vty)
+			return ret;
+
+		rollback_vty = NULL;
+		vty->mgmt_req_pending_cmd = NULL;
 		vty_out(vty,
 			"Error with creating commit apply txn with error code %d\n",
 			ret);
@@ -250,13 +275,6 @@ static int mgmt_history_rollback_to_cmt(struct vty *vty,
 	 * and does the unlock when it completes.
 	 */
 
-	/*
-	 * Block the rollback command from returning till the rollback
-	 * is completed. On rollback completion mgmt_history_rollback_complete()
-	 * shall be called to resume the rollback command return to VTYSH.
-	 */
-	vty->mgmt_req_pending_cmd = "ROLLBACK";
-	rollback_vty = vty;
 	return 0;
 
 failed_unlock:
@@ -269,12 +287,20 @@ void mgmt_history_rollback_complete(bool success)
 {
 	struct mgmt_ds_ctx *src_ds_ctx = mgmt_ds_get_ctx_by_id(mm, MGMTD_DS_CANDIDATE);
 	struct mgmt_ds_ctx *dst_ds_ctx = mgmt_ds_get_ctx_by_id(mm, MGMTD_DS_RUNNING);
+	struct vty *vty = rollback_vty;
 
-	mgmt_ds_unlock(src_ds_ctx, rollback_vty->mgmt_session_id);
-	mgmt_ds_unlock(dst_ds_ctx, rollback_vty->mgmt_session_id);
+	if (!vty) {
+		zlog_err("rollback completed with no rollback in progress");
+		return;
+	}
 
-	vty_mgmt_resume_response(rollback_vty, success ? CMD_SUCCESS : CMD_WARNING_CONFIG_FAILED);
+	/* Clear before resuming: the resumed command may roll back again. */
 	rollback_vty = NULL;
+
+	mgmt_ds_unlock(src_ds_ctx, vty->mgmt_session_id);
+	mgmt_ds_unlock(dst_ds_ctx, vty->mgmt_session_id);
+
+	vty_mgmt_resume_response(vty, success ? CMD_SUCCESS : CMD_WARNING_CONFIG_FAILED);
 }
 
 int mgmt_history_rollback_by_id(struct vty *vty, const char *cmtid_str)
