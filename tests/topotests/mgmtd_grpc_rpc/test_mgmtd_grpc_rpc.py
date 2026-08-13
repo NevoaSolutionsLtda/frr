@@ -400,16 +400,19 @@ def test_list_transactions_cancel_keeps_listener_available(tgen):
     baseline = run_grpc_client(r1, "LIST-TRANSACTIONS,5").strip()
     assert baseline.startswith("["), baseline
 
-    step("Cancel the stream mid-flight across the write window")
+    step("A single cancel is served like any other cancelled call")
     # The client always cancels, so anything but CANCELLED means the cancel
     # itself did not take effect. DEADLINE_EXCEEDED in particular is the
     # symptom of the regression under test and must never be accepted here.
-    for delay in ("0", "0.0005", "0.001", "0.003", "0.008", "0.02"):
-        for _ in range(3):
-            output = run_grpc_client(
-                r1, f"LIST-TRANSACTIONS-CANCEL,{delay},5"
-            ).strip()
-            assert output == "CANCELLED", output
+    output = run_grpc_client(r1, "LIST-TRANSACTIONS-CANCEL,0.001,5").strip()
+    assert output == "CANCELLED", output
+
+    step("Hammer the write window until the failure path is taken")
+    # One cancel timing does not reach the window, so a handful of them is
+    # not a regression test: measured against the unfixed daemon, the type
+    # survived 18 cancels at fixed delays and died once the sweep ran.
+    output = run_grpc_client(r1, "LIST-TRANSACTIONS-HAMMER,120").strip()
+    assert '"attempts": 120' in output, output
 
     step("The RPC type is still served after the cancels")
     # This is the assertion with detection power: without the repost the
