@@ -386,6 +386,40 @@ def test_execute_cancel_keeps_listener_available(tgen):
     assert "output" not in output
 
 
+def test_list_transactions_cancel_keeps_listener_available(tgen):
+    """A cancelled ListTransactions stream must not kill the RPC type.
+
+    A streaming RPC only posts its next listener when the stream reaches
+    FINISH, so a write that fails mid-stream consumes the only pending tag
+    unless the completion-queue error path reposts it.  Without the repost
+    the RPC type is never served again for the life of the daemon.
+    """
+    r1 = tgen.gears["r1"]
+
+    step("Baseline: ListTransactions is served")
+    baseline = run_grpc_client(r1, "LIST-TRANSACTIONS,5").strip()
+    assert baseline.startswith("["), baseline
+
+    step("Cancel the stream mid-flight across the write window")
+    for delay in ("0", "0.0005", "0.001", "0.003", "0.008", "0.02"):
+        for _ in range(3):
+            output = run_grpc_client(
+                r1, f"LIST-TRANSACTIONS-CANCEL,{delay},5"
+            ).strip()
+            assert output in {"CANCELLED", "OK", "DEADLINE_EXCEEDED"}, output
+
+    step("The RPC type is still served after the cancels")
+    for _ in range(5):
+        output = run_grpc_client(r1, "LIST-TRANSACTIONS,5").strip()
+        assert output == baseline, f"expected {baseline}, got {output}"
+
+    step("Every response is complete: no duplicated or lost listener")
+    # A double repost would leave more than one listener for this type,
+    # so concurrent callers would see interleaved or short streams.
+    output = run_grpc_client(r1, ["LIST-TRANSACTIONS,5" for _ in range(5)])
+    assert output.count(baseline) == 5, output
+
+
 def test_concurrent_execute_rpc_via_mgmtd_grpc(tgen):
     r1 = tgen.gears["r1"]
 
