@@ -163,6 +163,60 @@ class GRPCClient:
             return error.code().name
         return json.dumps(ids)
 
+    def list_transactions_full(self, timeout):
+        """List transactions with every field, in streaming order."""
+        request = frr_northbound_pb2.ListTransactionsRequest()
+        entries = []
+        try:
+            for r in self.stub.ListTransactions(request, timeout=timeout):
+                entries.append(
+                    {
+                        "id": r.id,
+                        "client": r.client,
+                        "date": r.date,
+                        "comment": r.comment,
+                    }
+                )
+        except grpc.RpcError as error:
+            return json.dumps({"error": error.code().name})
+        return json.dumps(entries)
+
+    def get_transaction(self, transaction_id, encoding, with_defaults, timeout):
+        """Fetch one recorded transaction, reporting refusals inline."""
+        request = frr_northbound_pb2.GetTransactionRequest()
+        request.transaction_id = transaction_id
+        request.encoding = encoding
+        request.with_defaults = with_defaults
+        try:
+            response = self.stub.GetTransaction(request, timeout=timeout)
+            return json.dumps(
+                {
+                    "id": transaction_id,
+                    "encoding": response.config.encoding,
+                    "config": response.config.data,
+                }
+            )
+        except grpc.RpcError as error:
+            return json.dumps(
+                {
+                    "id": transaction_id,
+                    "error": error.code().name,
+                    "details": error.details(),
+                }
+            )
+
+    def commit_result(self, phase_name, updates, deletes):
+        """Commit and report the outcome instead of raising on refusal."""
+        try:
+            response = self.commit_changes(updates, deletes, phase_name)
+            return json.dumps(
+                {"status": "OK", "error_message": response.error_message}
+            )
+        except grpc.RpcError as error:
+            return json.dumps(
+                {"status": error.code().name, "details": error.details()}
+            )
+
     def list_transactions_cancel(self, delay, timeout):
         """Cancel a ListTransactions stream mid-flight.
 
@@ -783,6 +837,28 @@ def main(*args):
         elif action.startswith("list-transactions,"):
             _, timeout = raw_action.split(",", 1)
             print(c.list_transactions(float(timeout)))
+        elif action.startswith("list-transactions-full,"):
+            _, timeout = raw_action.split(",", 1)
+            print(c.list_transactions_full(float(timeout)))
+        elif action.startswith("get-transaction,"):
+            parts = raw_action.split(",")
+            print(
+                c.get_transaction(
+                    int(parts[1]), int(parts[2]), bool(int(parts[3])), 30.0
+                )
+            )
+        elif action.startswith("commit-result,"):
+            parts = raw_action.split(",")
+            phase = parts[1]
+            updates = []
+            deletes = []
+            for item in parts[2:]:
+                if "=" in item:
+                    path, value = item.rsplit("=", 1)
+                    updates.append((path, value))
+                else:
+                    deletes.append(item)
+            print(c.commit_result(phase, updates, deletes))
         elif action.startswith("commit-set,"):
             parts = raw_action.split(",")
             updates = []
