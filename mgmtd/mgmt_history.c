@@ -102,6 +102,75 @@ static struct mgmt_cmt_info_t *mgmt_history_create_cmt_rec(void)
 	return new;
 }
 
+/*
+ * gRPC commit-history readers (issue #29).  The uint32 transaction ids
+ * are 32-bit FNV-1a hashes of the commit-id string: stable across
+ * restarts and ring rotation, and derived only from data that already
+ * persists.  The commit record carries no client or comment, so the
+ * listing reports the writer instead of inventing either field.
+ */
+static uint32_t mgmt_history_txn_id(const struct mgmt_cmt_info_t *cmt_info)
+{
+	const char *p;
+	uint32_t hash = 2166136261u;
+
+	for (p = cmt_info->cmtid_str; *p; p++) {
+		hash ^= (uint8_t)*p;
+		hash *= 16777619u;
+	}
+
+	return hash;
+}
+
+static struct mgmt_cmt_info_t *mgmt_history_cmt_by_txn_id(uint32_t transaction_id)
+{
+	struct mgmt_cmt_info_t *cmt_info;
+
+	FOREACH_CMT_REC (mm, cmt_info) {
+		if (mgmt_history_txn_id(cmt_info) == transaction_id)
+			return cmt_info;
+	}
+
+	return NULL;
+}
+
+int mgmt_history_transactions_iterate(
+	void (*func)(void *arg, int transaction_id, const char *client_name,
+		     const char *date, const char *comment),
+	void *arg)
+{
+	struct mgmt_cmt_info_t *cmt_info;
+
+	/* Newest first, like the rollback listing. */
+	FOREACH_CMT_REC (mm, cmt_info)
+		(*func)(arg, (int)mgmt_history_txn_id(cmt_info), "mgmtd",
+			cmt_info->time_str, "");
+
+	return 0;
+}
+
+struct nb_config *mgmt_history_transaction_load(uint32_t transaction_id)
+{
+	struct mgmt_cmt_info_t *cmt_info;
+	struct lyd_node *dnode = NULL;
+	LY_ERR err;
+
+	cmt_info = mgmt_history_cmt_by_txn_id(transaction_id);
+	if (!cmt_info)
+		return NULL;
+
+	err = lyd_parse_data_path(ly_native_ctx, cmt_info->cmt_json_file, LYD_JSON,
+				  LYD_PARSE_NO_STATE | LYD_PARSE_STRICT,
+				  LYD_VALIDATE_NO_STATE, &dnode);
+	if (err) {
+		if (dnode)
+			yang_dnode_free(dnode);
+		return NULL;
+	}
+
+	return nb_config_new(dnode);
+}
+
 static struct mgmt_cmt_info_t *
 mgmt_history_find_cmt_record(const char *cmtid_str)
 {

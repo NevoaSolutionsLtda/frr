@@ -18,6 +18,7 @@
 #include "mgmtd/mgmt_be_adapter.h"
 #include "mgmtd/mgmt_ds.h"
 #include "mgmtd/mgmt_fe_adapter.h"
+#include "mgmtd/mgmt_history.h"
 #include "mgmtd/mgmt_memory.h"
 #include "mgmtd/mgmt_txn.h"
 
@@ -69,6 +70,7 @@ struct mgmt_grpc_config_req {
 	enum nb_config_commit_phase phase;
 
 	char *peer;
+	int64_t chan_id;
 	struct nb_config *candidate;
 	struct nb_config *candidate_backup;
 	struct event *event;
@@ -244,6 +246,13 @@ static uint64_t mgmt_grpc_next_req_id(void)
 /* gRPC channel lock ownership (issue #28) */
 /* ------------------------------------ */
 
+/*
+ * The registry holds at most one entry per peer string: an entry is
+ * created only by a successful lock, and every exit path (unlock,
+ * failed lock, reincarnation, sweep) removes the whole entry.  The
+ * lookup below therefore returns the peer's single live tenure, if
+ * any.
+ */
 static struct mgmt_grpc_channel *mgmt_grpc_channel_find(const char *peer)
 {
 	struct mgmt_grpc_channel *chan;
@@ -366,6 +375,11 @@ static int mgmt_grpc_config_lock_dispatch(const char *peer, int64_t chan_id, cha
 		chan = NULL;
 	}
 	if (chan) {
+		/*
+		 * Invariant: a registered channel always holds the
+		 * candidate lock; release paths remove the whole entry.
+		 */
+		assert(chan->ds_locked[MGMTD_DS_CANDIDATE]);
 		/* Mirror the native FE: a double lock warns and succeeds. */
 		zlog_warn("gRPC channel %s (session-id %" PRIu64 ") locked the datastores twice",
 			  chan->peer, chan->session_id);
@@ -403,7 +417,8 @@ fail:
 	return -EBUSY;
 }
 
-static int mgmt_grpc_config_unlock_dispatch(const char *peer, char *errmsg, size_t errmsg_len)
+static int mgmt_grpc_config_unlock_dispatch(const char *peer, int64_t chan_id,
+					    char *errmsg, size_t errmsg_len)
 {
 	struct mgmt_ds_ctx *can_ds;
 	struct mgmt_grpc_channel *chan;
@@ -412,8 +427,14 @@ static int mgmt_grpc_config_unlock_dispatch(const char *peer, char *errmsg, size
 
 	can_ds = mgmt_ds_get_ctx_by_id(mm, MGMTD_DS_CANDIDATE);
 
+	/*
+	 * Identity is the (peer, channel) pair, like the lock tenure: a
+	 * registry entry under the same peer but a different channel is
+	 * another connection's tenure, and this unlock is a non-owner's.
+	 */
 	chan = mgmt_grpc_channel_find(peer);
-	if (!chan || !chan->ds_locked[MGMTD_DS_CANDIDATE]) {
+	if (!chan || chan->chan_id != chan_id ||
+	    !chan->ds_locked[MGMTD_DS_CANDIDATE]) {
 		uint64_t lock_sid = MGMTD_SESSION_ID_NONE;
 		uint64_t lock_txn = 0;
 
@@ -676,12 +697,14 @@ static int mgmt_grpc_config_start_commit(struct mgmt_grpc_config_req *req, char 
 	/*
 	 * Owner-aware lock check: a session lock held by this request's own
 	 * channel permits the commit (self-lock); any other holder refuses
-	 * it.  Ownership requires a REAL registered tenure -- never a
-	 * sentinel comparison: session-id 0 is a real lock owner here (the
-	 * backend initial-sync read lock), and a channel that holds no
-	 * lock must not match it.  Locks and commits live in one mgmt_ds
-	 * domain, so the exclusion also holds against native frontend
-	 * sessions.
+	 * it.  Identity is the (peer, channel) pair, like the lock registry
+	 * tenure: a registry entry under the same peer but a different
+	 * channel belongs to another connection and is not a self-lock.
+	 * Ownership requires a REAL registered tenure -- never a sentinel
+	 * comparison: session-id 0 is a real lock owner here (the backend
+	 * initial-sync read lock), and a channel that holds no lock must
+	 * not match it.  Locks and commits live in one mgmt_ds domain, so
+	 * the exclusion also holds against native frontend sessions.
 	 */
 	chan = mgmt_grpc_channel_find(req->peer);
 
@@ -699,7 +722,8 @@ static int mgmt_grpc_config_start_commit(struct mgmt_grpc_config_req *req, char 
 				   lock_txn);
 			return -EBUSY;
 		}
-		if (chan && chan->ds_locked[MGMTD_DS_CANDIDATE] &&
+		if (chan && chan->chan_id == req->chan_id &&
+		    chan->ds_locked[MGMTD_DS_CANDIDATE] &&
 		    lock_sid == chan->session_id)
 			continue; /* self-lock */
 		if (lock_sid == MGMTD_SESSION_ID_NONE) {
@@ -712,6 +736,41 @@ static int mgmt_grpc_config_start_commit(struct mgmt_grpc_config_req *req, char 
 			   "locked by another session (session-id %" PRIu64 ")",
 			   lock_sid);
 		return -ENOLCK;
+	}
+
+	/*
+	 * Dirty shared candidate (issue #11): a native frontend session can
+	 * leave uncommitted staging in the shared candidate datastore.  The
+	 * gRPC candidate is request-local, so any difference between the
+	 * shared candidate and running is someone else's staging, and
+	 * installing over it would clobber that work (a successful commit
+	 * never restores the backup).  Refuse instead: the staging session
+	 * commits or discards first.  The check and the install below run
+	 * one after the other on this single-threaded event loop, so they
+	 * are atomic by construction.  VALIDATE takes the same refusal:
+	 * it swaps the shared candidate too.
+	 */
+	{
+		const struct nb_config *can_cfg = mgmt_ds_get_nb_config(can_ds);
+		const struct nb_config *run_cfg = mgmt_ds_get_nb_config(run_ds);
+		struct lyd_node *diff = NULL;
+		LY_ERR lerr;
+
+		if (can_cfg && run_cfg) {
+			lerr = lyd_diff_siblings(run_cfg->dnode, can_cfg->dnode,
+						 LYD_DIFF_DEFAULTS, &diff);
+			if (lerr) {
+				snprintfrr(errmsg, errmsg_len,
+					   "cannot compare the candidate and running datastores");
+				return -EINVAL;
+			}
+			if (diff) {
+				lyd_free_all(diff);
+				snprintfrr(errmsg, errmsg_len,
+					   "candidate datastore has changes staged by another session; commit or discard them first");
+				return -EBUSY;
+			}
+		}
 	}
 
 	session_id = mgmt_grpc_next_session_id();
@@ -761,6 +820,7 @@ static void mgmt_grpc_config_event(struct event *event)
 static int mgmt_grpc_config_commit_dispatch_async(const struct nb_config *candidate,
 						  enum nb_config_commit_phase phase,
 						  const char *comment, const char *peer,
+						  int64_t chan_id,
 						  nb_config_commit_done_cb done, void *arg,
 						  char *errmsg, size_t errmsg_len)
 {
@@ -777,6 +837,7 @@ static int mgmt_grpc_config_commit_dispatch_async(const struct nb_config *candid
 	pthread_mutex_init(&req->mtx, NULL);
 	req->refcnt = 1;
 	req->phase = phase;
+	req->chan_id = chan_id;
 	if (peer)
 		req->peer = XSTRDUP(MTYPE_MGMTD_GRPC_CONFIG, peer);
 	req->candidate = nb_config_dup(candidate);
@@ -1063,6 +1124,8 @@ void mgmt_grpc_init(void)
 	nb_config_commit_dispatch_async_set(mgmt_grpc_config_commit_dispatch_async);
 	nb_config_lock_dispatch_set(mgmt_grpc_config_lock_dispatch);
 	nb_config_unlock_dispatch_set(mgmt_grpc_config_unlock_dispatch);
+	nb_history_transactions_iterate_dispatch_set(mgmt_history_transactions_iterate);
+	nb_history_transaction_load_dispatch_set(mgmt_history_transaction_load);
 	nb_rpc_dispatch_async_set(mgmt_grpc_rpc_dispatch_async);
 	nb_oper_get_dispatch_async_set(mgmt_grpc_oper_get_dispatch_async);
 	nb_notification_data_subscribe_set(mgmt_fe_adapter_notify_subscribe);
@@ -1074,6 +1137,10 @@ void mgmt_grpc_terminate(void)
 	struct mgmt_grpc_rpc_req *req, *next;
 	struct mgmt_grpc_config_req *cfg_req, *cfg_next;
 	struct mgmt_grpc_oper_req *oper_req, *oper_next;
+
+	/* Symmetry with init: no dispatcher outlives this daemon. */
+	nb_history_transactions_iterate_dispatch_set(NULL);
+	nb_history_transaction_load_dispatch_set(NULL);
 
 	LIST_FOREACH_SAFE (req, &mgmt_grpc_rpc_reqs, link, next) {
 		if (req->dispatched) {

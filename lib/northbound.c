@@ -2041,14 +2041,15 @@ bool nb_config_commit_dispatch_async_is_set(void)
 
 int nb_config_commit_dispatch_async(const struct nb_config *candidate,
 				    enum nb_config_commit_phase phase, const char *comment,
-				    const char *peer, nb_config_commit_done_cb done, void *arg,
+				    const char *peer, int64_t channel_id,
+				    nb_config_commit_done_cb done, void *arg,
 				    char *errmsg, size_t errmsg_len)
 {
 	if (!nb_config_commit_dispatcher_async)
 		return -EOPNOTSUPP;
 
-	return nb_config_commit_dispatcher_async(candidate, phase, comment, peer, done, arg,
-						 errmsg, errmsg_len);
+	return nb_config_commit_dispatcher_async(candidate, phase, comment, peer, channel_id,
+						 done, arg, errmsg, errmsg_len);
 }
 
 void nb_config_lock_dispatch_set(nb_config_lock_dispatch_cb cb)
@@ -2076,12 +2077,13 @@ void nb_config_unlock_dispatch_set(nb_config_unlock_dispatch_cb cb)
 	nb_config_unlock_dispatcher = cb;
 }
 
-int nb_config_unlock_dispatch(const char *peer, char *errmsg, size_t errmsg_len)
+int nb_config_unlock_dispatch(const char *peer, int64_t channel_id, char *errmsg,
+			     size_t errmsg_len)
 {
 	if (!nb_config_unlock_dispatcher)
 		return -EOPNOTSUPP;
 
-	return nb_config_unlock_dispatcher(peer, errmsg, errmsg_len);
+	return nb_config_unlock_dispatcher(peer, channel_id, errmsg, errmsg_len);
 }
 
 void nb_grpc_channel_alive_set(nb_grpc_channel_alive_cb cb)
@@ -2101,6 +2103,39 @@ bool nb_grpc_channel_alive(int64_t channel_id)
 		return true;
 
 	return nb_grpc_channel_alive_resolver(channel_id);
+}
+
+static nb_history_transactions_iterate_cb nb_history_transactions_iterate_dispatcher;
+static nb_history_transaction_load_cb nb_history_transaction_load_dispatcher;
+
+void nb_history_transactions_iterate_dispatch_set(nb_history_transactions_iterate_cb cb)
+{
+	/* Registered by the frontend adapter (mgmtd). */
+	nb_history_transactions_iterate_dispatcher = cb;
+}
+
+void nb_history_transaction_load_dispatch_set(nb_history_transaction_load_cb cb)
+{
+	nb_history_transaction_load_dispatcher = cb;
+}
+
+int nb_history_transactions_iterate(
+	void (*func)(void *arg, int transaction_id, const char *client_name,
+		     const char *date, const char *comment),
+	void *arg)
+{
+	if (nb_history_transactions_iterate_dispatcher)
+		return nb_history_transactions_iterate_dispatcher(func, arg);
+
+	return nb_db_transactions_iterate(func, arg);
+}
+
+struct nb_config *nb_history_transaction_load(uint32_t transaction_id)
+{
+	if (nb_history_transaction_load_dispatcher)
+		return nb_history_transaction_load_dispatcher(transaction_id);
+
+	return nb_db_transaction_load(transaction_id);
 }
 
 void nb_callback_notify(const struct nb_node *nb_node, uint8_t op, const char *xpath,
