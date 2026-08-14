@@ -6,8 +6,15 @@
 //
 
 #include <zebra.h>
+#include <grpc/grpc.h>
+#include <grpc/support/alloc.h>
 #include <grpcpp/grpcpp.h>
 #include "grpc/frr-northbound.grpc.pb.h"
+
+/* Plain C header without C++ linkage guards of its own. */
+extern "C" {
+#include "base64.h"
+}
 
 #include "log.h"
 #include "libfrr.h"
@@ -205,6 +212,12 @@ class RpcStateBase
 	bool is_cancelled() const
 	{
 		return ctx.IsCancelled();
+	}
+
+	/* Transport identity of the requesting channel (config locks). */
+	std::string peer() const
+	{
+		return ctx.peer();
 	}
 
 	// Returns "more" status, if false caller can delete
@@ -2719,10 +2732,301 @@ static grpc::Status commit_local_candidate(const frr::CommitRequest &request,
 	return status;
 }
 
+// ------------------------------------------------------
+//            Channel Identity (channelz-backed)
+// ------------------------------------------------------
+
+/*
+ * A config lock must be owned by the CHANNEL that took it, and released
+ * when that channel dies.  gRPC gives a server no connection-lifecycle
+ * callback, but channelz tracks every live server socket under a uuid
+ * that is never reused within the process: resolving the requesting
+ * channel's peer string to its socket uuid at lock time gives a channel
+ * identity whose liveness is an O(1) registry lookup afterwards.
+ */
+
+/* gRPC percent-encodes peer strings (e.g. "%5B::1%5D" for "[::1]"). */
+static std::string channelz_percent_decode(const std::string &in)
+{
+	std::string out;
+
+	out.reserve(in.size());
+	for (size_t i = 0; i < in.size(); i++) {
+		if (in[i] == '%' && i + 2 < in.size() &&
+		    isxdigit((unsigned char)in[i + 1]) &&
+		    isxdigit((unsigned char)in[i + 2])) {
+			out.push_back((char)strtol(in.substr(i + 1, 2).c_str(),
+						   NULL, 16));
+			i += 2;
+		} else {
+			out.push_back(in[i]);
+		}
+	}
+
+	return out;
+}
+
+static bool channelz_split_peer(const std::string &encoded_peer,
+				std::string *ip, std::string *port)
+{
+	std::string peer = channelz_percent_decode(encoded_peer);
+	size_t scheme = peer.find(':');
+
+	if (scheme == std::string::npos)
+		return false;
+
+	std::string rest = peer.substr(scheme + 1);
+	size_t sep = rest.rfind(':');
+
+	if (sep == std::string::npos)
+		return false;
+
+	*port = rest.substr(sep + 1);
+
+	std::string host = rest.substr(0, sep);
+
+	if (host.size() >= 2 && host.front() == '[' && host.back() == ']')
+		host = host.substr(1, host.size() - 2);
+	*ip = host;
+
+	return !ip->empty() && !port->empty();
+}
+
+static std::string channelz_b64(const char *bytes, int len)
+{
+	struct base64_encodestate state;
+	char encoded[64];
+	int n;
+
+	base64_init_encodestate(&state);
+	n = base64_encode_block(bytes, len, encoded, &state);
+	n += base64_encode_blockend(encoded + n, &state);
+
+	return std::string(encoded, n);
+}
+
+/*
+ * channelz renders addresses as base64 of the raw address bytes.  The
+ * transport may report an IPv4 client as a v4-mapped IPv6 remote (and
+ * vice versa), so both renderings of the same address are candidates.
+ */
+static std::vector<std::string> channelz_ip_b64_candidates(const std::string &ip)
+{
+	std::vector<std::string> out;
+	struct in6_addr a6;
+	struct in_addr a4;
+
+	if (inet_pton(AF_INET, ip.c_str(), &a4) == 1) {
+		out.push_back(channelz_b64((const char *)&a4, sizeof(a4)));
+
+		struct in6_addr mapped = {};
+
+		mapped.s6_addr[10] = 0xff;
+		mapped.s6_addr[11] = 0xff;
+		memcpy(&mapped.s6_addr[12], &a4, sizeof(a4));
+		out.push_back(
+			channelz_b64((const char *)&mapped, sizeof(mapped)));
+	} else if (inet_pton(AF_INET6, ip.c_str(), &a6) == 1) {
+		out.push_back(channelz_b64((const char *)&a6, sizeof(a6)));
+		if (IN6_IS_ADDR_V4MAPPED(&a6))
+			out.push_back(
+				channelz_b64((const char *)&a6.s6_addr[12], 4));
+	}
+
+	return out;
+}
+
+/*
+ * Substring matching instead of a JSON walk: the channelz JSON schema
+ * varies across gRPC versions in key casing (tcpip_address vs
+ * tcpipAddress) and int rendering (number vs string), while the port
+ * digits and the base64 address bytes are stable in every rendering.
+ */
+static bool channelz_json_has_remote(const std::string &json,
+				     const std::string &port,
+				     const std::vector<std::string> &ip_b64s)
+{
+	std::string quoted = "\"port\":\"" + port + "\"";
+	std::string bare = "\"port\":" + port;
+	bool port_ok = false;
+
+	if (json.find(quoted) != std::string::npos) {
+		port_ok = true;
+	} else {
+		for (size_t at = json.find(bare); at != std::string::npos;
+		     at = json.find(bare, at + 1)) {
+			char next = at + bare.size() < json.size()
+					    ? json[at + bare.size()]
+					    : '\0';
+			if (!isdigit((unsigned char)next)) {
+				port_ok = true;
+				break;
+			}
+		}
+	}
+
+	if (!port_ok)
+		return false;
+
+	for (const std::string &ip_b64 : ip_b64s) {
+		if (json.find(ip_b64) != std::string::npos)
+			return true;
+	}
+	return false;
+}
+
+static void channelz_collect_ids(const std::string &hay, const char *key,
+				 std::vector<int64_t> *ids)
+{
+	std::string needle = std::string("\"") + key + "\":";
+
+	for (size_t at = hay.find(needle); at != std::string::npos;
+	     at = hay.find(needle, at + 1)) {
+		size_t val = at + needle.size();
+
+		if (val < hay.size() && hay[val] == '"')
+			val++;
+		if (val >= hay.size() || !isdigit((unsigned char)hay[val]))
+			continue;
+		ids->push_back(strtoll(hay.c_str() + val, NULL, 10));
+	}
+}
+
+/*
+ * Collect the "<key>":"<id>" (or unquoted) int64 values of a channelz
+ * page, accepting both key casings (camelCase measured on gRPC 1.51;
+ * snake_case kept for drift tolerance like the address matching).
+ */
+static std::vector<int64_t> channelz_extract_ids(const char *json,
+						 const char *camel_key,
+						 const char *snake_key)
+{
+	std::vector<int64_t> ids;
+	std::string hay(json ? json : "");
+
+	channelz_collect_ids(hay, camel_key, &ids);
+	if (ids.empty())
+		channelz_collect_ids(hay, snake_key, &ids);
+
+	return ids;
+}
+
+static int64_t channelz_socket_uuid_for_peer(const char *peer)
+{
+	std::string ip, port;
+
+	if (!channelz_split_peer(peer, &ip, &port))
+		return NB_GRPC_CHANNEL_ID_NONE;
+
+	std::vector<std::string> ip_b64s = channelz_ip_b64_candidates(ip);
+
+	if (ip_b64s.empty())
+		return NB_GRPC_CHANNEL_ID_NONE;
+
+	char *servers = grpc_channelz_get_servers(0);
+
+	if (!servers)
+		return NB_GRPC_CHANNEL_ID_NONE;
+
+	std::vector<int64_t> server_ids =
+		channelz_extract_ids(servers, "serverId", "server_id");
+
+	gpr_free(servers);
+
+	int64_t found = NB_GRPC_CHANNEL_ID_NONE;
+
+	for (int64_t server_id : server_ids) {
+		int64_t start = 0;
+
+		while (true) {
+			char *page = grpc_channelz_get_server_sockets(server_id,
+								      start, 256);
+
+			if (!page)
+				break;
+
+			std::vector<int64_t> socket_ids =
+				channelz_extract_ids(page, "socketId",
+						     "socket_id");
+			bool last_page = strstr(page, "\"end\":true") != NULL;
+
+			gpr_free(page);
+
+			if (socket_ids.empty())
+				break;
+
+			for (int64_t socket_id : socket_ids) {
+				char *sock = grpc_channelz_get_socket(
+					(intptr_t)socket_id);
+
+				if (sock &&
+				    channelz_json_has_remote(sock, port,
+							     ip_b64s)) {
+					if (found != NB_GRPC_CHANNEL_ID_NONE &&
+					    found != socket_id) {
+						/* Ambiguous: refuse to guess. */
+						gpr_free(sock);
+						return NB_GRPC_CHANNEL_ID_NONE;
+					}
+					found = socket_id;
+				}
+				if (sock)
+					gpr_free(sock);
+				if (socket_id >= start)
+					start = socket_id + 1;
+			}
+
+			if (last_page)
+				break;
+		}
+	}
+
+	return found;
+}
+
+static bool channelz_socket_alive(int64_t channel_id)
+{
+	char *sock = grpc_channelz_get_socket((intptr_t)channel_id);
+
+	if (!sock)
+		return false;
+	gpr_free(sock);
+	return true;
+}
+
 grpc::Status HandleUnaryLockConfig(
 	UnaryRpcState<frr::LockConfigRequest, frr::LockConfigResponse> *tag)
 {
 	grpc_debug("%s: entered", __func__);
+
+	if (nb_config_lock_dispatch_is_set()) {
+		std::string peer = tag->peer();
+		int64_t channel_id =
+			channelz_socket_uuid_for_peer(peer.c_str());
+
+		/*
+		 * Fail closed: a lock whose owning channel cannot be
+		 * observed would never expire (the #28 leak with extra
+		 * steps).  This also rejects peers with no usable form,
+		 * e.g. the literal "unknown" a dying transport reports.
+		 */
+		if (channel_id == NB_GRPC_CHANNEL_ID_NONE)
+			return grpc::Status(
+				grpc::StatusCode::FAILED_PRECONDITION,
+				"cannot establish channel identity for the config lock");
+
+		char errmsg[BUFSIZ] = {0};
+		int ret = nb_config_lock_dispatch(peer.c_str(), channel_id,
+						  errmsg, sizeof(errmsg));
+
+		if (ret)
+			return grpc::Status(
+				grpc::StatusCode::FAILED_PRECONDITION,
+				errmsg[0]
+					? errmsg
+					: "configuration datastores are locked");
+		return grpc::Status::OK;
+	}
 
 	if (nb_running_lock(NB_CLIENT_GRPC, NULL))
 		return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
@@ -2734,6 +3038,21 @@ grpc::Status HandleUnaryUnlockConfig(
 	UnaryRpcState<frr::UnlockConfigRequest, frr::UnlockConfigResponse> *tag)
 {
 	grpc_debug("%s: entered", __func__);
+
+	if (nb_config_lock_dispatch_is_set()) {
+		std::string peer = tag->peer();
+		char errmsg[BUFSIZ] = {0};
+		int ret = nb_config_unlock_dispatch(peer.c_str(), errmsg,
+						    sizeof(errmsg));
+
+		if (ret)
+			return grpc::Status(
+				grpc::StatusCode::FAILED_PRECONDITION,
+				errmsg[0]
+					? errmsg
+					: "failed to unlock the configuration datastores");
+		return grpc::Status::OK;
+	}
 
 	if (nb_running_unlock(NB_CLIENT_GRPC, NULL))
 		return grpc::Status(
@@ -2843,6 +3162,10 @@ static grpc::Status status_from_errno(int error, const char *errmsg)
 	case EINPROGRESS:
 		code = grpc::StatusCode::UNAVAILABLE;
 		break;
+	case ENOLCK:
+		/* Commit refused under another session's config lock. */
+		code = grpc::StatusCode::FAILED_PRECONDITION;
+		break;
 	case ECANCELED:
 		code = grpc::StatusCode::CANCELLED;
 		break;
@@ -2925,7 +3248,8 @@ class CommitRpcState : public RpcStateBase {
 		candidate->commit_pending = true;
 		pending_candidate = candidate;
 		ret = nb_config_commit_dispatch_async(candidate->config, nb_phase,
-						      request.comment().c_str(), async_done,
+						      request.comment().c_str(),
+						      ctx.peer().c_str(), async_done,
 						      this, errmsg, sizeof(errmsg));
 		if (!ret) {
 			async_pending = true;
@@ -3376,6 +3700,8 @@ static void *grpc_pthread_start(void *arg)
 	builder.RegisterService(&service);
 	builder.AddChannelArgument(
 		GRPC_ARG_HTTP2_MIN_RECV_PING_INTERVAL_WITHOUT_DATA_MS, 5000);
+	/* Config-lock leases resolve channel life through channelz. */
+	builder.AddChannelArgument(GRPC_ARG_ENABLE_CHANNELZ, 1);
 	std::unique_ptr<grpc::ServerCompletionQueue> cq =
 		builder.AddCompletionQueue();
 	std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
@@ -3551,6 +3877,8 @@ static int frr_grpc_finish(void)
 {
 	grpc_debug("%s: entered", __func__);
 
+	nb_grpc_channel_alive_set(NULL);
+
 	if (!fpt)
 		return 0;
 
@@ -3674,6 +4002,7 @@ error:
 static int frr_grpc_module_late_init(struct event_loop *tm)
 {
 	main_master = tm;
+	nb_grpc_channel_alive_set(channelz_socket_alive);
 	hook_register(nb_grpc_terminate, frr_grpc_finish);
 	hook_register(frr_fini, frr_grpc_finish);
 	event_add_event(tm, frr_grpc_module_very_late_init, NULL, 0, NULL);

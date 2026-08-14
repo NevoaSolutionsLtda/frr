@@ -68,6 +68,7 @@ struct mgmt_grpc_config_req {
 	uint64_t req_id;
 	enum nb_config_commit_phase phase;
 
+	char *peer;
 	struct nb_config *candidate;
 	struct nb_config *candidate_backup;
 	struct event *event;
@@ -77,6 +78,24 @@ struct mgmt_grpc_config_req {
 	void *done_arg;
 
 	LIST_ENTRY(mgmt_grpc_config_req) link;
+};
+
+/*
+ * Lock-owning identity of one gRPC channel: the datastore-lock mirror
+ * of a native frontend session (issue #28).  Keyed by the transport
+ * peer string (unique among live connections); chan_id is the channelz
+ * socket uuid used to observe the channel's life.  The synthetic
+ * session_id is minted once per channel, so mgmt_ds_lock() owner checks
+ * see one stable owner for the channel's whole life.  All access is on
+ * mm->master, like the native fe_session code.
+ */
+struct mgmt_grpc_channel {
+	char *peer;
+	int64_t chan_id;
+	uint64_t session_id;
+	bool ds_locked[MGMTD_DS_MAX_ID];
+
+	LIST_ENTRY(mgmt_grpc_channel) link;
 };
 
 struct mgmt_grpc_oper_req {
@@ -104,6 +123,16 @@ static uint64_t mgmt_grpc_req_id;
 static LIST_HEAD(mgmt_grpc_rpc_reqs, mgmt_grpc_rpc_req) mgmt_grpc_rpc_reqs;
 static LIST_HEAD(mgmt_grpc_config_reqs, mgmt_grpc_config_req) mgmt_grpc_config_reqs;
 static LIST_HEAD(mgmt_grpc_oper_reqs, mgmt_grpc_oper_req) mgmt_grpc_oper_reqs;
+static LIST_HEAD(mgmt_grpc_channels, mgmt_grpc_channel) mgmt_grpc_channels;
+static struct event *mgmt_grpc_channel_watch_event;
+
+/*
+ * The lease has no duration: it lasts exactly as long as the channel.
+ * This is only how often a dead channel is NOTICED when no gRPC request
+ * arrives to notice it on demand (a native session blocked on the lock
+ * generates no such request).
+ */
+#define MGMT_GRPC_CHANNEL_WATCH_MS 1000
 
 static void mgmt_grpc_rpc_req_put(struct mgmt_grpc_rpc_req *req)
 {
@@ -209,6 +238,205 @@ static uint64_t mgmt_grpc_next_session_id(void)
 static uint64_t mgmt_grpc_next_req_id(void)
 {
 	return ++mgmt_grpc_req_id;
+}
+
+/* ------------------------------------ */
+/* gRPC channel lock ownership (issue #28) */
+/* ------------------------------------ */
+
+static struct mgmt_grpc_channel *mgmt_grpc_channel_find(const char *peer)
+{
+	struct mgmt_grpc_channel *chan;
+
+	if (!peer)
+		return NULL;
+
+	LIST_FOREACH (chan, &mgmt_grpc_channels, link) {
+		if (!strcmp(chan->peer, peer))
+			return chan;
+	}
+	return NULL;
+}
+
+/*
+ * Mirror of fe_session_cleanup for a gRPC channel: release every
+ * datastore lock the channel owns and drop its registry entry.
+ */
+static void mgmt_grpc_channel_release(struct mgmt_grpc_channel *chan)
+{
+	struct mgmt_ds_ctx *ds_ctx;
+	enum mgmt_ds_id ds_id;
+
+	for (ds_id = 0; ds_id < MGMTD_DS_MAX_ID; ds_id++) {
+		if (!chan->ds_locked[ds_id])
+			continue;
+		ds_ctx = mgmt_ds_get_ctx_by_id(mm, ds_id);
+		if (ds_ctx)
+			mgmt_ds_unlock(ds_ctx, chan->session_id);
+		chan->ds_locked[ds_id] = false;
+	}
+
+	LIST_REMOVE(chan, link);
+	XFREE(MTYPE_MGMTD_GRPC_CHANNEL, chan->peer);
+	XFREE(MTYPE_MGMTD_GRPC_CHANNEL, chan);
+}
+
+static void mgmt_grpc_channel_sweep(void)
+{
+	struct mgmt_grpc_channel *chan, *next;
+
+	LIST_FOREACH_SAFE (chan, &mgmt_grpc_channels, link, next) {
+		if (nb_grpc_channel_alive(chan->chan_id))
+			continue;
+		_dbg("gRPC channel %s (session-id %" PRIu64
+		     ") is gone; releasing its datastore locks",
+		     chan->peer, chan->session_id);
+		mgmt_grpc_channel_release(chan);
+	}
+}
+
+static void mgmt_grpc_channel_watch(struct event *event)
+{
+	mgmt_grpc_channel_watch_event = NULL;
+	mgmt_grpc_channel_sweep();
+	if (!LIST_EMPTY(&mgmt_grpc_channels))
+		event_add_timer_msec(mm->master, mgmt_grpc_channel_watch, NULL,
+				     MGMT_GRPC_CHANNEL_WATCH_MS,
+				     &mgmt_grpc_channel_watch_event);
+}
+
+static void mgmt_grpc_channel_watch_sched(void)
+{
+	if (mgmt_grpc_channel_watch_event || LIST_EMPTY(&mgmt_grpc_channels))
+		return;
+	event_add_timer_msec(mm->master, mgmt_grpc_channel_watch, NULL,
+			     MGMT_GRPC_CHANNEL_WATCH_MS,
+			     &mgmt_grpc_channel_watch_event);
+}
+
+static void mgmt_grpc_lock_owner_errmsg(struct mgmt_ds_ctx *ds_ctx, const char *ds_name,
+					char *errmsg, size_t errmsg_len)
+{
+	uint64_t lock_sid = MGMTD_SESSION_ID_NONE;
+	uint64_t lock_txn = 0;
+
+	if (!mgmt_ds_is_locked(ds_ctx, &lock_sid, &lock_txn))
+		snprintfrr(errmsg, errmsg_len, "%s datastore is locked", ds_name);
+	else if (lock_txn)
+		snprintfrr(errmsg, errmsg_len,
+			   "%s datastore is locked by transaction %" PRIu64, ds_name, lock_txn);
+	else
+		snprintfrr(errmsg, errmsg_len,
+			   "%s datastore is locked by another session (session-id %" PRIu64 ")",
+			   ds_name, lock_sid);
+}
+
+static int mgmt_grpc_config_lock_dispatch(const char *peer, int64_t chan_id, char *errmsg,
+					  size_t errmsg_len)
+{
+	struct mgmt_ds_ctx *can_ds, *run_ds;
+	struct mgmt_grpc_channel *chan;
+
+	/*
+	 * Belt for the transport-side fail-closed check: a lock without an
+	 * observable channel would never expire.
+	 */
+	if (chan_id == NB_GRPC_CHANNEL_ID_NONE) {
+		snprintfrr(errmsg, errmsg_len,
+			   "cannot establish channel identity for the config lock");
+		return -EBUSY;
+	}
+
+	mgmt_grpc_channel_sweep();
+
+	can_ds = mgmt_ds_get_ctx_by_id(mm, MGMTD_DS_CANDIDATE);
+	run_ds = mgmt_ds_get_ctx_by_id(mm, MGMTD_DS_RUNNING);
+
+	chan = mgmt_grpc_channel_find(peer);
+	if (chan && chan->chan_id != chan_id) {
+		/*
+		 * Same peer string, different transport: a new connection
+		 * reusing the address of a dead one whose socket the sweep
+		 * has not yet seen disappear.  Identity is (peer, chan_id);
+		 * the old incarnation's tenure ends here.
+		 */
+		_dbg("gRPC channel %s reincarnated (chan-id %" PRId64 " -> %" PRId64 ")",
+		     peer, chan->chan_id, chan_id);
+		mgmt_grpc_channel_release(chan);
+		chan = NULL;
+	}
+	if (chan) {
+		/* Mirror the native FE: a double lock warns and succeeds. */
+		zlog_warn("gRPC channel %s (session-id %" PRIu64 ") locked the datastores twice",
+			  chan->peer, chan->session_id);
+		return 0;
+	}
+
+	chan = XCALLOC(MTYPE_MGMTD_GRPC_CHANNEL, sizeof(*chan));
+	chan->peer = XSTRDUP(MTYPE_MGMTD_GRPC_CHANNEL, peer);
+	chan->chan_id = chan_id;
+	chan->session_id = mgmt_grpc_next_session_id();
+	LIST_INSERT_HEAD(&mgmt_grpc_channels, chan, link);
+
+	if (mgmt_ds_lock(can_ds, chan->session_id)) {
+		mgmt_grpc_lock_owner_errmsg(can_ds, "candidate", errmsg, errmsg_len);
+		goto fail;
+	}
+	chan->ds_locked[MGMTD_DS_CANDIDATE] = true;
+
+	if (mgmt_ds_lock(run_ds, chan->session_id)) {
+		mgmt_grpc_lock_owner_errmsg(run_ds, "running", errmsg, errmsg_len);
+		mgmt_ds_unlock(can_ds, chan->session_id);
+		chan->ds_locked[MGMTD_DS_CANDIDATE] = false;
+		goto fail;
+	}
+	chan->ds_locked[MGMTD_DS_RUNNING] = true;
+
+	_dbg("gRPC channel %s locked candidate+running (session-id %" PRIu64 ")", chan->peer,
+	     chan->session_id);
+	mgmt_grpc_channel_watch_sched();
+	return 0;
+
+fail:
+	/* A failed lock leaves no tenure behind. */
+	mgmt_grpc_channel_release(chan);
+	return -EBUSY;
+}
+
+static int mgmt_grpc_config_unlock_dispatch(const char *peer, char *errmsg, size_t errmsg_len)
+{
+	struct mgmt_ds_ctx *can_ds;
+	struct mgmt_grpc_channel *chan;
+
+	mgmt_grpc_channel_sweep();
+
+	can_ds = mgmt_ds_get_ctx_by_id(mm, MGMTD_DS_CANDIDATE);
+
+	chan = mgmt_grpc_channel_find(peer);
+	if (!chan || !chan->ds_locked[MGMTD_DS_CANDIDATE]) {
+		uint64_t lock_sid = MGMTD_SESSION_ID_NONE;
+		uint64_t lock_txn = 0;
+
+		if (mgmt_ds_is_locked(can_ds, &lock_sid, &lock_txn) &&
+		    lock_sid != MGMTD_SESSION_ID_NONE)
+			snprintfrr(errmsg, errmsg_len,
+				   "locked by another session (session-id %" PRIu64 ")",
+				   lock_sid);
+		else
+			snprintfrr(errmsg, errmsg_len, "no lock held by this gRPC channel");
+		return -ENOLCK;
+	}
+
+	_dbg("gRPC channel %s unlocked candidate+running (session-id %" PRIu64 ")", chan->peer,
+	     chan->session_id);
+	/*
+	 * The registry holds lock tenures, not connections: releasing the
+	 * entry here unlocks the datastores it owns and ends the tenure.
+	 * A later lock on the same channel starts a fresh one (and mints a
+	 * fresh session id; owner comparisons never span tenures).
+	 */
+	mgmt_grpc_channel_release(chan);
+	return 0;
 }
 
 static void mgmt_grpc_rpc_event(struct event *event)
@@ -359,6 +587,7 @@ static void mgmt_grpc_config_req_put(struct mgmt_grpc_config_req *req)
 	if (req->candidate_backup)
 		nb_config_free(req->candidate_backup);
 	darr_free(req->errstr);
+	XFREE(MTYPE_MGMTD_GRPC_CONFIG, req->peer);
 	pthread_mutex_destroy(&req->mtx);
 	XFREE(MTYPE_MGMTD_GRPC_CONFIG, req);
 }
@@ -425,24 +654,64 @@ static int mgmt_grpc_config_start_commit(struct mgmt_grpc_config_req *req, char 
 					 size_t errmsg_len)
 {
 	struct mgmt_ds_ctx *can_ds, *run_ds;
-	uint64_t lock_session;
-	uint64_t locked_by;
+	struct mgmt_ds_ctx *ds_ctxs[2];
+	struct mgmt_grpc_channel *chan;
 	uint64_t session_id;
 	uint64_t txn_id;
 	uint64_t req_id;
 	bool validate_only;
+	unsigned int i;
 
 	if (!mgmt_grpc_config_phase_supported(req->phase)) {
 		snprintfrr(errmsg, errmsg_len, "mgmtd gRPC Commit supports VALIDATE and ALL");
 		return -EOPNOTSUPP;
 	}
 
+	/* A lock whose channel died must not block anyone (issue #28). */
+	mgmt_grpc_channel_sweep();
+
 	can_ds = mgmt_ds_get_ctx_by_id(mm, MGMTD_DS_CANDIDATE);
 	run_ds = mgmt_ds_get_ctx_by_id(mm, MGMTD_DS_RUNNING);
-	if (mgmt_ds_is_locked(can_ds, &lock_session, &locked_by) ||
-	    mgmt_ds_is_locked(run_ds, &lock_session, &locked_by)) {
-		snprintfrr(errmsg, errmsg_len, "Datastore is locked");
-		return -EBUSY;
+
+	/*
+	 * Owner-aware lock check: a session lock held by this request's own
+	 * channel permits the commit (self-lock); any other holder refuses
+	 * it.  Ownership requires a REAL registered tenure -- never a
+	 * sentinel comparison: session-id 0 is a real lock owner here (the
+	 * backend initial-sync read lock), and a channel that holds no
+	 * lock must not match it.  Locks and commits live in one mgmt_ds
+	 * domain, so the exclusion also holds against native frontend
+	 * sessions.
+	 */
+	chan = mgmt_grpc_channel_find(req->peer);
+
+	ds_ctxs[0] = can_ds;
+	ds_ctxs[1] = run_ds;
+	for (i = 0; i < array_size(ds_ctxs); i++) {
+		uint64_t lock_sid = MGMTD_SESSION_ID_NONE;
+		uint64_t lock_txn = 0;
+
+		if (!mgmt_ds_is_locked(ds_ctxs[i], &lock_sid, &lock_txn))
+			continue;
+		if (lock_txn) {
+			snprintfrr(errmsg, errmsg_len,
+				   "a config transaction is in progress (txn-id %" PRIu64 ")",
+				   lock_txn);
+			return -EBUSY;
+		}
+		if (chan && chan->ds_locked[MGMTD_DS_CANDIDATE] &&
+		    lock_sid == chan->session_id)
+			continue; /* self-lock */
+		if (lock_sid == MGMTD_SESSION_ID_NONE) {
+			/* Anonymous internal lock: backend initial sync. */
+			snprintfrr(errmsg, errmsg_len,
+				   "datastores are busy with backend initialization");
+			return -EBUSY;
+		}
+		snprintfrr(errmsg, errmsg_len,
+			   "locked by another session (session-id %" PRIu64 ")",
+			   lock_sid);
+		return -ENOLCK;
 	}
 
 	session_id = mgmt_grpc_next_session_id();
@@ -491,7 +760,7 @@ static void mgmt_grpc_config_event(struct event *event)
 
 static int mgmt_grpc_config_commit_dispatch_async(const struct nb_config *candidate,
 						  enum nb_config_commit_phase phase,
-						  const char *comment,
+						  const char *comment, const char *peer,
 						  nb_config_commit_done_cb done, void *arg,
 						  char *errmsg, size_t errmsg_len)
 {
@@ -508,6 +777,8 @@ static int mgmt_grpc_config_commit_dispatch_async(const struct nb_config *candid
 	pthread_mutex_init(&req->mtx, NULL);
 	req->refcnt = 1;
 	req->phase = phase;
+	if (peer)
+		req->peer = XSTRDUP(MTYPE_MGMTD_GRPC_CONFIG, peer);
 	req->candidate = nb_config_dup(candidate);
 	req->done_cb = done;
 	req->done_arg = arg;
@@ -786,9 +1057,12 @@ void mgmt_grpc_init(void)
 	LIST_INIT(&mgmt_grpc_rpc_reqs);
 	LIST_INIT(&mgmt_grpc_config_reqs);
 	LIST_INIT(&mgmt_grpc_oper_reqs);
+	LIST_INIT(&mgmt_grpc_channels);
 	nb_config_get_dispatch_set(mgmt_grpc_config_get_dispatch);
 	nb_config_root_borrow_dispatch_set(mgmt_grpc_config_root_borrow_dispatch);
 	nb_config_commit_dispatch_async_set(mgmt_grpc_config_commit_dispatch_async);
+	nb_config_lock_dispatch_set(mgmt_grpc_config_lock_dispatch);
+	nb_config_unlock_dispatch_set(mgmt_grpc_config_unlock_dispatch);
 	nb_rpc_dispatch_async_set(mgmt_grpc_rpc_dispatch_async);
 	nb_oper_get_dispatch_async_set(mgmt_grpc_oper_get_dispatch_async);
 	nb_notification_data_subscribe_set(mgmt_fe_adapter_notify_subscribe);
@@ -858,12 +1132,22 @@ void mgmt_grpc_terminate(void)
 		mgmt_grpc_oper_req_put(oper_req);
 	}
 
+	/*
+	 * Every channel dies with the server: release their locks here on
+	 * the main thread, the same place the sweep would.
+	 */
+	event_cancel(&mgmt_grpc_channel_watch_event);
+	while (!LIST_EMPTY(&mgmt_grpc_channels))
+		mgmt_grpc_channel_release(LIST_FIRST(&mgmt_grpc_channels));
+
 	nb_grpc_terminate_call();
 	nb_notification_data_subscribe_set(NULL);
 	nb_notification_data_unsubscribe_set(NULL);
 	nb_oper_get_dispatch_async_set(NULL);
 	nb_rpc_dispatch_async_set(NULL);
 	nb_config_commit_dispatch_async_set(NULL);
+	nb_config_unlock_dispatch_set(NULL);
+	nb_config_lock_dispatch_set(NULL);
 	nb_config_root_borrow_dispatch_set(NULL);
 	nb_config_get_dispatch_set(NULL);
 }

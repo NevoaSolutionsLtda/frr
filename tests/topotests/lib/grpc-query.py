@@ -228,6 +228,123 @@ class GRPCClient:
 
         return json.dumps({"attempts": count})
 
+    # Two grpc.insecure_channel() to one target inside one process share
+    # a TCP connection (global subchannel pool), so the server would see
+    # ONE channel and one lock owner.  A local pool gives each channel
+    # its own connection, which is what "two channels" means server-side.
+    LOCAL_POOL = (("grpc.use_local_subchannel_pool", 1),)
+
+    def lock_ownership_scenario(self, server, port, xpath, value_a, value_b):
+        """Exercise config-lock ownership across two live channels.
+
+        Channel A takes the lock; channel B must not be able to lock,
+        unlock or commit while A holds it; A itself must still be able
+        to commit (self-lock); once A unlocks, B must get the lock.
+        A and B commit distinct values so the caller can assert the
+        running config effect, not just the result codes.
+        Returns a JSON dict of the per-step result codes.
+        """
+        target = "{}:{}".format(server, port)
+
+        def code_of(fn):
+            try:
+                fn()
+                return "OK"
+            except grpc.RpcError as error:
+                return error.code().name
+
+        def commit_one(stub, value):
+            candidate = stub.CreateCandidate(
+                frr_northbound_pb2.CreateCandidateRequest()
+            )
+            edit = frr_northbound_pb2.EditCandidateRequest()
+            edit.candidate_id = candidate.candidate_id
+            pv = edit.update.add()
+            pv.path = xpath
+            pv.value = value
+            stub.EditCandidate(edit)
+            commit = frr_northbound_pb2.CommitRequest()
+            commit.candidate_id = candidate.candidate_id
+            commit.phase = frr_northbound_pb2.CommitRequest.ALL
+            stub.Commit(commit)
+
+        chan_a = grpc.insecure_channel(target, options=self.LOCAL_POOL)
+        chan_b = grpc.insecure_channel(target, options=self.LOCAL_POOL)
+        stub_a = frr_northbound_pb2_grpc.NorthboundStub(chan_a)
+        stub_b = frr_northbound_pb2_grpc.NorthboundStub(chan_b)
+        results = {}
+        try:
+            results["lock_a"] = code_of(
+                lambda: stub_a.LockConfig(frr_northbound_pb2.LockConfigRequest())
+            )
+            results["lock_b_while_a"] = code_of(
+                lambda: stub_b.LockConfig(frr_northbound_pb2.LockConfigRequest())
+            )
+            results["unlock_b_while_a"] = code_of(
+                lambda: stub_b.UnlockConfig(frr_northbound_pb2.UnlockConfigRequest())
+            )
+            results["commit_b_while_a"] = code_of(
+                lambda: commit_one(stub_b, value_b)
+            )
+            results["commit_a_self_lock"] = code_of(
+                lambda: commit_one(stub_a, value_a)
+            )
+            results["unlock_a"] = code_of(
+                lambda: stub_a.UnlockConfig(frr_northbound_pb2.UnlockConfigRequest())
+            )
+            results["lock_b_after"] = code_of(
+                lambda: stub_b.LockConfig(frr_northbound_pb2.LockConfigRequest())
+            )
+            results["unlock_b_after"] = code_of(
+                lambda: stub_b.UnlockConfig(frr_northbound_pb2.UnlockConfigRequest())
+            )
+        finally:
+            chan_a.close()
+            chan_b.close()
+        return json.dumps(results)
+
+    def lock_lease_scenario(self, server, port, retry_secs):
+        """Prove the lock lease is the owning channel's life.
+
+        A channel locks and dies without unlocking; a new channel must
+        get the lock once the server notices the death (bounded retry).
+        Returns the takeover outcome and how long it took.
+        """
+        target = "{}:{}".format(server, port)
+
+        chan_c = grpc.insecure_channel(target, options=self.LOCAL_POOL)
+        stub_c = frr_northbound_pb2_grpc.NorthboundStub(chan_c)
+        try:
+            stub_c.LockConfig(frr_northbound_pb2.LockConfigRequest())
+            lock_c = "OK"
+        except grpc.RpcError as error:
+            lock_c = error.code().name
+        chan_c.close()
+
+        chan_d = grpc.insecure_channel(target, options=self.LOCAL_POOL)
+        stub_d = frr_northbound_pb2_grpc.NorthboundStub(chan_d)
+        lock_d = "NEVER"
+        start = time.time()
+        deadline = start + retry_secs
+        elapsed = -1.0
+        try:
+            while time.time() < deadline:
+                try:
+                    stub_d.LockConfig(frr_northbound_pb2.LockConfigRequest())
+                    lock_d = "OK"
+                    elapsed = time.time() - start
+                    break
+                except grpc.RpcError as error:
+                    lock_d = error.code().name
+                time.sleep(0.25)
+            if lock_d == "OK":
+                stub_d.UnlockConfig(frr_northbound_pb2.UnlockConfigRequest())
+        finally:
+            chan_d.close()
+        return json.dumps(
+            {"lock_c": lock_c, "lock_d": lock_d, "takeover_secs": round(elapsed, 2)}
+        )
+
     def commit_changes(self, updates, deletes, phase_name):
         candidate_id = None
 
@@ -650,6 +767,16 @@ def main(*args):
         elif action.startswith("list-transactions-hammer,"):
             _, count = raw_action.split(",", 1)
             print(c.list_transactions_hammer(int(count), args.server, args.port))
+        elif action.startswith("lock-ownership-scenario,"):
+            _, xpath, value_a, value_b = raw_action.split(",", 3)
+            print(
+                c.lock_ownership_scenario(
+                    args.server, args.port, xpath, value_a, value_b
+                )
+            )
+        elif action.startswith("lock-lease-scenario,"):
+            _, retry_secs = raw_action.split(",", 1)
+            print(c.lock_lease_scenario(args.server, args.port, float(retry_secs)))
         elif action.startswith("list-transactions-cancel,"):
             _, delay, timeout = raw_action.split(",", 2)
             print(c.list_transactions_cancel(float(delay), float(timeout)))
