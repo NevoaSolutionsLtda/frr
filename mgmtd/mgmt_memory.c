@@ -31,3 +31,4 @@ DEFINE_MTYPE(MGMTD, MGMTD_CMT_INFO, "commit info");
 DEFINE_MTYPE(MGMTD, MGMTD_GRPC_RPC, "grpc rpc request");
 DEFINE_MTYPE(MGMTD, MGMTD_GRPC_CONFIG, "grpc config request");
 DEFINE_MTYPE(MGMTD, MGMTD_GRPC_OPER, "grpc oper get request");
+DEFINE_MTYPE(MGMTD, MGMTD_GRPC_CHANNEL, "grpc channel lock state");
