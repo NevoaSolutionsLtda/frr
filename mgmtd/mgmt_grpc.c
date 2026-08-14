@@ -714,6 +714,41 @@ static int mgmt_grpc_config_start_commit(struct mgmt_grpc_config_req *req, char 
 		return -ENOLCK;
 	}
 
+	/*
+	 * Dirty shared candidate (issue #11): a native frontend session can
+	 * leave uncommitted staging in the shared candidate datastore.  The
+	 * gRPC candidate is request-local, so any difference between the
+	 * shared candidate and running is someone else's staging, and
+	 * installing over it would clobber that work (a successful commit
+	 * never restores the backup).  Refuse instead: the staging session
+	 * commits or discards first.  The check and the install below run
+	 * one after the other on this single-threaded event loop, so they
+	 * are atomic by construction.  VALIDATE takes the same refusal:
+	 * it swaps the shared candidate too.
+	 */
+	{
+		const struct nb_config *can_cfg = mgmt_ds_get_nb_config(can_ds);
+		const struct nb_config *run_cfg = mgmt_ds_get_nb_config(run_ds);
+		struct lyd_node *diff = NULL;
+		LY_ERR lerr;
+
+		if (can_cfg && run_cfg) {
+			lerr = lyd_diff_siblings(run_cfg->dnode, can_cfg->dnode,
+						 LYD_DIFF_DEFAULTS, &diff);
+			if (lerr) {
+				snprintfrr(errmsg, errmsg_len,
+					   "cannot compare the candidate and running datastores");
+				return -EINVAL;
+			}
+			if (diff) {
+				lyd_free_all(diff);
+				snprintfrr(errmsg, errmsg_len,
+					   "candidate datastore has changes staged by another session; commit or discard them first");
+				return -EBUSY;
+			}
+		}
+	}
+
 	session_id = mgmt_grpc_next_session_id();
 	txn_id = mgmt_create_txn(session_id, MGMTD_TXN_TYPE_CONFIG);
 	if (txn_id == MGMTD_TXN_ID_NONE) {
