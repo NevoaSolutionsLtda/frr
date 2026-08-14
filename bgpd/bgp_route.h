@@ -934,6 +934,12 @@ extern void bgp_static_delete(struct bgp *bgp);
 extern void bgp_address_family_distance_delete(void);
 extern void bgp_static_redo_import_check(struct bgp *bgp);
 extern void bgp_purge_static_redist_routes(struct bgp *bgp);
+extern struct bgp_static *bgp_static_new(void);
+extern void bgp_static_free(struct bgp_static *bgp_static);
+extern struct bgp_static *bgp_static_new(void);
+extern void bgp_static_free(struct bgp_static *bgp_static);
+extern struct bgp_static *bgp_static_new(void);
+extern void bgp_static_free(struct bgp_static *bgp_static);
 extern void bgp_static_update(struct bgp *bgp, const struct prefix *p,
 			      struct bgp_static *s, afi_t afi, safi_t safi);
 extern void bgp_static_withdraw(struct bgp *bgp, const struct prefix *p,

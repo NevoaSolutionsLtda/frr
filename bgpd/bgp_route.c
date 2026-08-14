@@ -14,6 +14,8 @@
 #include "linklist.h"
 #include "memory.h"
 #include "command.h"
+#include "northbound_cli.h"
+#include "bgpd/bgp_nb.h"
 #include "stream.h"
 #include "filter.h"
 #include "log.h"
@@ -8813,12 +8815,12 @@ static void bgp_nexthop_reachability_check(afi_t afi, safi_t safi,
 	}
 }
 
-static struct bgp_static *bgp_static_new(void)
+struct bgp_static *bgp_static_new(void)
 {
 	return XCALLOC(MTYPE_BGP_STATIC, sizeof(struct bgp_static));
 }
 
-static void bgp_static_free(struct bgp_static *bgp_static)
+void bgp_static_free(struct bgp_static *bgp_static)
 {
 	XFREE(MTYPE_ROUTE_MAP_NAME, bgp_static->rmap.name);
 	route_map_counter_decrement(bgp_static->rmap.map);
@@ -9174,6 +9176,123 @@ void bgp_static_withdraw(struct bgp *bgp, const struct prefix *p, afi_t afi,
 
 /* Configure static BGP network.  When user don't run zebra, static
    route should be installed as valid.  */
+
+/*
+ * Network-config dual write: mirrors a successful legacy
+ * bgp_static_set() into the YANG datastore. Plain AFs land in the
+ * flat network-config[prefix] list; the two l3vpn AFs land in the
+ * nested network-config[rd]/prefix-list[prefix] tree (label-index
+ * mandatory there).
+ */
+static void bgp_nb_network_dual(struct vty *vty, bool negate,
+				const char *ip_str, const char *rd_str,
+				const char *label_str, afi_t afi, safi_t safi,
+				const char *rmap, int backdoor,
+				uint32_t label_index)
+{
+	struct bgp *bgp;
+	const char *af_name;
+	struct prefix p;
+	char pbuf[PREFIX_STRLEN];
+	char xpath[256];
+	const char *cont;
+
+	af_name = bgp_nb_af_yang_name(afi, safi);
+	if (!af_name || safi == SAFI_EVPN)
+		return;
+	cont = strchr(af_name, ':');
+	if (!cont)
+		return;
+	cont++;
+	if (strmatch(cont, "l2vpn-vpls"))
+		return;
+	bgp = VTY_GET_CONTEXT(bgp);
+	if (!bgp)
+		return;
+	if (!str2prefix(ip_str, &p))
+		return;
+	apply_mask(&p);
+	prefix2str(&p, pbuf, sizeof(pbuf));
+
+	if (safi == SAFI_MPLS_VPN) {
+		if (!rd_str)
+			return;
+		snprintfrr(xpath, sizeof(xpath),
+			   "./global/afi-safis/afi-safi[afi-safi-name='%s']/%s",
+			   af_name, cont);
+		strlcat(xpath, "/network-config[rd='", sizeof(xpath));
+		strlcat(xpath, rd_str, sizeof(xpath));
+		strlcat(xpath, "']/prefix-list[prefix='", sizeof(xpath));
+		strlcat(xpath, pbuf, sizeof(xpath));
+		strlcat(xpath, "']", sizeof(xpath));
+		if (negate) {
+			nb_cli_enqueue_change(vty, xpath, NB_OP_DESTROY,
+					      NULL);
+		} else {
+			/*
+			 * No explicit NB_OP_CREATE for the rd/prefix-list
+			 * ancestors: the leaf MODIFY creates them
+			 * implicitly and a CREATE on an already-present
+			 * entry would abort the whole apply batch.
+			 */
+
+			strlcat(xpath, "/label-index", sizeof(xpath));
+			nb_cli_enqueue_change(vty, xpath, NB_OP_MODIFY,
+					      label_str);
+			if (rmap) {
+				strlcat(xpath, "/rmap-policy-export",
+					sizeof(xpath));
+				nb_cli_enqueue_change(vty, xpath,
+						      NB_OP_MODIFY, rmap);
+			}
+		}
+		(void)nb_cli_apply_changes(
+			vty, BGP_CONTAINER_XPATH, "frr-bgp:bgp",
+			bgp_nb_cpp_name(bgp), bgp_nb_vrf_key(bgp));
+		return;
+	}
+
+	snprintfrr(xpath, sizeof(xpath),
+		   "./global/afi-safis/afi-safi[afi-safi-name='%s']/%s",
+		   af_name, cont);
+	strlcat(xpath, "/network-config[prefix='", sizeof(xpath));
+	strlcat(xpath, pbuf, sizeof(xpath));
+	strlcat(xpath, "']", sizeof(xpath));
+	if (negate) {
+		nb_cli_enqueue_change(vty, xpath, NB_OP_DESTROY, NULL);
+	} else {
+		char leaf[288];
+
+		/*
+		 * leaf MODIFYs create the entry implicitly; an explicit
+		 * CREATE on an existing entry would abort the batch.
+		 */
+		if (backdoor) {
+			snprintfrr(leaf, sizeof(leaf), "%s/backdoor", xpath);
+			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+					      "true");
+		}
+		if (label_index != BGP_INVALID_LABEL_INDEX) {
+			char lbuf[16];
+
+			snprintfrr(lbuf, sizeof(lbuf), "%u", label_index);
+			snprintfrr(leaf, sizeof(leaf), "%s/label-index",
+				   xpath);
+			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+					      lbuf);
+		}
+		if (rmap) {
+			snprintfrr(leaf, sizeof(leaf),
+				   "%s/rmap-policy-export", xpath);
+			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+					      rmap);
+		}
+	}
+	(void)nb_cli_apply_changes(vty, BGP_CONTAINER_XPATH,
+				   "frr-bgp:bgp", bgp_nb_cpp_name(bgp),
+				   bgp_nb_vrf_key(bgp));
+}
+
 int bgp_static_set(struct vty *vty, bool negate, const char *ip_str,
 		   const char *rd_str, const char *label_str, afi_t afi,
 		   safi_t safi, const char *rmap, int backdoor,
@@ -9413,6 +9532,8 @@ int bgp_static_set(struct vty *vty, bool negate, const char *ip_str,
 			bgp_static_update(bgp, &p, bgp_static, afi, safi);
 	}
 
+	bgp_nb_network_dual(vty, negate, ip_str, rd_str, label_str, afi,
+			    safi, rmap, backdoor, label_index);
 	return CMD_SUCCESS;
 }
 
