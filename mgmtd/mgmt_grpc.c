@@ -658,7 +658,8 @@ static bool mgmt_grpc_config_is_done(struct mgmt_grpc_config_req *req)
 }
 
 static void mgmt_grpc_config_done(uint64_t txn_id, uint64_t req_id, int error,
-				  const char *errstr, bool running_updated, void *arg)
+				  const char *errstr, bool running_updated,
+				  uint32_t cmt_txn_id, void *arg)
 {
 	struct mgmt_grpc_config_req *req = arg;
 
@@ -667,7 +668,13 @@ static void mgmt_grpc_config_done(uint64_t txn_id, uint64_t req_id, int error,
 
 	if (!running_updated)
 		mgmt_grpc_config_restore_candidate(req);
-	mgmt_grpc_config_complete(req, error, errstr, 0);
+	/*
+	 * I2 (issue #29): report the commit-history id of the record this
+	 * commit created, so the caller can correlate its commit with the
+	 * transaction RPCs without listing first.  Commits that created no
+	 * record (no changes, rollback, errors) report 0.
+	 */
+	mgmt_grpc_config_complete(req, error, errstr, cmt_txn_id);
 	mgmt_grpc_config_req_put(req);
 }
 
