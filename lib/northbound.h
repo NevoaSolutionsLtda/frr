@@ -1708,7 +1708,6 @@ typedef struct nb_config *(*nb_history_transaction_load_cb)(uint32_t transaction
 extern void nb_history_transactions_iterate_dispatch_set(
 	nb_history_transactions_iterate_cb cb);
 extern void nb_history_transaction_load_dispatch_set(nb_history_transaction_load_cb cb);
-extern bool nb_history_transactions_iterate_dispatch_is_set(void);
 extern int nb_history_transactions_iterate(
 	void (*func)(void *arg, int transaction_id, const char *client_name,
 		     const char *date, const char *comment),

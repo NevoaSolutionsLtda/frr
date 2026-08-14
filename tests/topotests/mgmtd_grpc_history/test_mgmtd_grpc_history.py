@@ -140,7 +140,10 @@ def test_history_reflects_real_commits(tgen):
 
     assert all(fake not in ids for fake in FAKE_IDS)
     assert all("fake" not in entry["client"] for entry in after)
-    assert len(after) - len(before) == 3
+    # delta by ids (not by length): the ring caps the list at 10, so a
+    # full initial snapshot would hide new commits behind evictions.
+    new_ids = [i for i in ids if i not in set(e["id"] for e in before)]
+    assert len(new_ids) == 3
     assert all(entry["client"] and entry["date"] for entry in after)
 
     step("GetTransaction returns the recorded config of a listed id")

@@ -1138,6 +1138,10 @@ void mgmt_grpc_terminate(void)
 	struct mgmt_grpc_config_req *cfg_req, *cfg_next;
 	struct mgmt_grpc_oper_req *oper_req, *oper_next;
 
+	/* Symmetry with init: no dispatcher outlives this daemon. */
+	nb_history_transactions_iterate_dispatch_set(NULL);
+	nb_history_transaction_load_dispatch_set(NULL);
+
 	LIST_FOREACH_SAFE (req, &mgmt_grpc_rpc_reqs, link, next) {
 		if (req->dispatched) {
 			if (mgmt_txn_cancel_rpc_notify(req->txn_id, req->req_id, -ECANCELED,
