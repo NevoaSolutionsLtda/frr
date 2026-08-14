@@ -1636,7 +1636,8 @@ typedef void (*nb_config_commit_done_cb)(int error, const char *errmsg, uint32_t
 					 void *arg);
 typedef int (*nb_config_commit_async_cb)(const struct nb_config *candidate,
 					 enum nb_config_commit_phase phase, const char *comment,
-					 const char *peer, nb_config_commit_done_cb done, void *arg,
+					 const char *peer, int64_t channel_id,
+					 nb_config_commit_done_cb done, void *arg,
 					 char *errmsg, size_t errmsg_len);
 
 /*
@@ -1654,7 +1655,8 @@ typedef int (*nb_config_commit_async_cb)(const struct nb_config *candidate,
 
 typedef int (*nb_config_lock_dispatch_cb)(const char *peer, int64_t channel_id, char *errmsg,
 					  size_t errmsg_len);
-typedef int (*nb_config_unlock_dispatch_cb)(const char *peer, char *errmsg, size_t errmsg_len);
+typedef int (*nb_config_unlock_dispatch_cb)(const char *peer, int64_t channel_id, char *errmsg,
+					    size_t errmsg_len);
 typedef bool (*nb_grpc_channel_alive_cb)(int64_t channel_id);
 
 extern void nb_config_get_dispatch_set(nb_config_get_dispatch_cb cb);
@@ -1672,6 +1674,7 @@ extern bool nb_config_commit_dispatch_async_is_set(void);
 extern int nb_config_commit_dispatch_async(const struct nb_config *candidate,
 					   enum nb_config_commit_phase phase,
 					   const char *comment, const char *peer,
+					   int64_t channel_id,
 					   nb_config_commit_done_cb done, void *arg, char *errmsg,
 					   size_t errmsg_len);
 extern void nb_config_lock_dispatch_set(nb_config_lock_dispatch_cb cb);
@@ -1679,7 +1682,8 @@ extern bool nb_config_lock_dispatch_is_set(void);
 extern int nb_config_lock_dispatch(const char *peer, int64_t channel_id, char *errmsg,
 				   size_t errmsg_len);
 extern void nb_config_unlock_dispatch_set(nb_config_unlock_dispatch_cb cb);
-extern int nb_config_unlock_dispatch(const char *peer, char *errmsg, size_t errmsg_len);
+extern int nb_config_unlock_dispatch(const char *peer, int64_t channel_id, char *errmsg,
+				     size_t errmsg_len);
 /*
  * Liveness of a gRPC channel by its transport handle, resolved by the
  * gRPC module while loaded.  Without a resolver (or without a handle)

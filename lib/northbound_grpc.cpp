@@ -2786,6 +2786,15 @@ static bool channelz_split_peer(const std::string &encoded_peer,
 
 	if (host.size() >= 2 && host.front() == '[' && host.back() == ']')
 		host = host.substr(1, host.size() - 2);
+
+	/*
+	 * A link-local address can carry a zone id (e.g. "fe80::1%eth0");
+	 * the zone is not part of the address bytes channelz reports.
+	 */
+	size_t zone = host.find('%');
+
+	if (zone != std::string::npos)
+		host.erase(zone);
 	*ip = host;
 
 	return !ip->empty() && !port->empty();
@@ -2836,26 +2845,26 @@ static std::vector<std::string> channelz_ip_b64_candidates(const std::string &ip
 }
 
 /*
- * Substring matching instead of a JSON walk: the channelz JSON schema
- * varies across gRPC versions in key casing (tcpip_address vs
- * tcpipAddress) and int rendering (number vs string), while the port
- * digits and the base64 address bytes are stable in every rendering.
+ * Match the port digits and the base64 address bytes of one address in
+ * a JSON snippet.  The channelz JSON schema varies across gRPC versions
+ * in key casing (tcpip_address vs tcpipAddress) and int rendering
+ * (number vs string), while the port digits and the base64 address
+ * bytes are stable in every rendering.
  */
-static bool channelz_json_has_remote(const std::string &json,
-				     const std::string &port,
-				     const std::vector<std::string> &ip_b64s)
+static bool channelz_text_has(const std::string &text, const std::string &port,
+			      const std::vector<std::string> &ip_b64s)
 {
 	std::string quoted = "\"port\":\"" + port + "\"";
 	std::string bare = "\"port\":" + port;
 	bool port_ok = false;
 
-	if (json.find(quoted) != std::string::npos) {
+	if (text.find(quoted) != std::string::npos) {
 		port_ok = true;
 	} else {
-		for (size_t at = json.find(bare); at != std::string::npos;
-		     at = json.find(bare, at + 1)) {
-			char next = at + bare.size() < json.size()
-					    ? json[at + bare.size()]
+		for (size_t at = text.find(bare); at != std::string::npos;
+		     at = text.find(bare, at + 1)) {
+			char next = at + bare.size() < text.size()
+					    ? text[at + bare.size()]
 					    : '\0';
 			if (!isdigit((unsigned char)next)) {
 				port_ok = true;
@@ -2868,10 +2877,34 @@ static bool channelz_json_has_remote(const std::string &json,
 		return false;
 
 	for (const std::string &ip_b64 : ip_b64s) {
-		if (json.find(ip_b64) != std::string::npos)
+		if (text.find(ip_b64) != std::string::npos)
 			return true;
 	}
 	return false;
+}
+
+/*
+ * Prefer a match inside the remote address sub-object: the same socket
+ * JSON also renders the local address, and a whole-document match can
+ * hit that one instead.  Renderings without a recognizable remote key
+ * keep the whole-document behavior.
+ */
+static bool channelz_json_has_remote(const std::string &json,
+				     const std::string &port,
+				     const std::vector<std::string> &ip_b64s)
+{
+	for (const char *key : {"remoteAddress", "remote_address"}) {
+		std::string needle = std::string("\"") + key + "\"";
+
+		for (size_t at = json.find(needle); at != std::string::npos;
+		     at = json.find(needle, at + 1)) {
+			if (channelz_text_has(json.substr(at, 1024), port,
+					      ip_b64s))
+				return true;
+		}
+	}
+
+	return channelz_text_has(json, port, ip_b64s);
 }
 
 static void channelz_collect_ids(const std::string &hay, const char *key,
@@ -2910,22 +2943,37 @@ static std::vector<int64_t> channelz_extract_ids(const char *json,
 	return ids;
 }
 
-static int64_t channelz_socket_uuid_for_peer(const char *peer)
+/*
+ * Resolution outcomes for a peer-to-socket lookup: the refusal reasons
+ * are reported (and logged) distinctly, so "nobody matches" never
+ * hides behind "cannot tell who matches".
+ */
+enum channelz_resolve {
+	CHANNELZ_FOUND,
+	CHANNELZ_PEER_UNUSABLE, /* the peer string has no usable form */
+	CHANNELZ_NOT_FOUND,     /* no live socket matches the peer */
+	CHANNELZ_AMBIGUOUS,     /* more than one socket matches */
+};
+
+static enum channelz_resolve channelz_socket_uuid_for_peer(const char *peer,
+							   int64_t *channel_id)
 {
 	std::string ip, port;
 
+	*channel_id = NB_GRPC_CHANNEL_ID_NONE;
+
 	if (!channelz_split_peer(peer, &ip, &port))
-		return NB_GRPC_CHANNEL_ID_NONE;
+		return CHANNELZ_PEER_UNUSABLE;
 
 	std::vector<std::string> ip_b64s = channelz_ip_b64_candidates(ip);
 
 	if (ip_b64s.empty())
-		return NB_GRPC_CHANNEL_ID_NONE;
+		return CHANNELZ_PEER_UNUSABLE;
 
 	char *servers = grpc_channelz_get_servers(0);
 
 	if (!servers)
-		return NB_GRPC_CHANNEL_ID_NONE;
+		return CHANNELZ_NOT_FOUND;
 
 	std::vector<int64_t> server_ids =
 		channelz_extract_ids(servers, "serverId", "server_id");
@@ -2965,7 +3013,7 @@ static int64_t channelz_socket_uuid_for_peer(const char *peer)
 					    found != socket_id) {
 						/* Ambiguous: refuse to guess. */
 						gpr_free(sock);
-						return NB_GRPC_CHANNEL_ID_NONE;
+						return CHANNELZ_AMBIGUOUS;
 					}
 					found = socket_id;
 				}
@@ -2980,7 +3028,27 @@ static int64_t channelz_socket_uuid_for_peer(const char *peer)
 		}
 	}
 
-	return found;
+	if (found == NB_GRPC_CHANNEL_ID_NONE)
+		return CHANNELZ_NOT_FOUND;
+
+	*channel_id = found;
+	return CHANNELZ_FOUND;
+}
+
+static const char *channelz_resolve_why(enum channelz_resolve resolved)
+{
+	switch (resolved) {
+	case CHANNELZ_PEER_UNUSABLE:
+		return "the peer address has no usable form";
+	case CHANNELZ_NOT_FOUND:
+		return "no live channelz socket matches this peer";
+	case CHANNELZ_AMBIGUOUS:
+		return "multiple channelz sockets match this peer";
+	case CHANNELZ_FOUND:
+		break;
+	}
+
+	return "resolved";
 }
 
 static bool channelz_socket_alive(int64_t channel_id)
@@ -3000,8 +3068,9 @@ grpc::Status HandleUnaryLockConfig(
 
 	if (nb_config_lock_dispatch_is_set()) {
 		std::string peer = tag->peer();
-		int64_t channel_id =
-			channelz_socket_uuid_for_peer(peer.c_str());
+		int64_t channel_id;
+		enum channelz_resolve resolved =
+			channelz_socket_uuid_for_peer(peer.c_str(), &channel_id);
 
 		/*
 		 * Fail closed: a lock whose owning channel cannot be
@@ -3009,10 +3078,17 @@ grpc::Status HandleUnaryLockConfig(
 		 * steps).  This also rejects peers with no usable form,
 		 * e.g. the literal "unknown" a dying transport reports.
 		 */
-		if (channel_id == NB_GRPC_CHANNEL_ID_NONE)
+		if (resolved != CHANNELZ_FOUND) {
+			const char *why = channelz_resolve_why(resolved);
+
+			zlog_warn("%s: cannot resolve the config lock channel %s: %s",
+				  __func__, peer.c_str(), why);
 			return grpc::Status(
 				grpc::StatusCode::FAILED_PRECONDITION,
-				"cannot establish channel identity for the config lock");
+				std::string(
+					"cannot establish channel identity for the config lock: ")
+					+ why);
+		}
 
 		char errmsg[BUFSIZ] = {0};
 		int ret = nb_config_lock_dispatch(peer.c_str(), channel_id,
@@ -3040,9 +3116,31 @@ grpc::Status HandleUnaryUnlockConfig(
 
 	if (nb_config_lock_dispatch_is_set()) {
 		std::string peer = tag->peer();
+		int64_t channel_id;
+		enum channelz_resolve resolved =
+			channelz_socket_uuid_for_peer(peer.c_str(), &channel_id);
+
+		/*
+		 * Fail closed like the lock: a lock is only ever taken with
+		 * an observable channel, so an unlock that cannot observe
+		 * one belongs to a channel that never locked (or to one
+		 * whose death the sweep already handled).
+		 */
+		if (resolved != CHANNELZ_FOUND) {
+			const char *why = channelz_resolve_why(resolved);
+
+			zlog_warn("%s: cannot resolve the config unlock channel %s: %s",
+				  __func__, peer.c_str(), why);
+			return grpc::Status(
+				grpc::StatusCode::FAILED_PRECONDITION,
+				std::string(
+					"cannot establish channel identity for the config unlock: ")
+					+ why);
+		}
+
 		char errmsg[BUFSIZ] = {0};
-		int ret = nb_config_unlock_dispatch(peer.c_str(), errmsg,
-						    sizeof(errmsg));
+		int ret = nb_config_unlock_dispatch(peer.c_str(), channel_id,
+						    errmsg, sizeof(errmsg));
 
 		if (ret)
 			return grpc::Status(
@@ -3241,10 +3339,22 @@ class CommitRpcState : public RpcStateBase {
 
 		candidate->commit_pending = true;
 		pending_candidate = candidate;
+		int64_t channel_id;
+
+		/*
+		 * Channel identity is optional for a commit (it takes no
+		 * lease): pass whatever resolved so the owner check can
+		 * compare against the lock registry's (peer, channel)
+		 * tenure.
+		 */
+		if (channelz_socket_uuid_for_peer(ctx.peer().c_str(), &channel_id)
+			    != CHANNELZ_FOUND)
+			channel_id = NB_GRPC_CHANNEL_ID_NONE;
 		ret = nb_config_commit_dispatch_async(candidate->config, nb_phase,
 						      request.comment().c_str(),
-						      ctx.peer().c_str(), async_done,
-						      this, errmsg, sizeof(errmsg));
+						      ctx.peer().c_str(), channel_id,
+						      async_done, this, errmsg,
+						      sizeof(errmsg));
 		if (!ret) {
 			async_pending = true;
 			return MORE;
