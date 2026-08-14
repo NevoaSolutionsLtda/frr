@@ -23,7 +23,6 @@ extern "C" {
 #include "command.h"
 #include "lib_errors.h"
 #include "northbound.h"
-#include "northbound_db.h"
 #include "frr_pthread.h"
 #include "json.h"
 
@@ -3086,15 +3085,10 @@ bool HandleStreamingListTransactions(
 	auto list = &tag->context;
 	if (tag->is_initial_process()) {
 		grpc_debug("%s: initialize streaming state", __func__);
-		// Fill our context container first time through
-		nb_db_transactions_iterate(list_transactions_cb, list);
-		list->push_back(std::make_tuple(
-			0xFFFF, std::string("fake client"),
-			std::string("fake date"), std::string("fake comment")));
-		list->push_back(std::make_tuple(0xFFFE,
-						std::string("fake client2"),
-						std::string("fake date"),
-						std::string("fake comment2")));
+		// Fill our context container first time through.  Under mgmtd
+		// this reads the real commit history (mgmt_history) instead of
+		// the rollback database the daemon never populates (issue #29).
+		nb_history_transactions_iterate(list_transactions_cb, list);
 	}
 
 	if (list->empty()) {
@@ -3102,7 +3096,7 @@ bool HandleStreamingListTransactions(
 		return false;
 	}
 
-	auto item = list->back();
+	auto item = list->front();
 
 	frr::ListTransactionsResponse response;
 
@@ -3118,7 +3112,7 @@ bool HandleStreamingListTransactions(
 	// Response: string comment = 4;
 	response.set_comment(std::get<3>(item).c_str());
 
-	list->pop_back();
+	list->pop_front();
 	if (list->empty()) {
 		tag->async_responder.WriteAndFinish(
 			response, grpc::WriteOptions(), grpc::Status::OK, tag);
@@ -3363,8 +3357,9 @@ grpc::Status HandleUnaryGetTransaction(
 
 	struct nb_config *nb_config;
 
-	// Load configuration from the transactions database.
-	nb_config = nb_db_transaction_load(transaction_id);
+	// Load the configuration from the commit history (mgmtd) or from
+	// the local rollback database (standalone builds).
+	nb_config = nb_history_transaction_load(transaction_id);
 	if (!nb_config)
 		return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
 				    "Transaction not found");

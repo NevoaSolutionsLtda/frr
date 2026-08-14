@@ -2103,6 +2103,44 @@ bool nb_grpc_channel_alive(int64_t channel_id)
 	return nb_grpc_channel_alive_resolver(channel_id);
 }
 
+static nb_history_transactions_iterate_cb nb_history_transactions_iterate_dispatcher;
+static nb_history_transaction_load_cb nb_history_transaction_load_dispatcher;
+
+void nb_history_transactions_iterate_dispatch_set(nb_history_transactions_iterate_cb cb)
+{
+	/* Registered by the frontend adapter (mgmtd). */
+	nb_history_transactions_iterate_dispatcher = cb;
+}
+
+void nb_history_transaction_load_dispatch_set(nb_history_transaction_load_cb cb)
+{
+	nb_history_transaction_load_dispatcher = cb;
+}
+
+bool nb_history_transactions_iterate_dispatch_is_set(void)
+{
+	return nb_history_transactions_iterate_dispatcher != NULL;
+}
+
+int nb_history_transactions_iterate(
+	void (*func)(void *arg, int transaction_id, const char *client_name,
+		     const char *date, const char *comment),
+	void *arg)
+{
+	if (nb_history_transactions_iterate_dispatcher)
+		return nb_history_transactions_iterate_dispatcher(func, arg);
+
+	return nb_db_transactions_iterate(func, arg);
+}
+
+struct nb_config *nb_history_transaction_load(uint32_t transaction_id)
+{
+	if (nb_history_transaction_load_dispatcher)
+		return nb_history_transaction_load_dispatcher(transaction_id);
+
+	return nb_db_transaction_load(transaction_id);
+}
+
 void nb_callback_notify(const struct nb_node *nb_node, uint8_t op, const char *xpath,
 			struct lyd_node *dnode)
 {

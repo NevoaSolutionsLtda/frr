@@ -1688,6 +1688,29 @@ extern int nb_config_unlock_dispatch(const char *peer, char *errmsg, size_t errm
 extern void nb_grpc_channel_alive_set(nb_grpc_channel_alive_cb cb);
 extern bool nb_grpc_channel_alive(int64_t channel_id);
 
+/*
+ * Commit-history seam (issue #29): the transaction listing and detail
+ * RPCs read the frontend's own commit history when the northbound runs
+ * under a frontend that owns one (mgmtd's mgmt_history).  Without a
+ * registered reader they fall back to the local rollback database,
+ * which mgmtd never populates.
+ */
+typedef int (*nb_history_transactions_iterate_cb)(
+	void (*func)(void *arg, int transaction_id, const char *client_name,
+		     const char *date, const char *comment),
+	void *arg);
+typedef struct nb_config *(*nb_history_transaction_load_cb)(uint32_t transaction_id);
+
+extern void nb_history_transactions_iterate_dispatch_set(
+	nb_history_transactions_iterate_cb cb);
+extern void nb_history_transaction_load_dispatch_set(nb_history_transaction_load_cb cb);
+extern bool nb_history_transactions_iterate_dispatch_is_set(void);
+extern int nb_history_transactions_iterate(
+	void (*func)(void *arg, int transaction_id, const char *client_name,
+		     const char *date, const char *comment),
+	void *arg);
+extern struct nb_config *nb_history_transaction_load(uint32_t transaction_id);
+
 /**
  * nb_oper_walk() - walk the schema building operational state.
  * @xpath: data path of the YANG data we want to iterate over.

@@ -18,6 +18,7 @@
 #include "mgmtd/mgmt_be_adapter.h"
 #include "mgmtd/mgmt_ds.h"
 #include "mgmtd/mgmt_fe_adapter.h"
+#include "mgmtd/mgmt_history.h"
 #include "mgmtd/mgmt_memory.h"
 #include "mgmtd/mgmt_txn.h"
 
@@ -1098,6 +1099,8 @@ void mgmt_grpc_init(void)
 	nb_config_commit_dispatch_async_set(mgmt_grpc_config_commit_dispatch_async);
 	nb_config_lock_dispatch_set(mgmt_grpc_config_lock_dispatch);
 	nb_config_unlock_dispatch_set(mgmt_grpc_config_unlock_dispatch);
+	nb_history_transactions_iterate_dispatch_set(mgmt_history_transactions_iterate);
+	nb_history_transaction_load_dispatch_set(mgmt_history_transaction_load);
 	nb_rpc_dispatch_async_set(mgmt_grpc_rpc_dispatch_async);
 	nb_oper_get_dispatch_async_set(mgmt_grpc_oper_get_dispatch_async);
 	nb_notification_data_subscribe_set(mgmt_fe_adapter_notify_subscribe);
