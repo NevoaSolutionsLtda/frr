@@ -705,14 +705,18 @@ static void txn_finish_commit(struct txn_req_commit *ccreq, enum mgmt_result res
 		bool create_cmt_info_rec = (result != MGMTD_NO_CFG_CHANGES && !ccreq->rollback &&
 					    !ccreq->unlock_info);
 
-		mgmt_ds_copy_dss(ccreq->dst_ds_ctx, ccreq->src_ds_ctx, create_cmt_info_rec);
-		/*
-		 * The record just created is at the head of the history, and
-		 * nothing can interleave on this single event loop between
-		 * the copy and the done callback below.
-		 */
-		if (create_cmt_info_rec)
-			cmt_txn_id = mgmt_history_last_cmt_txn_id();
+		if (mgmt_ds_copy_dss(ccreq->dst_ds_ctx, ccreq->src_ds_ctx,
+				     create_cmt_info_rec) == 0) {
+			/*
+			 * The record just created is at the head of the
+			 * history, and nothing can interleave on this single
+			 * event loop between the copy and the done callback
+			 * below.  A failed copy creates no record, so the id
+			 * stays 0 instead of naming the previous head.
+			 */
+			if (create_cmt_info_rec)
+				cmt_txn_id = mgmt_history_last_cmt_txn_id();
+		}
 	}
 	if (discard_changes)
 		mgmt_ds_copy_dss(ccreq->src_ds_ctx, ccreq->dst_ds_ctx, false);
