@@ -155,6 +155,79 @@ class GRPCClient:
         with concurrent.futures.ThreadPoolExecutor(max_workers=count) as executor:
             return json.dumps(list(executor.map(lambda _: run_one(), range(count))))
 
+    def list_transactions(self, timeout):
+        request = frr_northbound_pb2.ListTransactionsRequest()
+        try:
+            ids = [r.id for r in self.stub.ListTransactions(request, timeout=timeout)]
+        except grpc.RpcError as error:
+            return error.code().name
+        return json.dumps(ids)
+
+    def list_transactions_cancel(self, delay, timeout):
+        """Cancel a ListTransactions stream mid-flight.
+
+        Fails the server-side write while the stream is still streaming,
+        which is the completion-queue error path that must repost the
+        listener for this RPC type.
+        """
+        request = frr_northbound_pb2.ListTransactionsRequest()
+        call = self.stub.ListTransactions(request, timeout=timeout)
+        if delay:
+            time.sleep(delay)
+        call.cancel()
+
+        try:
+            list(call)
+        except grpc.RpcError as error:
+            return error.code().name
+
+        return "OK"
+
+    def list_transactions_hammer(self, count, server, port):
+        """Hammer the window where a write fails with the stream in MORE.
+
+        The window is the server's hop to its main thread before it posts
+        the write, so a single cancel timing does not reach it: sweep the
+        delay and alternate how the call dies (cancel, deadline already
+        expired, channel dropped).  Each attempt gets its own channel so a
+        dropped one cannot affect the next.  Returns how many attempts ran
+        and whether the RPC type still answers afterwards.
+        """
+        delays = (0, 0.0001, 0.0003, 0.0005, 0.001, 0.002,
+                  0.003, 0.005, 0.008, 0.012, 0.02, 0.05)
+        deadlines = (0.0002, 0.0005, 0.001, 0.002, 0.005)
+        target = "{}:{}".format(server, port)
+
+        for i in range(count):
+            channel = grpc.insecure_channel(target)
+            stub = frr_northbound_pb2_grpc.NorthboundStub(channel)
+            request = frr_northbound_pb2.ListTransactionsRequest()
+            mode = i % 3
+            try:
+                if mode == 1:
+                    deadline = deadlines[(i // 3) % len(deadlines)]
+                    try:
+                        list(stub.ListTransactions(request, timeout=deadline))
+                    except grpc.RpcError:
+                        pass
+                else:
+                    delay = delays[(i // 3) % len(delays)]
+                    call = stub.ListTransactions(request)
+                    if delay:
+                        time.sleep(delay)
+                    if mode == 0:
+                        call.cancel()
+                    else:
+                        channel.close()
+                    try:
+                        list(call)
+                    except grpc.RpcError:
+                        pass
+            finally:
+                channel.close()
+
+        return json.dumps({"attempts": count})
+
     def commit_changes(self, updates, deletes, phase_name):
         candidate_id = None
 
@@ -574,6 +647,15 @@ def main(*args):
                 path, value = item.split("=", 1)
                 input_values.append((path, value))
             print(c.execute_concurrent(xpath, input_values, count, timeout))
+        elif action.startswith("list-transactions-hammer,"):
+            _, count = raw_action.split(",", 1)
+            print(c.list_transactions_hammer(int(count), args.server, args.port))
+        elif action.startswith("list-transactions-cancel,"):
+            _, delay, timeout = raw_action.split(",", 2)
+            print(c.list_transactions_cancel(float(delay), float(timeout)))
+        elif action.startswith("list-transactions,"):
+            _, timeout = raw_action.split(",", 1)
+            print(c.list_transactions(float(timeout)))
         elif action.startswith("commit-set,"):
             parts = raw_action.split(",")
             updates = []

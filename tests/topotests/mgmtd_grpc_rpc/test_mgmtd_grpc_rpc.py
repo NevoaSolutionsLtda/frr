@@ -386,6 +386,42 @@ def test_execute_cancel_keeps_listener_available(tgen):
     assert "output" not in output
 
 
+def test_list_transactions_cancel_keeps_listener_available(tgen):
+    """A cancelled ListTransactions stream must not kill the RPC type.
+
+    A streaming RPC only posts its next listener when the stream reaches
+    FINISH, so a write that fails mid-stream consumes the only pending tag
+    unless the completion-queue error path reposts it.  Without the repost
+    the RPC type is never served again for the life of the daemon.
+    """
+    r1 = tgen.gears["r1"]
+
+    step("Baseline: ListTransactions is served")
+    baseline = run_grpc_client(r1, "LIST-TRANSACTIONS,5").strip()
+    assert baseline.startswith("["), baseline
+
+    step("A single cancel is served like any other cancelled call")
+    # The client always cancels, so anything but CANCELLED means the cancel
+    # itself did not take effect. DEADLINE_EXCEEDED in particular is the
+    # symptom of the regression under test and must never be accepted here.
+    output = run_grpc_client(r1, "LIST-TRANSACTIONS-CANCEL,0.001,5").strip()
+    assert output == "CANCELLED", output
+
+    step("Hammer the write window until the failure path is taken")
+    # One cancel timing does not reach the window, so a handful of them is
+    # not a regression test: measured against the unfixed daemon, the type
+    # survived 18 cancels at fixed delays and died once the sweep ran.
+    output = run_grpc_client(r1, "LIST-TRANSACTIONS-HAMMER,120").strip()
+    assert '"attempts": 120' in output, output
+
+    step("The RPC type is still served after the cancels")
+    # This is the assertion with detection power: without the repost the
+    # listener is gone and these calls hang until the deadline.
+    for _ in range(5):
+        output = run_grpc_client(r1, "LIST-TRANSACTIONS,5").strip()
+        assert output == baseline, f"expected {baseline}, got {output}"
+
+
 def test_concurrent_execute_rpc_via_mgmtd_grpc(tgen):
     r1 = tgen.gears["r1"]
 
