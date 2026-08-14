@@ -37,8 +37,15 @@ struct mgmt_master;
 typedef void (*mgmt_txn_rpc_done_cb)(uint64_t txn_id, uint64_t req_id, int error,
 				     const char *errstr, LYD_FORMAT result_type, bool restconf,
 				     const struct lyd_node *result, void *arg);
+/*
+ * Called when a config transaction completes.  running_updated reports
+ * whether the commit accepted changes into running.  cmt_txn_id is the
+ * commit-history transaction id of the record this commit created, or 0
+ * when it created none (no changes, rollback, or an error).
+ */
 typedef void (*mgmt_txn_commit_done_cb)(uint64_t txn_id, uint64_t req_id, int error,
-					const char *errstr, bool running_updated, void *arg);
+					const char *errstr, bool running_updated,
+					uint32_t cmt_txn_id, void *arg);
 /*
  * Called when a get-tree transaction completes.  The result tree is borrowed
  * for the duration of the callback; callers that need it after return must

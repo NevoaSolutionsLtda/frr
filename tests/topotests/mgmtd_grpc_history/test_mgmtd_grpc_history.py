@@ -10,6 +10,10 @@ Test the gRPC transaction-history readers (org issue #29).
 ListTransactions must reflect the real mgmtd commit history -- no fake
 entries, an exact count delta per bridge commit -- and GetTransaction
 must return the recorded config of a listed id and refuse unknown ids.
+
+The I2 follow-up adds the writer side: CommitResponse.transaction_id
+must carry the history id of the commit it just recorded (the id that
+ListTransactions reports for the newest entry).
 """
 
 import glob
@@ -156,4 +160,37 @@ def test_history_reflects_real_commits(tgen):
     assert missing.get("error") == "INVALID_ARGUMENT"
 
     step("Clean up the test description")
+    run_grpc_client(r1, f"commit-delete,{DESC_XPATH}")
+
+    step("CommitResponse carries the history id of its own commit (I2)")
+    before_i2 = _list_transactions(r1)
+    out = run_grpc_client(r1, f"commit-result,ALL,{DESC_XPATH}=s056-i2")
+    resp = json.loads(out.strip().splitlines()[-1])
+    after_i2 = _list_transactions(r1)
+
+    assert resp["status"] == "OK"
+    assert resp["transaction_id"] != 0, (
+        f"CommitResponse.transaction_id not filled: {resp}"
+    )
+    assert after_i2[0]["id"] == resp["transaction_id"]
+    new_i2 = [
+        e["id"]
+        for e in after_i2
+        if e["id"] not in {x["id"] for x in before_i2}
+    ]
+    assert new_i2 == [resp["transaction_id"]]
+
+    step("A no-change commit is refused and records no history entry")
+    out0 = run_grpc_client(r1, f"commit-result,ALL,{DESC_XPATH}=s056-i2")
+    resp0 = json.loads(out0.strip().splitlines()[-1])
+    after0 = _list_transactions(r1)
+
+    assert resp0["status"] == "ABORTED"
+    assert "No changes" in resp0["details"]
+    assert not resp0.get("transaction_id")
+    assert [
+        e["id"] for e in after0 if e["id"] not in {x["id"] for x in after_i2}
+    ] == []
+
+    step("Clean up the I2 description")
     run_grpc_client(r1, f"commit-delete,{DESC_XPATH}")

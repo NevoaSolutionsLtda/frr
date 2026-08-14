@@ -210,7 +210,11 @@ class GRPCClient:
         try:
             response = self.commit_changes(updates, deletes, phase_name)
             return json.dumps(
-                {"status": "OK", "error_message": response.error_message}
+                {
+                    "status": "OK",
+                    "transaction_id": response.transaction_id,
+                    "error_message": response.error_message,
+                }
             )
         except grpc.RpcError as error:
             return json.dumps(

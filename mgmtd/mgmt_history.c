@@ -149,6 +149,17 @@ int mgmt_history_transactions_iterate(
 	return 0;
 }
 
+uint32_t mgmt_history_last_cmt_txn_id(void)
+{
+	struct mgmt_cmt_info_t *cmt_info;
+
+	cmt_info = mgmt_cmt_infos_first(&mm->cmts);
+	if (!cmt_info)
+		return 0;
+
+	return mgmt_history_txn_id(cmt_info);
+}
+
 struct nb_config *mgmt_history_transaction_load(uint32_t transaction_id)
 {
 	struct mgmt_cmt_info_t *cmt_info;

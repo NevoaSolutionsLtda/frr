@@ -671,6 +671,7 @@ static void txn_finish_commit(struct txn_req_commit *ccreq, enum mgmt_result res
 	bool success, apply_op, accept_changes, discard_changes;
 	struct txn_req *txn_req = as_txn_req(ccreq);
 	struct mgmt_txn *txn = txn_req->txn;
+	uint32_t cmt_txn_id = 0;
 	int ret = 0;
 
 	success = (result == MGMTD_SUCCESS || result == MGMTD_NO_CFG_CHANGES);
@@ -698,12 +699,24 @@ static void txn_finish_commit(struct txn_req_commit *ccreq, enum mgmt_result res
 	apply_op = !ccreq->validate_only && !ccreq->abort && !ccreq->init;
 	accept_changes = ccreq->phase >= MGMTD_COMMIT_PHASE_APPLY_CFG && apply_op;
 	discard_changes = (result == MGMTD_SUCCESS && ccreq->abort);
+
 	if (accept_changes) {
 		/* unlock_info == true: per-command implicit commit; skip history. */
 		bool create_cmt_info_rec = (result != MGMTD_NO_CFG_CHANGES && !ccreq->rollback &&
 					    !ccreq->unlock_info);
 
-		mgmt_ds_copy_dss(ccreq->dst_ds_ctx, ccreq->src_ds_ctx, create_cmt_info_rec);
+		if (mgmt_ds_copy_dss(ccreq->dst_ds_ctx, ccreq->src_ds_ctx,
+				     create_cmt_info_rec) == 0) {
+			/*
+			 * The record just created is at the head of the
+			 * history, and nothing can interleave on this single
+			 * event loop between the copy and the done callback
+			 * below.  A failed copy creates no record, so the id
+			 * stays 0 instead of naming the previous head.
+			 */
+			if (create_cmt_info_rec)
+				cmt_txn_id = mgmt_history_last_cmt_txn_id();
+		}
 	}
 	if (discard_changes)
 		mgmt_ds_copy_dss(ccreq->src_ds_ctx, ccreq->dst_ds_ctx, false);
@@ -753,7 +766,7 @@ static void txn_finish_commit(struct txn_req_commit *ccreq, enum mgmt_result res
 	} else if (ccreq->done) {
 		ccreq->done(txn->txn_id, txn_req->req_id,
 			    ccreq->done_error ? ccreq->done_error : mgmt_result_to_error(result),
-			    error_if_any, accept_changes, ccreq->done_arg);
+			    error_if_any, accept_changes, cmt_txn_id, ccreq->done_arg);
 		TXN_DECREF(txn);
 	} else if (!ccreq->edit) {
 		/*

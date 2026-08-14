@@ -68,6 +68,15 @@ extern int mgmt_history_transactions_iterate(
 extern struct nb_config *mgmt_history_transaction_load(uint32_t transaction_id);
 
 /*
+ * Transaction id of the most recent commit record, or 0 when the
+ * history is empty.  The id is the FNV-1a hash of the commit-id string,
+ * so it matches what the transaction RPCs report.  mgmtd runs a single
+ * event loop, so a caller that has just created a record (commit
+ * completion) owns the head of the list.
+ */
+extern uint32_t mgmt_history_last_cmt_txn_id(void);
+
+/*
  * 012345678901234567890123456789
  * 2023-12-31T12:12:12,012345678
  * 20231231121212012345678
