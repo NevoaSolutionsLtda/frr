@@ -54,6 +54,19 @@ extern void mgmt_history_new_record(struct mgmt_ds_ctx *ds_ctx);
 extern void mgmt_history_destroy(void);
 extern void mgmt_history_init(void);
 
+struct nb_config;
+
+/*
+ * gRPC commit-history readers (issue #29): expose the last
+ * MGMTD_MAX_COMMIT_LIST commits to the northbound transaction RPCs.
+ * Both run on the caller's thread, like the rollback listing.
+ */
+extern int mgmt_history_transactions_iterate(
+	void (*func)(void *arg, int transaction_id, const char *client_name,
+		     const char *date, const char *comment),
+	void *arg);
+extern struct nb_config *mgmt_history_transaction_load(uint32_t transaction_id);
+
 /*
  * 012345678901234567890123456789
  * 2023-12-31T12:12:12,012345678

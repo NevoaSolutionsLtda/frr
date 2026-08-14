@@ -34,6 +34,9 @@ static nb_oper_get_dispatch_async_cb nb_oper_get_dispatcher_async;
 static nb_config_get_dispatch_cb nb_config_get_dispatcher;
 static nb_config_root_borrow_dispatch_cb nb_config_root_borrow_dispatcher;
 static nb_config_commit_async_cb nb_config_commit_dispatcher_async;
+static nb_config_lock_dispatch_cb nb_config_lock_dispatcher;
+static nb_config_unlock_dispatch_cb nb_config_unlock_dispatcher;
+static nb_grpc_channel_alive_cb nb_grpc_channel_alive_resolver;
 
 /* Hash table of user pointers associated with configuration entries. */
 static struct hash *running_config_entries;
@@ -2038,14 +2041,101 @@ bool nb_config_commit_dispatch_async_is_set(void)
 
 int nb_config_commit_dispatch_async(const struct nb_config *candidate,
 				    enum nb_config_commit_phase phase, const char *comment,
-				    nb_config_commit_done_cb done, void *arg, char *errmsg,
-				    size_t errmsg_len)
+				    const char *peer, int64_t channel_id,
+				    nb_config_commit_done_cb done, void *arg,
+				    char *errmsg, size_t errmsg_len)
 {
 	if (!nb_config_commit_dispatcher_async)
 		return -EOPNOTSUPP;
 
-	return nb_config_commit_dispatcher_async(candidate, phase, comment, done, arg, errmsg,
-						 errmsg_len);
+	return nb_config_commit_dispatcher_async(candidate, phase, comment, peer, channel_id,
+						 done, arg, errmsg, errmsg_len);
+}
+
+void nb_config_lock_dispatch_set(nb_config_lock_dispatch_cb cb)
+{
+	/* Single owner by design: one frontend owns central config locks. */
+	nb_config_lock_dispatcher = cb;
+}
+
+bool nb_config_lock_dispatch_is_set(void)
+{
+	return nb_config_lock_dispatcher != NULL;
+}
+
+int nb_config_lock_dispatch(const char *peer, int64_t channel_id, char *errmsg, size_t errmsg_len)
+{
+	if (!nb_config_lock_dispatcher)
+		return -EOPNOTSUPP;
+
+	return nb_config_lock_dispatcher(peer, channel_id, errmsg, errmsg_len);
+}
+
+void nb_config_unlock_dispatch_set(nb_config_unlock_dispatch_cb cb)
+{
+	/* Single owner by design: one frontend owns central config locks. */
+	nb_config_unlock_dispatcher = cb;
+}
+
+int nb_config_unlock_dispatch(const char *peer, int64_t channel_id, char *errmsg,
+			     size_t errmsg_len)
+{
+	if (!nb_config_unlock_dispatcher)
+		return -EOPNOTSUPP;
+
+	return nb_config_unlock_dispatcher(peer, channel_id, errmsg, errmsg_len);
+}
+
+void nb_grpc_channel_alive_set(nb_grpc_channel_alive_cb cb)
+{
+	/* Registered by the gRPC transport module; NULL outside its life. */
+	nb_grpc_channel_alive_resolver = cb;
+}
+
+bool nb_grpc_channel_alive(int64_t channel_id)
+{
+	/*
+	 * Without a resolver (or without a resolved id) liveness cannot be
+	 * proven either way; report alive so no lock is ever released on
+	 * guesswork.
+	 */
+	if (!nb_grpc_channel_alive_resolver || channel_id == NB_GRPC_CHANNEL_ID_NONE)
+		return true;
+
+	return nb_grpc_channel_alive_resolver(channel_id);
+}
+
+static nb_history_transactions_iterate_cb nb_history_transactions_iterate_dispatcher;
+static nb_history_transaction_load_cb nb_history_transaction_load_dispatcher;
+
+void nb_history_transactions_iterate_dispatch_set(nb_history_transactions_iterate_cb cb)
+{
+	/* Registered by the frontend adapter (mgmtd). */
+	nb_history_transactions_iterate_dispatcher = cb;
+}
+
+void nb_history_transaction_load_dispatch_set(nb_history_transaction_load_cb cb)
+{
+	nb_history_transaction_load_dispatcher = cb;
+}
+
+int nb_history_transactions_iterate(
+	void (*func)(void *arg, int transaction_id, const char *client_name,
+		     const char *date, const char *comment),
+	void *arg)
+{
+	if (nb_history_transactions_iterate_dispatcher)
+		return nb_history_transactions_iterate_dispatcher(func, arg);
+
+	return nb_db_transactions_iterate(func, arg);
+}
+
+struct nb_config *nb_history_transaction_load(uint32_t transaction_id)
+{
+	if (nb_history_transaction_load_dispatcher)
+		return nb_history_transaction_load_dispatcher(transaction_id);
+
+	return nb_db_transaction_load(transaction_id);
 }
 
 void nb_callback_notify(const struct nb_node *nb_node, uint8_t op, const char *xpath,

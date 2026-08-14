@@ -1636,8 +1636,28 @@ typedef void (*nb_config_commit_done_cb)(int error, const char *errmsg, uint32_t
 					 void *arg);
 typedef int (*nb_config_commit_async_cb)(const struct nb_config *candidate,
 					 enum nb_config_commit_phase phase, const char *comment,
-					 nb_config_commit_done_cb done, void *arg, char *errmsg,
-					 size_t errmsg_len);
+					 const char *peer, int64_t channel_id,
+					 nb_config_commit_done_cb done, void *arg,
+					 char *errmsg, size_t errmsg_len);
+
+/*
+ * Owner-aware configuration locking for gRPC channels.
+ *
+ * `peer` is the transport-level identity of the requesting channel (the
+ * gRPC ServerContext peer string), unique among live connections.
+ * `channel_id` is an opaque transport handle for the same channel (the
+ * channelz socket uuid, never reused within a process) used to observe
+ * the channel's life; NB_GRPC_CHANNEL_ID_NONE when the transport could
+ * not resolve one, in which case liveness reports alive forever and the
+ * lock is only released by an explicit unlock.
+ */
+#define NB_GRPC_CHANNEL_ID_NONE (-1)
+
+typedef int (*nb_config_lock_dispatch_cb)(const char *peer, int64_t channel_id, char *errmsg,
+					  size_t errmsg_len);
+typedef int (*nb_config_unlock_dispatch_cb)(const char *peer, int64_t channel_id, char *errmsg,
+					    size_t errmsg_len);
+typedef bool (*nb_grpc_channel_alive_cb)(int64_t channel_id);
 
 extern void nb_config_get_dispatch_set(nb_config_get_dispatch_cb cb);
 extern int nb_config_get_dispatch(const char *xpath, struct lyd_node **result, char *errmsg,
@@ -1653,8 +1673,46 @@ extern void nb_config_commit_dispatch_async_set(nb_config_commit_async_cb cb);
 extern bool nb_config_commit_dispatch_async_is_set(void);
 extern int nb_config_commit_dispatch_async(const struct nb_config *candidate,
 					   enum nb_config_commit_phase phase,
-					   const char *comment, nb_config_commit_done_cb done,
-					   void *arg, char *errmsg, size_t errmsg_len);
+					   const char *comment, const char *peer,
+					   int64_t channel_id,
+					   nb_config_commit_done_cb done, void *arg, char *errmsg,
+					   size_t errmsg_len);
+extern void nb_config_lock_dispatch_set(nb_config_lock_dispatch_cb cb);
+extern bool nb_config_lock_dispatch_is_set(void);
+extern int nb_config_lock_dispatch(const char *peer, int64_t channel_id, char *errmsg,
+				   size_t errmsg_len);
+extern void nb_config_unlock_dispatch_set(nb_config_unlock_dispatch_cb cb);
+extern int nb_config_unlock_dispatch(const char *peer, int64_t channel_id, char *errmsg,
+				     size_t errmsg_len);
+/*
+ * Liveness of a gRPC channel by its transport handle, resolved by the
+ * gRPC module while loaded.  Without a resolver (or without a handle)
+ * this reports alive: a lock is never released on guesswork.
+ */
+extern void nb_grpc_channel_alive_set(nb_grpc_channel_alive_cb cb);
+extern bool nb_grpc_channel_alive(int64_t channel_id);
+
+/*
+ * Commit-history seam (issue #29): the transaction listing and detail
+ * RPCs read the frontend's own commit history when the northbound runs
+ * under a frontend that owns one (mgmtd's mgmt_history).  Without a
+ * registered reader they fall back to the local rollback database,
+ * which mgmtd never populates.
+ */
+typedef int (*nb_history_transactions_iterate_cb)(
+	void (*func)(void *arg, int transaction_id, const char *client_name,
+		     const char *date, const char *comment),
+	void *arg);
+typedef struct nb_config *(*nb_history_transaction_load_cb)(uint32_t transaction_id);
+
+extern void nb_history_transactions_iterate_dispatch_set(
+	nb_history_transactions_iterate_cb cb);
+extern void nb_history_transaction_load_dispatch_set(nb_history_transaction_load_cb cb);
+extern int nb_history_transactions_iterate(
+	void (*func)(void *arg, int transaction_id, const char *client_name,
+		     const char *date, const char *comment),
+	void *arg);
+extern struct nb_config *nb_history_transaction_load(uint32_t transaction_id);
 
 /**
  * nb_oper_walk() - walk the schema building operational state.
