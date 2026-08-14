@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: ISC
 # -*- coding: utf-8 eval: (blacken-mode 1) -*-
 #
-# Copyright (C) 2026  Eric Parsonage
+# Copyright (C) 2026  Reinaldo Saraiva
 #
 
 """
