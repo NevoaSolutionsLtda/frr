@@ -1,0 +1,307 @@
+# SPDX-License-Identifier: ISC
+"""
+Verifies the Fase B fatia 1 northbound wiring in bgpd: the prefix-limit
+subtree (peer_maximum_prefix_* internals) and the network-config
+subtree (bgp_static_* internals) become programmable through the mgmtd
+gRPC bridge.
+
+RED on the base trunk (S056 head f97d994cc): the commits below hit
+reject-strict stubs and fail. GREEN on the s057 head: the commits apply
+and the legacy CLI surface (show running-config) renders the exact knob
+lines, proving the datastore and the bgpd internals agree.
+
+The l2vpn-evpn prefix-limit subtree keeps the reject-strict class until
+Fase C; the boundary test guards that.
+"""
+import glob
+import json
+import os
+import sys
+
+import pytest
+from lib.common_config import step
+from lib.topogen import Topogen, TopoRouter, get_topogen
+
+CWD = os.path.dirname(os.path.realpath(__file__))
+sys.path.append(os.path.join(CWD, "../"))
+
+GRPCP_MGMTD = 50065
+script_path = os.path.realpath(os.path.join(CWD, "../lib/grpc-query.py"))
+
+pytestmark = [pytest.mark.bgpd, pytest.mark.mgmtd]
+
+CPP = (
+    "/frr-routing:routing/control-plane-protocols/control-plane-protocol"
+    "[type='frr-bgp:bgp'][name='bgp'][vrf='default']/frr-bgp:bgp"
+)
+PEER = "10.0.0.2"
+NB = f"{CPP}/neighbors/neighbor[remote-address='{PEER}']"
+AF = (f"{NB}/afi-safis"
+      "/afi-safi[afi-safi-name='frr-routing:ipv4-unicast']/ipv4-unicast")
+AF_G = (f"{CPP}/global/afi-safis"
+        "/afi-safi[afi-safi-name='frr-routing:ipv4-unicast']"
+        "/ipv4-unicast")
+EVPN_AF = (
+    f"{NB}/afi-safis"
+    "/afi-safi[afi-safi-name='frr-routing:l2vpn-evpn']/l2vpn-evpn"
+)
+
+
+def _frr_grpc_module_available():
+    """True when the FRR northbound gRPC module (grpc.so) is installed."""
+    patterns = (
+        "/usr/lib/*/frr/modules/grpc.so",
+        "/usr/lib/frr/modules/grpc.so",
+        "/usr/lib64/*/frr/modules/grpc.so",
+        "/usr/lib64/frr/modules/grpc.so",
+        "/usr/local/lib/*/frr/modules/grpc.so",
+        "/usr/local/lib/frr/modules/grpc.so",
+    )
+    for pattern in patterns:
+        for path in glob.glob(pattern):
+            if os.path.isfile(path):
+                return True
+
+    frr_root = os.path.realpath(os.path.join(CWD, "../../.."))
+    for base in (frr_root, os.environ.get("FRR_BUILD_DIR")):
+        if not base:
+            continue
+        for rel in ("lib/.libs/grpc.so", "lib/grpc.so"):
+            if os.path.isfile(os.path.join(base, rel)):
+                return True
+    return False
+
+
+try:
+    import grpc  # noqa: F401
+    import grpc_tools  # noqa: F401
+except ImportError:
+    pytest.skip("skipping; gRPC modules not installed", allow_module_level=True)
+
+if not _frr_grpc_module_available():
+    pytest.skip(
+        "skipping; FRR gRPC northbound module not installed "
+        "(install frr-grpc or build with --enable-grpc)",
+        allow_module_level=True,
+    )
+
+try:
+    from lib.micronet import commander
+
+    commander.cmd_raises([script_path, "--check"])
+except Exception:
+    pytest.skip(
+        "skipping; cannot create or import gRPC proto modules",
+        allow_module_level=True,
+    )
+
+
+def build_topo(tgen):
+    tgen.add_router("r1")
+    switch = tgen.add_switch("s1")
+    switch.add_link(tgen.gears["r1"])
+
+
+def setup_module(mod):
+    tgen = Topogen(build_topo, mod.__name__)
+    tgen.start_topology()
+    router = tgen.gears["r1"]
+    router.load_config("bgpd", os.path.join(CWD, "r1/bgpd.conf"))
+    router.load_config(TopoRouter.RD_MGMTD, "", f"-M grpc:{GRPCP_MGMTD}")
+    tgen.start_router()
+
+
+def teardown_module():
+    tgen = get_topogen()
+    tgen.stop_topology()
+
+
+def run_grpc_client(r, commands):
+    if not isinstance(commands, str):
+        commands = "\n".join(commands) + "\n"
+    if not commands.endswith("\n"):
+        commands += "\n"
+    return r.cmd_raises(
+        [script_path, f"--port={GRPCP_MGMTD}"], stdin=commands
+    )
+
+
+def run_grpc_client_status(r, command):
+    if not command.endswith("\n"):
+        command += "\n"
+    return r.net.cmd_status(
+        [script_path, f"--port={GRPCP_MGMTD}"], stdin=command
+    )
+
+
+@pytest.fixture(autouse=True)
+def skip_on_failure():
+    tgen = get_topogen()
+    if tgen.routers_have_failure():
+        pytest.skip(tgen.errors)
+
+
+def test_prefix_limit_inbound_grpc():
+    """G-PL: maximum-prefix + threshold land in the peer internals and
+    render back on the legacy CLI."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Create the neighbor context, then the prefix-limit (one shot)")
+    run_grpc_client(
+        r1,
+        [
+            f"commit-set,{CPP}/global/local-as=65000",
+            # one transaction: remote-as-type is a mandatory leaf and
+            # the wired validation demands remote-as in the same txn
+            f"commit-result,ALL,"
+            f"{NB}/neighbor-remote-as/remote-as-type=as-specified,"
+            f"{NB}/neighbor-remote-as/remote-as=65001,"
+            f"{AF}/prefix-limit/direction-list"
+            "[direction='in']/max-prefixes=2,"
+            f"{AF}/prefix-limit/direction-list"
+            "[direction='in']/options/shutdown-threshold-pct=80",
+        ]
+    )
+
+    step("The legacy CLI shows the maximum-prefix line")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor 10.0.0.2 maximum-prefix 2 80" in output, (
+        f"expected maximum-prefix on legacy CLI; got:\n{output}"
+    )
+
+    step("The gRPC get-config view agrees (round-trip)")
+    out = run_grpc_client(r1, f"get-config,{AF}/prefix-limit")
+    assert "2" in out and "80" in out, f"prefix-limit missing: {out}"
+
+
+def test_prefix_limit_outbound_grpc():
+    """G-PL: direction=out maps onto maximum-prefix-out."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    run_grpc_client(
+        r1,
+        f"commit-set,{AF}/prefix-limit/direction-list[direction='out']"
+        "/max-prefixes=5",
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor 10.0.0.2 maximum-prefix-out 5" in output, (
+        f"expected maximum-prefix-out on legacy CLI; got:\n{output}"
+    )
+
+
+def test_prefix_limit_destroy_grpc():
+    """G-PL: destroying the direction-list unsets the internals."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    run_grpc_client(
+        r1,
+        f"commit-delete,{AF}/prefix-limit/direction-list[direction='out']",
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "maximum-prefix-out" not in output, (
+        f"maximum-prefix-out should be gone; got:\n{output}"
+    )
+    assert "maximum-prefix 2 80" in output, "inbound half must survive"
+
+
+def test_network_config_grpc():
+    """G-NC: network-config lands in bgp static routes and the route is
+    originated (the link subnet satisfies import-check)."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Announce the r1-eth0 link subnet")
+    # (the grpc-query CLI is path=value only; touching the defaulted
+    # backdoor leaf expresses the list-entry CREATE)
+    run_grpc_client(
+        r1,
+        f"commit-set,{AF_G}/network-config[prefix='10.0.0.0/24']"
+        "/backdoor=false",
+    )
+
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "network 10.0.0.0/24" in output, (
+        f"expected network on legacy CLI; got:\n{output}"
+    )
+
+    step("The static route is originated into the BGP table")
+    output = r1.vtysh_cmd("show bgp ipv4 unicast 10.0.0.0/24 json")
+    assert "10.0.0.0/24" in output, (
+        f"expected the network in the BGP table; got:\n{output}"
+    )
+
+
+def test_network_config_backdoor_grpc():
+    """G-NC: the backdoor leaf round-trips and the entry is removable."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    run_grpc_client(
+        r1,
+        f"commit-set,{AF_G}/network-config[prefix='10.0.0.0/24']"
+        "/backdoor=true",
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "network 10.0.0.0/24 backdoor" in output, (
+        f"expected backdoor on legacy CLI; got:\n{output}"
+    )
+
+    run_grpc_client(
+        r1, f"commit-delete,{AF_G}/network-config[prefix='10.0.0.0/24']"
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "network 10.0.0.0/24" not in output, (
+        f"network should be gone; got:\n{output}"
+    )
+
+
+def test_evpn_prefix_limit_still_rejected():
+    """Fase C boundary: l2vpn-evpn prefix-limit keeps the reject-strict
+    stub class, so the gRPC commit must fail with an explicit error."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("l2vpn-evpn prefix-limit commit must be rejected")
+    rc, stdout, stderr = run_grpc_client_status(
+        r1,
+        f"commit-set,{EVPN_AF}/prefix-limit/direction-list"
+        "[direction='in']/max-prefixes=2",
+    )
+    output = stdout + stderr
+    assert rc != 0, (
+        "commit on l2vpn-evpn prefix-limit must fail until Fase C; "
+        f"got rc=0 output={output}"
+    )
+
+
+def test_cli_write_keeps_authority_and_datastore_intact():
+    """The CLI keeps legacy authority: a legacy `neighbor maximum-prefix`
+    applies to the bgpd internals (legacy show reflects it) without
+    corrupting the gRPC-visible datastore view. (The CLI dual-write
+    mirrors into the daemon-side datastore -- mgmtd's copy only
+    tracks mgmtd-fronted commits, per the NB_CLIENT_CLI exemption
+    design in bgp_nb_stubs.c.)"""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Re-configure maximum-prefix through the legacy CLI")
+    r1.vtysh_cmd(
+        "configure terminal\nrouter bgp 65000\n"
+        "address-family ipv4 unicast\n"
+        f"neighbor {PEER} maximum-prefix 100\n"
+    )
+
+    step("The legacy CLI is still the authority on the internals")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor 10.0.0.2 maximum-prefix 100" in output, (
+        f"expected CLI-configured maximum-prefix; got:\n{output}"
+    )
+
+    step("The gRPC datastore view stays queryable (no corruption)")
+    out = run_grpc_client(r1, f"get-config,{AF}/prefix-limit")
+    assert "prefix-limit" in out or "direction-list" in out, (
+        f"datastore view lost the prefix-limit subtree: {out}"
+    )
