@@ -5506,56 +5506,39 @@ static int bgp_nb_pl_apply_inbound(struct peer *peer, afi_t afi, safi_t safi,
 	if (yang_dnode_exists(dl, "force-check"))
 		force = yang_dnode_get_bool(dl, "force-check");
 
-	/* YANG choice: at most one option case is present. */
-	if (!skip_leaf || strcmp(skip_leaf, "warning-only")) {
-		if (yang_dnode_exists(dl, "options/warning-only")) {
-			warning = yang_dnode_get_bool(dl,
-						      "options/warning-only");
-			goto options_done;
-		}
-	}
-	if (!skip_leaf || strcmp(skip_leaf, "restart-timer")) {
-		if (yang_dnode_exists(dl, "options/restart-timer")) {
-			restart = yang_dnode_get_uint16(
-				dl, "options/restart-timer");
-			goto options_done;
-		}
-	}
-	if (!skip_leaf || strcmp(skip_leaf, "shutdown-threshold-pct")) {
-		if (yang_dnode_exists(dl, "options/shutdown-threshold-pct")) {
-			threshold = yang_dnode_get_uint8(
-				dl, "options/shutdown-threshold-pct");
-			goto options_done;
-		}
-	}
-	if (!skip_leaf || strcmp(skip_leaf, "tr-shutdown-threshold-pct")) {
-		if (yang_dnode_exists(dl,
-				      "options/tr-shutdown-threshold-pct")) {
-			threshold = yang_dnode_get_uint8(
-				dl, "options/tr-shutdown-threshold-pct");
-			if ((!skip_leaf
-			     || strcmp(skip_leaf, "tr-restart-timer"))
-			    && yang_dnode_exists(dl,
-						 "options/tr-restart-timer"))
-				restart = yang_dnode_get_uint16(
-					dl, "options/tr-restart-timer");
-			goto options_done;
-		}
-	}
-	if (!skip_leaf || strcmp(skip_leaf, "tw-shutdown-threshold-pct")) {
-		if (yang_dnode_exists(dl,
-				      "options/tw-shutdown-threshold-pct")) {
-			threshold = yang_dnode_get_uint8(
-				dl, "options/tw-shutdown-threshold-pct");
-			if ((!skip_leaf
-			     || strcmp(skip_leaf, "tw-warning-only"))
-			    && yang_dnode_exists(dl,
-						 "options/tw-warning-only"))
-				warning = yang_dnode_get_bool(
-					dl, "options/tw-warning-only");
-		}
-	}
-options_done:
+	/*
+	 * YANG choice: at most one option case is instantiated, but a
+	 * multi-leaf case (tr/tw) can have ONE leaf destroyed while the
+	 * sibling stays. Read each leaf individually and honour skip_leaf
+	 * per leaf, so destroying the threshold of tr/tw resets only the
+	 * threshold and keeps the timer/warning of the surviving case.
+	 */
+	if ((!skip_leaf || strcmp(skip_leaf, "warning-only"))
+	    && yang_dnode_exists(dl, "options/warning-only"))
+		warning = yang_dnode_get_bool(dl, "options/warning-only");
+	if ((!skip_leaf || strcmp(skip_leaf, "restart-timer"))
+	    && yang_dnode_exists(dl, "options/restart-timer"))
+		restart = yang_dnode_get_uint16(dl,
+						"options/restart-timer");
+	if ((!skip_leaf || strcmp(skip_leaf, "shutdown-threshold-pct"))
+	    && yang_dnode_exists(dl, "options/shutdown-threshold-pct"))
+		threshold = yang_dnode_get_uint8(
+			dl, "options/shutdown-threshold-pct");
+	if ((!skip_leaf || strcmp(skip_leaf, "tr-shutdown-threshold-pct"))
+	    && yang_dnode_exists(dl, "options/tr-shutdown-threshold-pct"))
+		threshold = yang_dnode_get_uint8(
+			dl, "options/tr-shutdown-threshold-pct");
+	if ((!skip_leaf || strcmp(skip_leaf, "tr-restart-timer"))
+	    && yang_dnode_exists(dl, "options/tr-restart-timer"))
+		restart = yang_dnode_get_uint16(dl,
+						"options/tr-restart-timer");
+	if ((!skip_leaf || strcmp(skip_leaf, "tw-shutdown-threshold-pct"))
+	    && yang_dnode_exists(dl, "options/tw-shutdown-threshold-pct"))
+		threshold = yang_dnode_get_uint8(
+			dl, "options/tw-shutdown-threshold-pct");
+	if ((!skip_leaf || strcmp(skip_leaf, "tw-warning-only"))
+	    && yang_dnode_exists(dl, "options/tw-warning-only"))
+		warning = yang_dnode_get_bool(dl, "options/tw-warning-only");
 
 	return bgp_nb_setter_result(
 		peer_maximum_prefix_set(peer, afi, safi, max, threshold,
@@ -5696,6 +5679,30 @@ int bgp_peer_af_prefix_limit_option_modify(struct nb_cb_modify_args *args)
 {
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		/*
+		 * The tr/tw cases are two-leaf shapes: a timer (or
+		 * warning) without its own threshold leaf would be
+		 * accepted by the schema but silently ignored by the
+		 * reapply (which reads the threshold as default), so
+		 * reject the half-case up front.
+		 */
+		if (args->dnode->schema
+		    && !strcmp(args->dnode->schema->name, "tr-restart-timer")
+		    && !yang_dnode_exists(
+			       args->dnode, "../tr-shutdown-threshold-pct")) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "tr-restart-timer requires tr-shutdown-threshold-pct");
+			return NB_ERR_VALIDATION;
+		}
+		if (args->dnode->schema
+		    && !strcmp(args->dnode->schema->name, "tw-warning-only")
+		    && !yang_dnode_exists(
+			       args->dnode, "../tw-shutdown-threshold-pct")) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "tw-warning-only requires tw-shutdown-threshold-pct");
+			return NB_ERR_VALIDATION;
+		}
+		return NB_OK;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 		return NB_OK;

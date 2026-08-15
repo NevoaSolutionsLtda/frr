@@ -543,8 +543,6 @@ _BGP_CLI(bgp_global_af_network_config);
 _BGP_CLI(bgp_global_af_network_pl);
 
 
-
-
 _BGP_CLI(bgp_peer_group);
 _BGP_CLI(bgp_peer_group_ipv4_listen_range);
 _BGP_CLI(bgp_peer_group_ipv6_listen_range);

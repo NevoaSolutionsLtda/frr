@@ -266,7 +266,7 @@ def test_prefix_limit_option_destroy_grpc():
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
-    step("Re-state the base + threshold in one txn (self-contained)")
+    step("Re-state the base + threshold in one txn (runs after the neighbor test)")
     run_grpc_client(
         r1,
         f"commit-result,ALL,"
@@ -307,9 +307,9 @@ def test_network_config_l3vpn_grpc():
     )
 
     step("label-index modify on the existing entry (depth-4 leaf path)")
-    # the legacy internals refuse a label CHANGE (parity), but the
-    # modify must flow through the leaf callback without aborting the
-    # daemon -- that is the depth regression under test
+    # the legacy internals refuse a label CHANGE (parity); the modify
+    # must fail cleanly AND flow through the leaf callback without
+    # aborting the daemon -- that is the depth regression under test
     rc, stdout, stderr = run_grpc_client_status(
         r1,
         f"commit-set,{AF_VPN}/network-config[rd='65000:100']"
@@ -349,10 +349,52 @@ def test_network_config_l3vpn_grpc():
     )
 
 
-def test_cli_bare_network_and_backdoor_clear():
+def test_prefix_limit_multi_leaf_option_destroy():
+    """G-PL: destroying ONE leaf of the tr case keeps the sibling alive
+    (review round 2, A1) and half-cases are rejected (A2)."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("State the full tr case in one txn")
+    run_grpc_client(
+        r1,
+        f"commit-result,ALL,"
+        f"{AF}/prefix-limit/direction-list[direction='in']"
+        "/max-prefixes=3,"
+        f"{AF}/prefix-limit/direction-list[direction='in']"
+        "/options/tr-shutdown-threshold-pct=40,"
+        f"{AF}/prefix-limit/direction-list[direction='in']"
+        "/options/tr-restart-timer=100",
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "maximum-prefix 3 40 restart 100" in output, (
+        f"expected full tr case; got:\n{output}"
+    )
+
+    step("Destroy only the threshold; the timer must survive")
+    run_grpc_client(
+        r1,
+        f"commit-delete,{AF}/prefix-limit/direction-list[direction='in']"
+        "/options/tr-shutdown-threshold-pct",
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "restart 100" in output, (
+        f"tr-restart-timer must survive its sibling destroy; got:\n{output}"
+    )
+    assert "3 40" not in output, "threshold should be reset"
+
+    step("A half-case commit is rejected (tr timer without threshold)")
+    rc, stdout, stderr = run_grpc_client_status(
+        r1,
+        f"commit-set,{AF}/prefix-limit/direction-list[direction='in']"
+        "/options/tr-restart-timer=77",
+    )
+    assert rc != 0 or "requires" in (stdout + stderr), (
+        f"orphan tr-restart-timer should be refused; got: {stdout+stderr}"
+    )
     """G-NC CLI authority: a bare `network X` (no knobs) configures the
     internals, and a re-issue WITHOUT backdoor mirrors the legacy knob
-    clear (review round 1, B2). (The CLI dual mirrors into bgpd's own
+    clear (review rounds 1-2, B2/A3). (The CLI dual mirrors into bgpd's own
     northbound datastore; mgmtd's copy only tracks mgmtd-fronted
     commits -- the NB_CLIENT_CLI exemption design.)"""
     tgen = get_topogen()
@@ -387,6 +429,27 @@ def test_cli_bare_network_and_backdoor_clear():
     output = r1.vtysh_cmd("show running-config bgpd")
     assert "network 198.18.77.0/24\n" in output, (
         f"re-issue must render the bare form (knob cleared); got:\n{output}"
+    )
+
+    step("Set route-map, then re-issue bare: the rmap must clear")
+    r1.vtysh_cmd(
+        "configure terminal\nroute-map s057rm permit 1\nexit\n"
+        "router bgp 65000\n"
+        "address-family ipv4 unicast\n"
+        "network 198.18.77.0/24 route-map s057rm\n"
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "network 198.18.77.0/24 route-map s057rm" in output, (
+        f"rmap should be set; got:\n{output}"
+    )
+    r1.vtysh_cmd(
+        "configure terminal\nrouter bgp 65000\n"
+        "address-family ipv4 unicast\n"
+        "network 198.18.77.0/24\n"
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "network 198.18.77.0/24 route-map" not in output, (
+        f"re-issue must clear the network rmap; got:\n{output}"
     )
 
     step("Destroy removes the entry from the internals")

@@ -9239,12 +9239,11 @@ static void bgp_nb_network_dual(struct vty *vty, bool negate,
 			strlcat(xpath, "/label-index", sizeof(xpath));
 			nb_cli_enqueue_change(vty, xpath, NB_OP_MODIFY,
 					      label_str);
-			if (rmap) {
-				strlcat(xpath, "/rmap-policy-export",
-					sizeof(xpath));
-				nb_cli_enqueue_change(vty, xpath,
-						      NB_OP_MODIFY, rmap);
-			}
+			strlcat(xpath, "/rmap-policy-export",
+				sizeof(xpath));
+			nb_cli_enqueue_change(
+				vty, xpath,
+				rmap ? NB_OP_MODIFY : NB_OP_DESTROY, rmap);
 		}
 		(void)nb_cli_apply_changes(
 			vty, BGP_CONTAINER_XPATH, "frr-bgp:bgp",
@@ -9283,12 +9282,16 @@ static void bgp_nb_network_dual(struct vty *vty, bool negate,
 			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
 					      lbuf);
 		}
-		if (rmap) {
-			snprintfrr(leaf, sizeof(leaf),
-				   "%s/rmap-policy-export", xpath);
-			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
-					      rmap);
-		}
+		/*
+		 * Mirror the legacy knob clear: a re-issue WITHOUT
+		 * route-map clears the rmap in the internals, so the
+		 * datastore must see the destroy too.
+		 */
+		snprintfrr(leaf, sizeof(leaf), "%s/rmap-policy-export",
+			   xpath);
+		nb_cli_enqueue_change(
+			vty, leaf, rmap ? NB_OP_MODIFY : NB_OP_DESTROY,
+			rmap);
 	}
 	(void)nb_cli_apply_changes(vty, BGP_CONTAINER_XPATH,
 				   "frr-bgp:bgp", bgp_nb_cpp_name(bgp),
