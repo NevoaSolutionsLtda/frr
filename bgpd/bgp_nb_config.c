@@ -5512,8 +5512,9 @@ static int bgp_nb_pl_apply_inbound(struct peer *peer, afi_t afi, safi_t safi,
 				     "options/tr-shutdown-threshold-pct")) {
 		threshold = yang_dnode_get_uint8(
 			dl, "options/tr-shutdown-threshold-pct");
-		restart = yang_dnode_get_uint16(dl,
-						"options/tr-restart-timer");
+		if (yang_dnode_exists(dl, "options/tr-restart-timer"))
+			restart = yang_dnode_get_uint16(
+				dl, "options/tr-restart-timer");
 	} else if (yang_dnode_exists(dl,
 				     "options/tw-shutdown-threshold-pct")) {
 		threshold = yang_dnode_get_uint8(
@@ -5821,6 +5822,8 @@ int bgp_global_af_network_config_create(struct nb_cb_create_args *args)
 	case NB_EV_VALIDATE:
 		if (bgp_nb_network_af_lookup(
 			    args->dnode, 2, &bgp, &afi, &safi) == 0 &&
+		    safi != SAFI_MPLS_VPN &&
+		    yang_dnode_exists(args->dnode, "prefix") &&
 		    bgp_nb_network_prefix_parse(
 			    yang_dnode_get_string(args->dnode, "prefix"), afi,
 			    &p, args->errmsg, args->errmsg_len) < 0)
@@ -5834,12 +5837,17 @@ int bgp_global_af_network_config_create(struct nb_cb_create_args *args)
 	}
 	if (bgp_nb_network_af_lookup(args->dnode, 2, &bgp, &afi, &safi) < 0)
 		return NB_ERR;
+	/*
+	 * The l3vpn entry is keyed by rd (no prefix leaf): route to the
+	 * vpn helpers BEFORE any prefix read -- the yang wrappers abort
+	 * the daemon on a missing node.
+	 */
+	if (safi == SAFI_MPLS_VPN)
+		return bgp_nb_af_network_vpn_create(args, bgp, afi, safi);
 	if (bgp_nb_network_prefix_parse(
 		    yang_dnode_get_string(args->dnode, "prefix"), afi, &p,
 		    args->errmsg, args->errmsg_len) < 0)
 		return NB_ERR;
-	if (safi == SAFI_MPLS_VPN)
-		return bgp_nb_af_network_vpn_create(args, bgp, afi, safi);
 
 	dest = bgp_node_get(bgp->static_routes[afi][safi], &p);
 	if (bgp_dest_get_bgp_static_info(dest)) {
@@ -5887,12 +5895,13 @@ int bgp_global_af_network_config_destroy(struct nb_cb_destroy_args *args)
 	}
 	if (bgp_nb_network_af_lookup(args->dnode, 2, &bgp, &afi, &safi) < 0)
 		return NB_OK;
+	/* l3vpn entry: keyed by rd; no prefix leaf to parse. */
+	if (safi == SAFI_MPLS_VPN)
+		return bgp_nb_af_network_vpn_destroy(args, bgp, afi, safi);
 	if (bgp_nb_network_prefix_parse(
 		    yang_dnode_get_string(args->dnode, "prefix"), afi, &p,
 		    NULL, 0) < 0)
 		return NB_OK;
-	if (safi == SAFI_MPLS_VPN)
-		return bgp_nb_af_network_vpn_destroy(args, bgp, afi, safi);
 
 	dest = bgp_node_lookup(bgp->static_routes[afi][safi], &p);
 	if (!dest)
