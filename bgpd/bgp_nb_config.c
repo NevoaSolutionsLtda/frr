@@ -5707,12 +5707,12 @@ static int bgp_nb_network_af_lookup(const struct lyd_node *dnode,
 				    afi_t *afi_out, safi_t *safi_out)
 {
 	static const char *const af_rel[] = {NULL, "../", "../../",
-					      "../../../"};
+					      "../../../", "../../../../"};
 	const char *afi_safi_id;
 	char rel_xpath[64];
 	struct bgp *bgp;
 
-	assert(ups_to_af >= 1 && ups_to_af <= 3);
+	assert(ups_to_af >= 1 && ups_to_af <= 4);
 
 	bgp = bgp_nb_lookup_from_dnode(dnode, ups_to_af + 4);
 	if (!bgp)
@@ -6172,12 +6172,25 @@ static int bgp_nb_af_network_vpn_destroy(struct nb_cb_destroy_args *args,
 }
 
 /* l3vpn: prefix-list[prefix] entries inside network-config[rd]. */
+/*
+ * The caller may hand the prefix-list ENTRY or one of its LEAVES
+ * (libyang creates the ancestors implicitly on a leaf update, so a
+ * "create" often arrives as a leaf modify). Normalize to the entry
+ * first: every relative read below ("prefix", "../rd") and the hop
+ * count to the afi-safi entry (3) are only valid from the entry
+ * itself. The yang wrappers abort the daemon on a missed node, so
+ * the schema-name walk replaces fragile depth counting.
+ */
 static int bgp_nb_network_pl_lookup(const struct lyd_node *dnode,
 				    struct bgp **bgp_out, afi_t *afi_out,
 				    safi_t *safi_out, struct prefix *p,
 				    struct prefix_rd *prd, char *errmsg,
 				    size_t errmsg_len)
 {
+	if (dnode->schema && strcmp(dnode->schema->name, "prefix-list"))
+		dnode = yang_dnode_get_parent(dnode, "prefix-list");
+	if (!dnode)
+		return -1;
 	if (bgp_nb_network_af_lookup(dnode, 3, bgp_out, afi_out, safi_out)
 	    < 0)
 		return -1;

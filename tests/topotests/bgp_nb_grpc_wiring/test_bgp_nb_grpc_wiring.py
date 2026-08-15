@@ -41,6 +41,9 @@ AF = (f"{NB}/afi-safis"
 AF_G = (f"{CPP}/global/afi-safis"
         "/afi-safi[afi-safi-name='frr-routing:ipv4-unicast']"
         "/ipv4-unicast")
+AF_VPN = (f"{CPP}/global/afi-safis"
+          "/afi-safi[afi-safi-name='frr-routing:l3vpn-ipv4-unicast']"
+          "/l3vpn-ipv4-unicast")
 EVPN_AF = (
     f"{NB}/afi-safis"
     "/afi-safi[afi-safi-name='frr-routing:l2vpn-evpn']/l2vpn-evpn"
@@ -256,6 +259,126 @@ def test_network_config_backdoor_grpc():
     assert "network 10.0.0.0/24" not in output, (
         f"network should be gone; got:\n{output}"
     )
+
+
+def test_prefix_limit_option_destroy_grpc():
+    """G-PL: destroying individual option leaves unsets the knobs."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    run_grpc_client(
+        r1,
+        f"commit-set,{AF}/prefix-limit/direction-list[direction='in']"
+        "/options/shutdown-threshold-pct=50",
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "maximum-prefix 2 50" in output, (
+        f"expected threshold swap; got:\n{output}"
+    )
+    run_grpc_client(
+        r1,
+        f"commit-delete,{AF}/prefix-limit/direction-list[direction='in']"
+        "/options/shutdown-threshold-pct",
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "maximum-prefix 2\n" in output or (
+        "maximum-prefix 2 " not in output
+    ), f"threshold should be gone; got:\n{output}"
+
+
+def test_network_config_l3vpn_grpc():
+    """G-NC l3vpn: rd/prefix-list entries with label-index and
+    route-map (the leaf modify/destroy paths under network-config[rd])."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Create the rd + prefix-list entry via gRPC")
+    run_grpc_client(
+        r1,
+        f"commit-set,{AF_VPN}/network-config[rd='65000:100']"
+        "/prefix-list[prefix='198.18.9.0/24']/label-index=1000",
+    )
+
+    step("label-index modify on the existing entry (depth-4 leaf path)")
+    run_grpc_client(
+        r1,
+        f"commit-set,{AF_VPN}/network-config[rd='65000:100']"
+        "/prefix-list[prefix='198.18.9.0/24']/label-index=1001",
+    )
+    step("label-index idempotent re-set check (review B1 regression)")
+    rc, stdout, stderr = run_grpc_client_status(
+        r1,
+        f"commit-set,{AF_VPN}/network-config[rd='65000:100']"
+        "/prefix-list[prefix='198.18.9.0/24']/label-index=1001",
+    )
+    # re-issuing the SAME value must be accepted (idempotent)
+    assert rc == 0, f"idempotent label re-set failed: {stdout+stderr}"
+
+    step("rmap-policy-export set and unset on the entry")
+    run_grpc_client(
+        r1,
+        f"commit-set,{AF_VPN}/network-config[rd='65000:100']"
+        "/prefix-list[prefix='198.18.9.0/24']/rmap-policy-export=s057rm",
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "198.18.9.0/24 rd 65000:100 label 1000 route-map s057rm" in output, (
+        f"expected vpn network line; got:\n{output}"
+    )
+    run_grpc_client(
+        r1,
+        f"commit-delete,{AF_VPN}/network-config[rd='65000:100']"
+        "/prefix-list[prefix='198.18.9.0/24']/rmap-policy-export",
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "route-map s057rm" not in output, "rmap should be unset"
+
+    step("destroy the rd entry (children included)")
+    run_grpc_client(
+        r1,
+        f"commit-delete,{AF_VPN}/network-config[rd='65000:100']",
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "198.18.9.0/24" not in output, (
+        f"vpn network should be gone; got:\n{output}"
+    )
+
+
+def test_cli_bare_network_reflects_in_datastore():
+    """G-NC CLI dual: a bare `network X` (no knobs) must land in the
+    datastore the gRPC clients read (review round 1, B2)."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Announce a bare network through the legacy CLI")
+    r1.vtysh_cmd(
+        "configure terminal\nrouter bgp 65000\n"
+        "address-family ipv4 unicast\n"
+        "network 198.18.77.0/24\n"
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "network 198.18.77.0/24" in output, (
+        f"legacy CLI missing the bare network; got:\n{output}"
+    )
+
+    step("The gRPC datastore reports the entry")
+    out = run_grpc_client(
+        r1,
+        f"get-config,{AF_G}/network-config[prefix='198.18.77.0/24']",
+    )
+    assert "198.18.77.0/24" in out, (
+        f"bare network missing from the datastore: {out}"
+    )
+
+    r1.vtysh_cmd(
+        "configure terminal\nrouter bgp 65000\n"
+        "address-family ipv4 unicast\n"
+        "no network 198.18.77.0/24\n"
+    )
+    out = run_grpc_client(
+        r1,
+        f"get-config,{AF_G}/network-config[prefix='198.18.77.0/24']",
+    )
+    assert "198.18.77.0/24" not in out, "destroy did not clear the DS"
 
 
 def test_evpn_prefix_limit_still_rejected():

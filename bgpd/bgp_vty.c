@@ -10403,7 +10403,8 @@ static void bgp_nb_peer_maximum_prefix_dual(struct vty *vty,
 	char leaf[256];
 
 	af_name = bgp_nb_af_yang_name(afi, safi);
-	if (!af_name)
+	/* l2vpn-evpn keeps the reject-strict class until Fase C */
+	if (!af_name || safi == SAFI_EVPN)
 		return;
 	cont = strchr(af_name, ':');
 	if (!cont || strmatch(cont + 1, "l2vpn-vpls"))

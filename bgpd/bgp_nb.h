@@ -121,18 +121,6 @@ int bgp_global_af_network_pl_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_af_network_pl_label_modify(struct nb_cb_modify_args *args);
 int bgp_global_af_network_pl_rmap_modify(struct nb_cb_modify_args *args);
 int bgp_global_af_network_pl_rmap_destroy(struct nb_cb_destroy_args *args);
-int bgp_global_af_network_config_create(struct nb_cb_create_args *args);
-int bgp_global_af_network_config_destroy(struct nb_cb_destroy_args *args);
-int bgp_global_af_network_backdoor_modify(struct nb_cb_modify_args *args);
-int bgp_global_af_network_label_modify(struct nb_cb_modify_args *args);
-int bgp_global_af_network_label_destroy(struct nb_cb_destroy_args *args);
-int bgp_global_af_network_rmap_modify(struct nb_cb_modify_args *args);
-int bgp_global_af_network_rmap_destroy(struct nb_cb_destroy_args *args);
-int bgp_global_af_network_pl_create(struct nb_cb_create_args *args);
-int bgp_global_af_network_pl_destroy(struct nb_cb_destroy_args *args);
-int bgp_global_af_network_pl_label_modify(struct nb_cb_modify_args *args);
-int bgp_global_af_network_pl_rmap_modify(struct nb_cb_modify_args *args);
-int bgp_global_af_network_pl_rmap_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_af_redistribution_metric_modify(struct nb_cb_modify_args *args);
 int bgp_global_af_redistribution_metric_destroy(
 	struct nb_cb_destroy_args *args);
@@ -408,17 +396,6 @@ int bgp_peer_af_prefix_limit_option_destroy(
 	struct nb_cb_destroy_args *args);
 const char *bgp_nb_af_yang_name(afi_t afi, safi_t safi);
 
-/* prefix-limit (shared across neighbor/unnumbered/peer-group) */
-int bgp_peer_af_prefix_limit_create(struct nb_cb_create_args *args);
-int bgp_peer_af_prefix_limit_destroy(struct nb_cb_destroy_args *args);
-int bgp_peer_af_prefix_limit_max_modify(struct nb_cb_modify_args *args);
-int bgp_peer_af_prefix_limit_force_modify(struct nb_cb_modify_args *args);
-int bgp_peer_af_prefix_limit_option_modify(
-	struct nb_cb_modify_args *args);
-int bgp_peer_af_prefix_limit_option_destroy(
-	struct nb_cb_destroy_args *args);
-const char *bgp_nb_af_yang_name(afi_t afi, safi_t safi);
-
 /* peer-group */
 int bgp_peer_group_create(struct nb_cb_create_args *args);
 int bgp_peer_group_destroy(struct nb_cb_destroy_args *args);
@@ -564,9 +541,9 @@ _BGP_CLI(bgp_neighbor_af_rmap_export);
 _BGP_CLI(bgp_peer_af_prefix_limit_max);
 _BGP_CLI(bgp_global_af_network_config);
 _BGP_CLI(bgp_global_af_network_pl);
-_BGP_CLI(bgp_peer_af_prefix_limit_max);
-_BGP_CLI(bgp_global_af_network_config);
-_BGP_CLI(bgp_global_af_network_pl);
+
+
+
 
 _BGP_CLI(bgp_peer_group);
 _BGP_CLI(bgp_peer_group_ipv4_listen_range);

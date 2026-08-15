@@ -9264,14 +9264,16 @@ static void bgp_nb_network_dual(struct vty *vty, bool negate,
 		char leaf[288];
 
 		/*
-		 * leaf MODIFYs create the entry implicitly; an explicit
-		 * CREATE on an existing entry would abort the batch.
+		 * Always state backdoor explicitly (true or false): the
+		 * leaf MODIFY creates the entry implicitly, so a bare
+		 * `network X` (no knobs) still lands in the datastore --
+		 * matching the replay contract that states every knob
+		 * explicitly -- and a re-issue without backdoor mirrors
+		 * the legacy clear of the knob.
 		 */
-		if (backdoor) {
-			snprintfrr(leaf, sizeof(leaf), "%s/backdoor", xpath);
-			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
-					      "true");
-		}
+		snprintfrr(leaf, sizeof(leaf), "%s/backdoor", xpath);
+		nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+				      backdoor ? "true" : "false");
 		if (label_index != BGP_INVALID_LABEL_INDEX) {
 			char lbuf[16];
 
