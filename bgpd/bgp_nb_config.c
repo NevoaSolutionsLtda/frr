@@ -5485,8 +5485,15 @@ static int bgp_nb_pl_lookup(const struct lyd_node *dnode,
 	return 0;
 }
 
+/*
+ * skip_leaf: on a DESTROY callback the dnode still shows the OLD
+ * tree, so the dying leaf would be re-read and its value RE-APPLIED.
+ * Callers pass the schema name of the leaf being destroyed; every
+ * option read ignores that leaf so the knob keeps its default.
+ */
 static int bgp_nb_pl_apply_inbound(struct peer *peer, afi_t afi, safi_t safi,
-				   const struct lyd_node *dl, char *errmsg,
+				   const struct lyd_node *dl,
+				   const char *skip_leaf, char *errmsg,
 				   size_t errmsg_len)
 {
 	uint32_t max;
@@ -5500,27 +5507,55 @@ static int bgp_nb_pl_apply_inbound(struct peer *peer, afi_t afi, safi_t safi,
 		force = yang_dnode_get_bool(dl, "force-check");
 
 	/* YANG choice: at most one option case is present. */
-	if (yang_dnode_exists(dl, "options/warning-only")) {
-		warning = yang_dnode_get_bool(dl, "options/warning-only");
-	} else if (yang_dnode_exists(dl, "options/restart-timer")) {
-		restart = yang_dnode_get_uint16(dl,
-						"options/restart-timer");
-	} else if (yang_dnode_exists(dl, "options/shutdown-threshold-pct")) {
-		threshold = yang_dnode_get_uint8(
-			dl, "options/shutdown-threshold-pct");
-	} else if (yang_dnode_exists(dl,
-				     "options/tr-shutdown-threshold-pct")) {
-		threshold = yang_dnode_get_uint8(
-			dl, "options/tr-shutdown-threshold-pct");
-		if (yang_dnode_exists(dl, "options/tr-restart-timer"))
-			restart = yang_dnode_get_uint16(
-				dl, "options/tr-restart-timer");
-	} else if (yang_dnode_exists(dl,
-				     "options/tw-shutdown-threshold-pct")) {
-		threshold = yang_dnode_get_uint8(
-			dl, "options/tw-shutdown-threshold-pct");
-		warning = yang_dnode_get_bool(dl, "options/tw-warning-only");
+	if (!skip_leaf || strcmp(skip_leaf, "warning-only")) {
+		if (yang_dnode_exists(dl, "options/warning-only")) {
+			warning = yang_dnode_get_bool(dl,
+						      "options/warning-only");
+			goto options_done;
+		}
 	}
+	if (!skip_leaf || strcmp(skip_leaf, "restart-timer")) {
+		if (yang_dnode_exists(dl, "options/restart-timer")) {
+			restart = yang_dnode_get_uint16(
+				dl, "options/restart-timer");
+			goto options_done;
+		}
+	}
+	if (!skip_leaf || strcmp(skip_leaf, "shutdown-threshold-pct")) {
+		if (yang_dnode_exists(dl, "options/shutdown-threshold-pct")) {
+			threshold = yang_dnode_get_uint8(
+				dl, "options/shutdown-threshold-pct");
+			goto options_done;
+		}
+	}
+	if (!skip_leaf || strcmp(skip_leaf, "tr-shutdown-threshold-pct")) {
+		if (yang_dnode_exists(dl,
+				      "options/tr-shutdown-threshold-pct")) {
+			threshold = yang_dnode_get_uint8(
+				dl, "options/tr-shutdown-threshold-pct");
+			if ((!skip_leaf
+			     || strcmp(skip_leaf, "tr-restart-timer"))
+			    && yang_dnode_exists(dl,
+						 "options/tr-restart-timer"))
+				restart = yang_dnode_get_uint16(
+					dl, "options/tr-restart-timer");
+			goto options_done;
+		}
+	}
+	if (!skip_leaf || strcmp(skip_leaf, "tw-shutdown-threshold-pct")) {
+		if (yang_dnode_exists(dl,
+				      "options/tw-shutdown-threshold-pct")) {
+			threshold = yang_dnode_get_uint8(
+				dl, "options/tw-shutdown-threshold-pct");
+			if ((!skip_leaf
+			     || strcmp(skip_leaf, "tw-warning-only"))
+			    && yang_dnode_exists(dl,
+						 "options/tw-warning-only"))
+				warning = yang_dnode_get_bool(
+					dl, "options/tw-warning-only");
+		}
+	}
+options_done:
 
 	return bgp_nb_setter_result(
 		peer_maximum_prefix_set(peer, afi, safi, max, threshold,
@@ -5599,7 +5634,7 @@ int bgp_peer_af_prefix_limit_max_modify(struct nb_cb_modify_args *args)
 				peer, afi, safi,
 				yang_dnode_get_uint32(args->dnode, NULL)),
 			args->errmsg, args->errmsg_len);
-	return bgp_nb_pl_apply_inbound(peer, afi, safi, dl,
+	return bgp_nb_pl_apply_inbound(peer, afi, safi, dl, NULL,
 				       args->errmsg, args->errmsg_len);
 }
 
@@ -5634,11 +5669,12 @@ int bgp_peer_af_prefix_limit_force_modify(struct nb_cb_modify_args *args)
 			     args->errmsg, args->errmsg_len) < 0)
 		return NB_ERR;
 	dl = bgp_nb_pl_dlist(args->dnode);
-	return bgp_nb_pl_apply_inbound(peer, afi, safi, dl,
+	return bgp_nb_pl_apply_inbound(peer, afi, safi, dl, NULL,
 				       args->errmsg, args->errmsg_len);
 }
 
-static int bgp_nb_pl_option_common(const struct lyd_node *dnode, char *errmsg,
+static int bgp_nb_pl_option_common(const struct lyd_node *dnode,
+				   const char *skip_leaf, char *errmsg,
 				   size_t errmsg_len)
 {
 	struct peer *peer;
@@ -5652,8 +5688,8 @@ static int bgp_nb_pl_option_common(const struct lyd_node *dnode, char *errmsg,
 		return NB_ERR;
 	/* option leaves only exist for direction=in (schema when). */
 	dl = bgp_nb_pl_dlist(dnode);
-	return bgp_nb_pl_apply_inbound(peer, afi, safi, dl, errmsg,
-				       errmsg_len);
+	return bgp_nb_pl_apply_inbound(peer, afi, safi, dl, skip_leaf,
+				       errmsg, errmsg_len);
 }
 
 int bgp_peer_af_prefix_limit_option_modify(struct nb_cb_modify_args *args)
@@ -5666,7 +5702,7 @@ int bgp_peer_af_prefix_limit_option_modify(struct nb_cb_modify_args *args)
 	case NB_EV_APPLY:
 		break;
 	}
-	return bgp_nb_pl_option_common(args->dnode, args->errmsg,
+	return bgp_nb_pl_option_common(args->dnode, NULL, args->errmsg,
 				       args->errmsg_len);
 }
 
@@ -5680,8 +5716,15 @@ int bgp_peer_af_prefix_limit_option_destroy(struct nb_cb_destroy_args *args)
 	case NB_EV_APPLY:
 		break;
 	}
-	return bgp_nb_pl_option_common(args->dnode, args->errmsg,
-				       args->errmsg_len);
+	/*
+	 * The dnode shows the OLD tree: skip the dying leaf so the
+	 * reapply keeps the default instead of resurrecting the value
+	 * being destroyed.
+	 */
+	return bgp_nb_pl_option_common(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
 }
 
 /*

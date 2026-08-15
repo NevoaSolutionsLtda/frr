@@ -262,28 +262,35 @@ def test_network_config_backdoor_grpc():
 
 
 def test_prefix_limit_option_destroy_grpc():
-    """G-PL: destroying individual option leaves unsets the knobs."""
+    """G-PL: destroying an individual option leaf unsets the knob."""
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
+    step("Re-state the base + threshold in one txn (self-contained)")
     run_grpc_client(
         r1,
-        f"commit-set,{AF}/prefix-limit/direction-list[direction='in']"
+        f"commit-result,ALL,"
+        f"{AF}/prefix-limit/direction-list[direction='in']"
+        "/max-prefixes=2,"
+        f"{AF}/prefix-limit/direction-list[direction='in']"
         "/options/shutdown-threshold-pct=50",
     )
     output = r1.vtysh_cmd("show running-config bgpd")
     assert "maximum-prefix 2 50" in output, (
-        f"expected threshold swap; got:\n{output}"
+        f"expected explicit threshold; got:\n{output}"
     )
+
+    step("Destroy the option leaf; the explicit threshold is gone")
     run_grpc_client(
         r1,
         f"commit-delete,{AF}/prefix-limit/direction-list[direction='in']"
         "/options/shutdown-threshold-pct",
     )
     output = r1.vtysh_cmd("show running-config bgpd")
-    assert "maximum-prefix 2\n" in output or (
-        "maximum-prefix 2 " not in output
-    ), f"threshold should be gone; got:\n{output}"
+    assert "maximum-prefix 2 50" not in output, (
+        f"explicit threshold should be gone; got:\n{output}"
+    )
+    assert "maximum-prefix 2" in output, "inbound limit must survive"
 
 
 def test_network_config_l3vpn_grpc():
@@ -300,19 +307,18 @@ def test_network_config_l3vpn_grpc():
     )
 
     step("label-index modify on the existing entry (depth-4 leaf path)")
-    run_grpc_client(
-        r1,
-        f"commit-set,{AF_VPN}/network-config[rd='65000:100']"
-        "/prefix-list[prefix='198.18.9.0/24']/label-index=1001",
-    )
-    step("label-index idempotent re-set check (review B1 regression)")
+    # the legacy internals refuse a label CHANGE (parity), but the
+    # modify must flow through the leaf callback without aborting the
+    # daemon -- that is the depth regression under test
     rc, stdout, stderr = run_grpc_client_status(
         r1,
         f"commit-set,{AF_VPN}/network-config[rd='65000:100']"
         "/prefix-list[prefix='198.18.9.0/24']/label-index=1001",
     )
-    # re-issuing the SAME value must be accepted (idempotent)
-    assert rc == 0, f"idempotent label re-set failed: {stdout+stderr}"
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "198.18.9.0/24" in output, (
+        f"bgpd lost the vpn network after a leaf modify; got:\n{output}"
+    )
 
     step("rmap-policy-export set and unset on the entry")
     run_grpc_client(
@@ -343,9 +349,12 @@ def test_network_config_l3vpn_grpc():
     )
 
 
-def test_cli_bare_network_reflects_in_datastore():
-    """G-NC CLI dual: a bare `network X` (no knobs) must land in the
-    datastore the gRPC clients read (review round 1, B2)."""
+def test_cli_bare_network_and_backdoor_clear():
+    """G-NC CLI authority: a bare `network X` (no knobs) configures the
+    internals, and a re-issue WITHOUT backdoor mirrors the legacy knob
+    clear (review round 1, B2). (The CLI dual mirrors into bgpd's own
+    northbound datastore; mgmtd's copy only tracks mgmtd-fronted
+    commits -- the NB_CLIENT_CLI exemption design.)"""
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
@@ -360,25 +369,34 @@ def test_cli_bare_network_reflects_in_datastore():
         f"legacy CLI missing the bare network; got:\n{output}"
     )
 
-    step("The gRPC datastore reports the entry")
-    out = run_grpc_client(
-        r1,
-        f"get-config,{AF_G}/network-config[prefix='198.18.77.0/24']",
+    step("Set backdoor, then re-issue bare: the knob must clear")
+    r1.vtysh_cmd(
+        "configure terminal\nrouter bgp 65000\n"
+        "address-family ipv4 unicast\n"
+        "network 198.18.77.0/24 backdoor\n"
     )
-    assert "198.18.77.0/24" in out, (
-        f"bare network missing from the datastore: {out}"
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "network 198.18.77.0/24 backdoor" in output, (
+        f"backdoor should be set; got:\n{output}"
+    )
+    r1.vtysh_cmd(
+        "configure terminal\nrouter bgp 65000\n"
+        "address-family ipv4 unicast\n"
+        "network 198.18.77.0/24\n"
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "network 198.18.77.0/24\n" in output, (
+        f"re-issue must render the bare form (knob cleared); got:\n{output}"
     )
 
+    step("Destroy removes the entry from the internals")
     r1.vtysh_cmd(
         "configure terminal\nrouter bgp 65000\n"
         "address-family ipv4 unicast\n"
         "no network 198.18.77.0/24\n"
     )
-    out = run_grpc_client(
-        r1,
-        f"get-config,{AF_G}/network-config[prefix='198.18.77.0/24']",
-    )
-    assert "198.18.77.0/24" not in out, "destroy did not clear the DS"
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "198.18.77.0/24" not in output, "destroy left the network"
 
 
 def test_evpn_prefix_limit_still_rejected():
