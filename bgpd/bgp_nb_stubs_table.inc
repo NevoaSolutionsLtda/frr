@@ -9,7 +9,7 @@
  * tree. The trailing comment is the stub class column:
  * core = reject-strict for programmatic clients,
  * warn = NB_OK no-op with aggregated warning.
- * Current population: 156 core, 1631 warn.
+ * Current population: 85 core, 1631 warn.
  *
  * Real handlers for any of these xpaths should be
  * added to bgp_nb.c (above the #include of this file)
@@ -511,88 +511,6 @@
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/ipv6-unicast/vpn-config/vrf-rmap-import",
   .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/advertise-all-vni",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/advertise-default-gateway",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/advertise-pip/enable",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/advertise-pip/system-ip",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/advertise-pip/system-mac",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/advertise-svi-ip",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/autort-rfc8365-compatible",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/default-originate/ipv4",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/default-originate/ipv6",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/duplicate-address-detection/enable",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/duplicate-address-detection/freeze-permanent",
-  .cbs = { .create = bgp_nb_stub_reject_create, .destroy = bgp_nb_stub_reject_destroy, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/duplicate-address-detection/freeze-time",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/duplicate-address-detection/max-moves",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/duplicate-address-detection/time",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/enable-resolve-overlay-index",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/flooding",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/ip-vrf/export-route-target",
-  .cbs = { .create = bgp_nb_stub_reject_create, .destroy = bgp_nb_stub_reject_destroy, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/ip-vrf/export-route-target-auto",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/ip-vrf/import-route-target",
-  .cbs = { .create = bgp_nb_stub_reject_create, .destroy = bgp_nb_stub_reject_destroy, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/ip-vrf/import-route-target-auto",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/ip-vrf/ipv4-unicast/enable",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/ip-vrf/ipv4-unicast/gateway-ip",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/ip-vrf/ipv4-unicast/route-map",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/ip-vrf/ipv6-unicast/enable",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/ip-vrf/ipv6-unicast/gateway-ip",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/ip-vrf/ipv6-unicast/route-map",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/ip-vrf/rd",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/mac-vrf-site-of-origin",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/multihoming/disable-ead-evi-rx",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/multihoming/disable-ead-evi-tx",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/multihoming/ead-es-export-route-target",
-  .cbs = { .create = bgp_nb_stub_reject_create, .destroy = bgp_nb_stub_reject_destroy, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/multihoming/ead-es-fragment-evi-limit",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/multihoming/use-es-l3nhg",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/vni",
-  .cbs = { .create = bgp_nb_stub_reject_create, .destroy = bgp_nb_stub_reject_destroy, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/vni/advertise-default-gateway",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/vni/advertise-subnet",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/vni/advertise-svi-ip",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/vni/export-route-target",
-  .cbs = { .create = bgp_nb_stub_reject_create, .destroy = bgp_nb_stub_reject_destroy, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/vni/flooding",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/vni/import-route-target",
-  .cbs = { .create = bgp_nb_stub_reject_create, .destroy = bgp_nb_stub_reject_destroy, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/vni/rd",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l3vpn-ipv4-unicast/retain-route-target-all",
   .cbs = { .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/afi-safis/afi-safi/l3vpn-ipv6-unicast/retain-route-target-all",
@@ -1208,26 +1126,6 @@
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/filter-config/unsuppress-map-export",
   .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/filter-config/unsuppress-map-import",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list",
-  .cbs = { .create = bgp_nb_stub_reject_create, .destroy = bgp_nb_stub_reject_destroy, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/force-check",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/max-prefixes",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/restart-timer",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/shutdown-threshold-pct",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tr-restart-timer",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tr-shutdown-threshold-pct",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tw-shutdown-threshold-pct",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tw-warning-only",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/warning-only",
   .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/afi-safis/afi-safi/l2vpn-evpn/soo",
   .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
@@ -2163,26 +2061,6 @@
   .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/nexthop-self/next-hop-self-force",
   .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list",
-  .cbs = { .create = bgp_nb_stub_reject_create, .destroy = bgp_nb_stub_reject_destroy, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/force-check",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/max-prefixes",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/restart-timer",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/shutdown-threshold-pct",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tr-restart-timer",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tr-shutdown-threshold-pct",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tw-shutdown-threshold-pct",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tw-warning-only",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/warning-only",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/route-reflector/route-reflector-client",
   .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/afi-safis/afi-safi/l2vpn-evpn/route-server/route-server-client",
@@ -3255,26 +3133,6 @@
   .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/nexthop-self/next-hop-self-force",
   .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list",
-  .cbs = { .create = bgp_nb_stub_reject_create, .destroy = bgp_nb_stub_reject_destroy, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/force-check",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/max-prefixes",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/restart-timer",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/shutdown-threshold-pct",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tr-restart-timer",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tr-shutdown-threshold-pct",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tw-shutdown-threshold-pct",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/tw-warning-only",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/prefix-limit/direction-list/options/warning-only",
-  .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/route-reflector/route-reflector-client",
   .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/afi-safis/afi-safi/l2vpn-evpn/route-server/route-server-client",

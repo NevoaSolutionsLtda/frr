@@ -4472,6 +4472,485 @@ const struct frr_yang_module_info frr_bgp_info = {
 			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
 			  .cli_show = bgp_nb_handled_by_parent_cli_show,
 		  } },
+
+		/*
+		 * EVPN (l2vpn-evpn) global — Fase C fatia 1: the
+		 * global half of the EVPN AF subtree wired to the same
+		 * internals as the CLI DEFUNs in bgp_evpn_vty.c, plus
+		 * the prefix-limit fanout under l2vpn-evpn reusing the
+		 * shared callbacks from Fase B. show running-config
+		 * keeps rendering from the internals
+		 * (bgp_config_write_evpn_info), so every node here is
+		 * handled by the parent's legacy writer.
+		 */
+#define BGP_NB_EVPN_G_XPATH(_leaf)                                             \
+	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/" \
+	"frr-bgp:bgp/global/afi-safis/afi-safi/l2vpn-evpn/" _leaf
+
+		{ .xpath = BGP_NB_EVPN_G_XPATH("advertise-all-vni"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_advertise_all_vni_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("advertise-default-gateway"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_advertise_default_gw_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("advertise-svi-ip"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_advertise_svi_ip_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("autort-rfc8365-compatible"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_autort_rfc8365_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "default-originate/ipv4"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_default_originate_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "default-originate/ipv6"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_default_originate_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "duplicate-address-detection/enable"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_dad_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "duplicate-address-detection/max-moves"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_dad_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "duplicate-address-detection/time"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_dad_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "duplicate-address-detection/freeze-time"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_dad_freeze_time_modify,
+			  .destroy = bgp_global_evpn_dad_freeze_time_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "duplicate-address-detection/freeze-permanent"),
+		  .cbs = {
+			  .create = bgp_global_evpn_dad_freeze_permanent_create,
+			  .destroy = bgp_global_evpn_dad_freeze_permanent_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("enable-resolve-overlay-index"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_resolve_overlay_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("flooding"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_flooding_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("mac-vrf-site-of-origin"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_soo_modify,
+			  .destroy = bgp_global_evpn_soo_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("multihoming/use-es-l3nhg"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_use_es_l3nhg_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "multihoming/disable-ead-evi-rx"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_ead_evi_rx_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "multihoming/disable-ead-evi-tx"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_ead_evi_tx_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "multihoming/ead-es-fragment-evi-limit"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_ead_es_frag_limit_modify,
+			  .destroy = bgp_global_evpn_ead_es_frag_limit_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "multihoming/ead-es-export-route-target"),
+		  .cbs = {
+			  .create = bgp_global_evpn_ead_es_rt_create,
+			  .destroy = bgp_global_evpn_ead_es_rt_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("advertise-pip/enable"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_pip_enable_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("advertise-pip/system-ip"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_pip_ip_modify,
+			  .destroy = bgp_global_evpn_pip_ip_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("advertise-pip/system-mac"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_pip_mac_modify,
+			  .destroy = bgp_global_evpn_pip_mac_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("ip-vrf/rd"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_vrf_rd_modify,
+			  .destroy = bgp_global_evpn_vrf_rd_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "ip-vrf/import-route-target"),
+		  .cbs = {
+			  .create = bgp_global_evpn_vrf_rt_create,
+			  .destroy = bgp_global_evpn_vrf_rt_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "ip-vrf/export-route-target"),
+		  .cbs = {
+			  .create = bgp_global_evpn_vrf_rt_create,
+			  .destroy = bgp_global_evpn_vrf_rt_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "ip-vrf/import-route-target-auto"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_vrf_rt_auto_modify,
+			  .destroy = bgp_global_evpn_vrf_rt_auto_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "ip-vrf/export-route-target-auto"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_vrf_rt_auto_modify,
+			  .destroy = bgp_global_evpn_vrf_rt_auto_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "ip-vrf/ipv4-unicast/enable"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_t5_enable_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "ip-vrf/ipv4-unicast/gateway-ip"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_t5_gateway_ip_modify,
+			  .destroy = bgp_global_evpn_t5_gateway_ip_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "ip-vrf/ipv4-unicast/route-map"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_t5_rmap_modify,
+			  .destroy = bgp_global_evpn_t5_rmap_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "ip-vrf/ipv6-unicast/enable"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_t5_enable_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "ip-vrf/ipv6-unicast/gateway-ip"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_t5_gateway_ip_modify,
+			  .destroy = bgp_global_evpn_t5_gateway_ip_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "ip-vrf/ipv6-unicast/route-map"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_t5_rmap_modify,
+			  .destroy = bgp_global_evpn_t5_rmap_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("vni"),
+		  .cbs = {
+			  .create  = bgp_global_evpn_vni_create,
+			  .destroy = bgp_global_evpn_vni_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("vni/rd"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_vni_rd_modify,
+			  .destroy = bgp_global_evpn_vni_rd_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("vni/import-route-target"),
+		  .cbs = {
+			  .create = bgp_global_evpn_vni_rt_create,
+			  .destroy = bgp_global_evpn_vni_rt_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("vni/export-route-target"),
+		  .cbs = {
+			  .create = bgp_global_evpn_vni_rt_create,
+			  .destroy = bgp_global_evpn_vni_rt_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH(
+			   "vni/advertise-default-gateway"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_vni_adv_gw_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("vni/advertise-svi-ip"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_vni_adv_svi_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("vni/advertise-subnet"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_vni_adv_subnet_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_EVPN_G_XPATH("vni/flooding"),
+		  .cbs = {
+			  .modify = bgp_global_evpn_vni_flooding_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+#undef BGP_NB_EVPN_G_XPATH
+
+		/*
+		 * prefix-limit EVPN fanout: the shared callbacks from
+		 * Fase B cover l2vpn-evpn across the three neighbor
+		 * contexts.
+		 */
+		/* neighbors/neighbor */
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/neighbor", "l2vpn-evpn",
+				   "direction-list"),
+		  .cbs = {
+			  .create  = bgp_peer_af_prefix_limit_create,
+			  .destroy = bgp_peer_af_prefix_limit_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/neighbor", "l2vpn-evpn",
+				   "direction-list/max-prefixes"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_max_modify,
+			  .cli_show = bgp_peer_af_prefix_limit_max_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/neighbor", "l2vpn-evpn",
+				   "direction-list/force-check"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_force_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/neighbor", "l2vpn-evpn",
+				   "direction-list/options/warning-only"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/neighbor", "l2vpn-evpn",
+				   "direction-list/options/restart-timer"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/neighbor", "l2vpn-evpn",
+				   "direction-list/options/shutdown-threshold-pct"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/neighbor", "l2vpn-evpn",
+				   "direction-list/options/tr-restart-timer"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/neighbor", "l2vpn-evpn",
+				   "direction-list/options/tr-shutdown-threshold-pct"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/neighbor", "l2vpn-evpn",
+				   "direction-list/options/tw-shutdown-threshold-pct"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/neighbor", "l2vpn-evpn",
+				   "direction-list/options/tw-warning-only"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+
+		/* neighbors/unnumbered-neighbor */
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/unnumbered-neighbor", "l2vpn-evpn",
+				   "direction-list"),
+		  .cbs = {
+			  .create  = bgp_peer_af_prefix_limit_create,
+			  .destroy = bgp_peer_af_prefix_limit_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/unnumbered-neighbor", "l2vpn-evpn",
+				   "direction-list/max-prefixes"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_max_modify,
+			  .cli_show = bgp_peer_af_prefix_limit_max_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/unnumbered-neighbor", "l2vpn-evpn",
+				   "direction-list/force-check"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_force_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/unnumbered-neighbor", "l2vpn-evpn",
+				   "direction-list/options/warning-only"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/unnumbered-neighbor", "l2vpn-evpn",
+				   "direction-list/options/restart-timer"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/unnumbered-neighbor", "l2vpn-evpn",
+				   "direction-list/options/shutdown-threshold-pct"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/unnumbered-neighbor", "l2vpn-evpn",
+				   "direction-list/options/tr-restart-timer"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/unnumbered-neighbor", "l2vpn-evpn",
+				   "direction-list/options/tr-shutdown-threshold-pct"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/unnumbered-neighbor", "l2vpn-evpn",
+				   "direction-list/options/tw-shutdown-threshold-pct"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("neighbors/unnumbered-neighbor", "l2vpn-evpn",
+				   "direction-list/options/tw-warning-only"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+
+		/* peer-groups/peer-group */
+		{ .xpath = BGP_NB_PL_XPATH("peer-groups/peer-group", "l2vpn-evpn",
+				   "direction-list"),
+		  .cbs = {
+			  .create  = bgp_peer_af_prefix_limit_create,
+			  .destroy = bgp_peer_af_prefix_limit_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("peer-groups/peer-group", "l2vpn-evpn",
+				   "direction-list/max-prefixes"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_max_modify,
+			  .cli_show = bgp_peer_af_prefix_limit_max_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("peer-groups/peer-group", "l2vpn-evpn",
+				   "direction-list/force-check"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_force_modify,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("peer-groups/peer-group", "l2vpn-evpn",
+				   "direction-list/options/warning-only"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("peer-groups/peer-group", "l2vpn-evpn",
+				   "direction-list/options/restart-timer"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("peer-groups/peer-group", "l2vpn-evpn",
+				   "direction-list/options/shutdown-threshold-pct"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("peer-groups/peer-group", "l2vpn-evpn",
+				   "direction-list/options/tr-restart-timer"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("peer-groups/peer-group", "l2vpn-evpn",
+				   "direction-list/options/tr-shutdown-threshold-pct"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("peer-groups/peer-group", "l2vpn-evpn",
+				   "direction-list/options/tw-shutdown-threshold-pct"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_PL_XPATH("peer-groups/peer-group", "l2vpn-evpn",
+				   "direction-list/options/tw-warning-only"),
+		  .cbs = {
+			  .modify = bgp_peer_af_prefix_limit_option_modify,
+			  .destroy = bgp_peer_af_prefix_limit_option_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+
 #undef BGP_NB_PL_XPATH
 #undef BGP_NB_AF_XPATH
 

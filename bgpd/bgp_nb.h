@@ -557,8 +557,89 @@ _BGP_CLI(bgp_peer_group_ipv6_listen_range);
 void bgp_nb_handled_by_parent_cli_show(struct vty *, const struct lyd_node *,
 				       bool);
 
+
+/* EVPN global (l2vpn-evpn) — Fase C fatia 1 */
+int bgp_global_evpn_advertise_all_vni_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_advertise_default_gw_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_advertise_svi_ip_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_autort_rfc8365_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_default_originate_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_resolve_overlay_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_flooding_modify(struct nb_cb_modify_args *args);
+int bgp_global_evpn_soo_modify(struct nb_cb_modify_args *args);
+int bgp_global_evpn_soo_destroy(struct nb_cb_destroy_args *args);
+int bgp_global_evpn_dad_modify(struct nb_cb_modify_args *args);
+int bgp_global_evpn_dad_freeze_time_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_dad_freeze_time_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_global_evpn_dad_freeze_permanent_create(
+	struct nb_cb_create_args *args);
+int bgp_global_evpn_dad_freeze_permanent_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_global_evpn_use_es_l3nhg_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_ead_evi_rx_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_ead_evi_tx_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_ead_es_frag_limit_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_ead_es_frag_limit_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_global_evpn_ead_es_rt_create(
+	struct nb_cb_create_args *args);
+int bgp_global_evpn_ead_es_rt_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_global_evpn_pip_enable_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_pip_ip_modify(struct nb_cb_modify_args *args);
+int bgp_global_evpn_pip_ip_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_global_evpn_pip_mac_modify(struct nb_cb_modify_args *args);
+int bgp_global_evpn_pip_mac_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_global_evpn_vrf_rd_modify(struct nb_cb_modify_args *args);
+int bgp_global_evpn_vrf_rd_destroy(struct nb_cb_destroy_args *args);
+int bgp_global_evpn_vrf_rt_create(struct nb_cb_create_args *args);
+int bgp_global_evpn_vrf_rt_destroy(struct nb_cb_destroy_args *args);
+int bgp_global_evpn_vrf_rt_auto_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_vrf_rt_auto_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_global_evpn_t5_enable_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_t5_gateway_ip_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_t5_gateway_ip_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_global_evpn_t5_rmap_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_t5_rmap_destroy(struct nb_cb_destroy_args *args);
+int bgp_global_evpn_vni_create(struct nb_cb_create_args *args);
+int bgp_global_evpn_vni_destroy(struct nb_cb_destroy_args *args);
+int bgp_global_evpn_vni_rd_modify(struct nb_cb_modify_args *args);
+int bgp_global_evpn_vni_rd_destroy(struct nb_cb_destroy_args *args);
+int bgp_global_evpn_vni_rt_create(struct nb_cb_create_args *args);
+int bgp_global_evpn_vni_rt_destroy(struct nb_cb_destroy_args *args);
+int bgp_global_evpn_vni_adv_gw_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_vni_adv_svi_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_vni_adv_subnet_modify(
+	struct nb_cb_modify_args *args);
+int bgp_global_evpn_vni_flooding_modify(
+	struct nb_cb_modify_args *args);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif /* _FRR_BGP_NB_H_ */
+
