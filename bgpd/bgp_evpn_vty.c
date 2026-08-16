@@ -4806,7 +4806,9 @@ void bgp_evpn_pip_ip_set(struct bgp *bgp_vrf, struct in_addr ip)
 		return;
 
 	bgp_vrf->evpn_info->pip_ip_static.ipaddr_v4 = ip;
+	SET_IPADDR_V4(&bgp_vrf->evpn_info->pip_ip_static);
 	bgp_vrf->evpn_info->pip_ip.ipaddr_v4 = ip;
+	SET_IPADDR_V4(&bgp_vrf->evpn_info->pip_ip);
 	bgp_evpn_pip_update_routes(bgp_vrf);
 }
 
