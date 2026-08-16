@@ -9353,6 +9353,7 @@ static struct bgpevpn *bgp_nb_evpn_vni_from_leaf(
 
 	if (!bgp)
 		return NULL;
+	*bgp_out = bgp;
 	return bgp_evpn_lookup_vni(bgp, yang_dnode_get_uint32(dnode, "../vni"));
 }
 
