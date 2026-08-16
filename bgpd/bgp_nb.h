@@ -611,8 +611,6 @@ int bgp_global_evpn_vrf_rt_create(struct nb_cb_create_args *args);
 int bgp_global_evpn_vrf_rt_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_evpn_vrf_rt_auto_modify(
 	struct nb_cb_modify_args *args);
-int bgp_global_evpn_vrf_rt_auto_destroy(
-	struct nb_cb_destroy_args *args);
 int bgp_global_evpn_t5_enable_modify(
 	struct nb_cb_modify_args *args);
 int bgp_global_evpn_t5_gateway_ip_modify(

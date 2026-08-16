@@ -4635,18 +4635,14 @@ const struct frr_yang_module_info frr_bgp_info = {
 			  .destroy = bgp_global_evpn_vrf_rt_destroy,
 			  .cli_show = bgp_nb_handled_by_parent_cli_show,
 		  } },
-		{ .xpath = BGP_NB_EVPN_G_XPATH(
-			   "ip-vrf/import-route-target-auto"),
+		{ .xpath = BGP_NB_EVPN_G_XPATH("ip-vrf/import-route-target-auto"),
 		  .cbs = {
 			  .modify = bgp_global_evpn_vrf_rt_auto_modify,
-			  .destroy = bgp_global_evpn_vrf_rt_auto_destroy,
 			  .cli_show = bgp_nb_handled_by_parent_cli_show,
 		  } },
-		{ .xpath = BGP_NB_EVPN_G_XPATH(
-			   "ip-vrf/export-route-target-auto"),
+		{ .xpath = BGP_NB_EVPN_G_XPATH("ip-vrf/export-route-target-auto"),
 		  .cbs = {
 			  .modify = bgp_global_evpn_vrf_rt_auto_modify,
-			  .destroy = bgp_global_evpn_vrf_rt_auto_destroy,
 			  .cli_show = bgp_nb_handled_by_parent_cli_show,
 		  } },
 		{ .xpath = BGP_NB_EVPN_G_XPATH(

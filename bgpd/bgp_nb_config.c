@@ -9132,29 +9132,6 @@ int bgp_global_evpn_vrf_rt_auto_modify(struct nb_cb_modify_args *args)
 	return NB_OK;
 }
 
-int bgp_global_evpn_vrf_rt_auto_destroy(struct nb_cb_destroy_args *args)
-{
-	struct bgp *bgp;
-
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-		return NB_OK;
-	case NB_EV_APPLY:
-		break;
-	}
-	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
-			      args->errmsg_len);
-	if (!bgp)
-		return NB_ERR;
-	if (bgp_nb_evpn_rt_direction(args->dnode) == RT_TYPE_IMPORT)
-		bgp_evpn_unconfigure_import_auto_rt_for_vrf(bgp);
-	else
-		bgp_evpn_unconfigure_export_auto_rt_for_vrf(bgp);
-	return NB_OK;
-}
-
 /*
  * type-5 advertise: combined reapply from the ipvX-unicast container
  * (the DS is the source of truth). disable clears flags, rmap and
