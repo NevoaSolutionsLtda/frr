@@ -8804,10 +8804,22 @@ static int bgp_nb_evpn_ead_es_rt_apply(enum nb_event event,
 	struct ecommunity *ecom;
 	const char *rt_str;
 
+	rt_str = yang_dnode_get_string(dnode, NULL);
+
+	if (event == NB_EV_VALIDATE) {
+		ecom = ecommunity_str2com(rt_str,
+					  ECOMMUNITY_ROUTE_TARGET, 0);
+		if (!ecom) {
+			snprintfrr(errmsg, errmsg_len,
+				   "%% Malformed Route Target list");
+			return NB_ERR_VALIDATION;
+		}
+		ecommunity_free(&ecom);
+		return NB_OK;
+	}
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	rt_str = yang_dnode_get_string(dnode, NULL);
 	ecom = ecommunity_str2com(rt_str, ECOMMUNITY_ROUTE_TARGET, 0);
 	if (!ecom) {
 		snprintfrr(errmsg, errmsg_len,
@@ -8856,7 +8868,7 @@ int bgp_global_evpn_ead_es_rt_create(struct nb_cb_create_args *args)
 				   "This command is only supported under EVPN VRF");
 			return NB_ERR_VALIDATION;
 		}
-		return NB_OK;
+		break;
 	}
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
