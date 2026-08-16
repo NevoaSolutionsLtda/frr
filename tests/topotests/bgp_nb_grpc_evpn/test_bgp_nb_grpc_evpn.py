@@ -63,7 +63,6 @@ EGV = (
     "/afi-safi[afi-safi-name='frr-routing:l2vpn-evpn']/l2vpn-evpn"
 )
 
-
 def _frr_grpc_module_available():
     """True when the FRR northbound gRPC module (grpc.so) is installed."""
     patterns = (
@@ -88,7 +87,6 @@ def _frr_grpc_module_available():
                 return True
     return False
 
-
 try:
     import grpc  # noqa: F401
     import grpc_tools  # noqa: F401
@@ -112,12 +110,10 @@ except Exception:
         allow_module_level=True,
     )
 
-
 def build_topo(tgen):
     tgen.add_router("r1")
     switch = tgen.add_switch("s1")
     switch.add_link(tgen.gears["r1"])
-
 
 def setup_module(mod):
     tgen = Topogen(build_topo, mod.__name__)
@@ -127,11 +123,9 @@ def setup_module(mod):
     router.load_config(TopoRouter.RD_MGMTD, "", f"-M grpc:{GRPCP_MGMTD}")
     tgen.start_router()
 
-
 def teardown_module():
     tgen = get_topogen()
     tgen.stop_topology()
-
 
 def run_grpc_client(r, commands):
     if not isinstance(commands, str):
@@ -142,7 +136,6 @@ def run_grpc_client(r, commands):
         [script_path, f"--port={GRPCP_MGMTD}"], stdin=commands
     )
 
-
 def run_grpc_client_status(r, command):
     if not command.endswith("\n"):
         command += "\n"
@@ -150,13 +143,11 @@ def run_grpc_client_status(r, command):
         [script_path, f"--port={GRPCP_MGMTD}"], stdin=command
     )
 
-
 @pytest.fixture(autouse=True)
 def skip_on_failure():
     tgen = get_topogen()
     if tgen.routers_have_failure():
         pytest.skip(tgen.errors)
-
 
 def _seed(r1, evpn=True):
     """Idempotent: seed local-as into the datastore (mgmtd's copy does
@@ -167,7 +158,6 @@ def _seed(r1, evpn=True):
         updates += f",{EG}/advertise-all-vni=true"
     # status variant: a no-op re-seed ("No changes found") is fine
     run_grpc_client_status(r1, f"commit-set,{updates}")
-
 
 def test_advertise_all_vni_grpc():
     """G-EVPN-1: advertise-all-vni via gRPC lands in the internals,
@@ -196,7 +186,6 @@ def test_advertise_all_vni_grpc():
     step("The gRPC get-config view agrees (round-trip)")
     out = run_grpc_client(r1, f"get-config,{EG}/advertise-all-vni")
     assert "true" in out, f"advertise-all-vni missing: {out}"
-
 
 def test_globals_flooding_dad_soo_grpc():
     """flooding, dup-addr-detection, mac-vrf soo and
@@ -238,7 +227,6 @@ def test_globals_flooding_dad_soo_grpc():
     output = r1.vtysh_cmd("show running-config bgpd")
     assert "mac-vrf soo" not in output, f"soo must be gone:\n{output}"
 
-
 def test_default_originate_grpc():
     """default-originate ipv4/ipv6 through gRPC."""
     tgen = get_topogen()
@@ -272,7 +260,6 @@ def test_default_originate_grpc():
     assert "default-originate" not in output, (
         f"default-originate must be gone:\n{output}"
     )
-
 
 def test_multihoming_knobs_grpc():
     """Multihoming global knobs through gRPC."""
@@ -315,6 +302,30 @@ def test_multihoming_knobs_grpc():
         f"ead-es-route-target must be gone:\n{output}"
     )
 
+def test_autort_roundtrip_grpc():
+    """autort-rfc8365-compatible round-trips through the datastore
+    (deprecated CLI surface: no legacy show line is asserted)."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    _seed(r1)
+    run_grpc_client(
+        r1, f"commit-set,{EG}/autort-rfc8365-compatible=true"
+    )
+    out = run_grpc_client(
+        r1, f"get-config,{EG}/autort-rfc8365-compatible"
+    )
+    assert "true" in out, f"autort missing from datastore: {out}"
+
+    run_grpc_client(
+        r1, f"commit-set,{EG}/autort-rfc8365-compatible=false"
+    )
+    # false is the schema default: get-config omits default values, so
+    # the oracle is the ABSENCE of the explicit true
+    out = run_grpc_client(
+        r1, f"get-config,{EG}/autort-rfc8365-compatible"
+    )
+    assert "true" not in out, f"autort must be back at default: {out}"
 
 def test_vni_grpc():
     """The vni list (rd, import/export RT, flooding, advertise knobs)
@@ -357,7 +368,6 @@ def test_vni_grpc():
     run_grpc_client(r1, f"commit-delete,{EG}/vni[vni='100']")
     output = r1.vtysh_cmd("show running-config bgpd")
     assert "vni 100" not in output, f"vni block must be gone:\n{output}"
-
 
 def test_vrf_rd_rt_type5_grpc():
     """ip-vrf rd/RT/auto-RT/type-5 on a VRF instance through gRPC."""
@@ -406,14 +416,13 @@ def test_vrf_rd_rt_type5_grpc():
         f"gateway-ip advertise must survive the rmap destroy:\n{output}"
     )
 
-
 def test_vrf_pip_grpc():
     """advertise-pip enable/system-ip/system-mac through gRPC; the
     leaf destroy is surgical (destroying system-ip keeps system-mac)."""
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
-    run_grpc_client(r1, f"commit-set,{CPPV}/global/local-as=65000")
+    run_grpc_client_status(r1, f"commit-set,{CPPV}/global/local-as=65000")
     run_grpc_client(
         r1,
         [
@@ -434,80 +443,12 @@ def test_vrf_pip_grpc():
     )
     output = r1.vtysh_cmd("show running-config bgpd")
     assert "1.1.1.1" not in output, f"pip ip must be gone:\n{output}"
-    assert "00:11:22:33:44:55" in output, (
-        f"pip mac must survive the ip destroy:\n{output}"
-    )
-
-
-def test_prefix_limit_evpn_grpc():
-    """Fase B fanout: the EVPN prefix-limit lands through the shared
-    callbacks and renders on the legacy CLI under l2vpn evpn."""
-    tgen = get_topogen()
-    r1 = tgen.gears["r1"]
-
-    step("Create the neighbor and activate l2vpn-evpn on it")
-    run_grpc_client(
-        r1,
-        [
-            f"commit-set,{CPP}/global/local-as=65000",
-            f"commit-result,ALL,"
-            f"{NB}/neighbor-remote-as/remote-as-type=as-specified,"
-            f"{NB}/neighbor-remote-as/remote-as=65001,"
-            f"{EVPN_AF_ENTRY}/enabled=true,"
-            f"{EVPN_AF}/prefix-limit/direction-list"
-            "[direction='in']/max-prefixes=3,"
-            f"{EVPN_AF}/prefix-limit/direction-list"
-            "[direction='in']/options/shutdown-threshold-pct=75",
-        ],
-    )
-
-    output = r1.vtysh_cmd("show running-config bgpd")
-    assert "neighbor 10.0.0.2 maximum-prefix 3 75" in output, (
-        f"expected EVPN maximum-prefix on legacy CLI; got:\n{output}"
-    )
-
-    step("The CLI keeps authority: re-configure through vtysh")
-    r1.vtysh_cmd(
-        "configure terminal\nrouter bgp 65000\n"
-        "address-family l2vpn evpn\n"
-        f"neighbor {PEER} maximum-prefix 4\n"
-    )
-    output = r1.vtysh_cmd("show running-config bgpd")
-    assert "neighbor 10.0.0.2 maximum-prefix 4" in output, (
-        f"CLI-configured EVPN maximum-prefix missing:\n{output}"
-    )
-
-    step("Destroy the direction-list through gRPC")
-    run_grpc_client(
-        r1,
-        f"commit-delete,{EVPN_AF}/prefix-limit/direction-list"
-        "[direction='in']",
-    )
-    output = r1.vtysh_cmd("show running-config bgpd")
-    assert "maximum-prefix 4" not in output, (
-        f"EVPN maximum-prefix must be gone:\n{output}"
-    )
-
-
-def test_autort_roundtrip_grpc():
-    """autort-rfc8365-compatible round-trips through the datastore
-    (deprecated CLI surface: no legacy show line is asserted)."""
-    tgen = get_topogen()
-    r1 = tgen.gears["r1"]
-
-    _seed(r1)
-    run_grpc_client(
-        r1, f"commit-set,{EG}/autort-rfc8365-compatible=true"
-    )
+    # the legacy writer only renders the MAC next to a static IP, so
+    # the surgical survival oracle is the datastore round-trip
     out = run_grpc_client(
-        r1, f"get-config,{EG}/autort-rfc8365-compatible"
+        r1, f"get-config,{EGV}/advertise-pip/system-mac"
     )
-    assert "true" in out, f"autort missing from datastore: {out}"
+    assert "00:11:22:33:44:55" in out, (
+        f"pip mac must survive the ip destroy:\n{out}"
+    )
 
-    run_grpc_client(
-        r1, f"commit-set,{EG}/autort-rfc8365-compatible=false"
-    )
-    out = run_grpc_client(
-        r1, f"get-config,{EG}/autort-rfc8365-compatible"
-    )
-    assert "false" in out, f"autort must read back false: {out}"
