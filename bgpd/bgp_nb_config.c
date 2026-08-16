@@ -8212,6 +8212,51 @@ static struct bgpevpn *bgp_nb_evpn_vni_lookup(const struct lyd_node *dnode,
 		bgp, yang_dnode_get_uint32(entry, "vni"));
 }
 
+
+/*
+ * Parse one route-target string into a configured RT. Handles the
+ * import-only wildcard '*:NN'/'*:MN' exactly like the CLI parser
+ * (the '*' is rewritten to '0' for ecommunity_str2com). Called in
+ * VALIDATE so malformed-yang-legal values fail the whole batch
+ * before anything is applied. Caller owns the result.
+ */
+static struct bgp_evpn_cfgd_rt *
+bgp_nb_evpn_cfgd_rt_from_str(const char *rt_str, bool wildcard_ok,
+			     char *errmsg, size_t errmsg_len)
+{
+	struct ecommunity *ecom;
+	struct bgp_evpn_cfgd_rt *cfgd_rt;
+	bool is_wildcard = false;
+	char buf[RT_ADDRSTRLEN];
+
+	if (rt_str[0] == '*') {
+		if (!wildcard_ok) {
+			snprintfrr(errmsg, errmsg_len,
+				   "%% Wildcard '*' only applicable for import: %s",
+				   rt_str);
+			return NULL;
+		}
+		strlcpy(buf, rt_str, sizeof(buf));
+		buf[0] = '0';
+		rt_str = buf;
+		is_wildcard = true;
+	}
+
+	ecom = ecommunity_str2com(rt_str, ECOMMUNITY_ROUTE_TARGET, 0);
+	if (!ecom) {
+		snprintfrr(errmsg, errmsg_len,
+			   "%% Malformed Route Target: %s", rt_str);
+		return NULL;
+	}
+	ecommunity_str(ecom);
+	cfgd_rt = bgp_evpn_cfgd_rt_from_ecom(ecom, is_wildcard);
+	ecommunity_free(&ecom);
+	if (!cfgd_rt)
+		snprintfrr(errmsg, errmsg_len,
+			   "%% Malformed Route Target: %s", rt_str);
+	return cfgd_rt;
+}
+
 /*
  * Dispatch the import/export direction from the leaf-list schema name
  * (import-route-target / export-route-target, plain and -auto).
@@ -8450,6 +8495,15 @@ int bgp_global_evpn_soo_modify(struct nb_cb_modify_args *args)
 				   "%% Please configure MAC-VRF SoO in the EVPN underlay");
 			return NB_ERR_VALIDATION;
 		}
+		ecomm_soo = ecommunity_str2com(
+			yang_dnode_get_string(args->dnode, NULL),
+			ECOMMUNITY_SITE_ORIGIN, 0);
+		if (!ecomm_soo) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "%% Malformed SoO extended community");
+			return NB_ERR_VALIDATION;
+		}
+		ecommunity_free(&ecomm_soo);
 		return NB_OK;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
@@ -9007,11 +9061,8 @@ int bgp_global_evpn_vrf_rd_destroy(struct nb_cb_destroy_args *args)
 			      args->errmsg_len);
 	if (!bgp)
 		return NB_ERR;
-	if (!is_vrf_rd_configured(bgp)) {
-		snprintfrr(args->errmsg, args->errmsg_len,
-			   "%% RD is not configured for this VRF");
-		return NB_ERR;
-	}
+	if (!is_vrf_rd_configured(bgp))
+		return NB_OK;
 	evpn_unconfigure_vrf_rd(bgp);
 	return NB_OK;
 }
@@ -9021,43 +9072,43 @@ static int bgp_nb_evpn_vrf_rt_apply(enum nb_event event,
 				    char *errmsg, size_t errmsg_len)
 {
 	struct bgp *bgp;
-	struct ecommunity *ecom;
 	struct bgp_evpn_cfgd_rt *cfgd_rt;
 	enum bgp_evpn_rt_direction direction;
 	const char *rt_str;
 
+	rt_str = yang_dnode_get_string(dnode, NULL);
+	direction = bgp_nb_evpn_rt_direction(dnode);
+
+	if (event == NB_EV_VALIDATE) {
+		cfgd_rt = bgp_nb_evpn_cfgd_rt_from_str(
+			rt_str, direction == RT_TYPE_IMPORT, errmsg,
+			errmsg_len);
+		if (!cfgd_rt)
+			return NB_ERR_VALIDATION;
+		bgp_evpn_cfgd_rt_free(cfgd_rt);
+		return NB_OK;
+	}
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	rt_str = yang_dnode_get_string(dnode, NULL);
-	ecom = ecommunity_str2com(rt_str, ECOMMUNITY_ROUTE_TARGET, 0);
-	if (!ecom) {
-		snprintfrr(errmsg, errmsg_len,
-			   "%% Malformed Route Target: %s", rt_str);
+	cfgd_rt = bgp_nb_evpn_cfgd_rt_from_str(
+		rt_str, direction == RT_TYPE_IMPORT, errmsg, errmsg_len);
+	if (!cfgd_rt)
 		return NB_ERR;
-	}
-	ecommunity_str(ecom);
-	cfgd_rt = bgp_evpn_cfgd_rt_from_ecom(ecom, false);
-	ecommunity_free(&ecom);
-	if (!cfgd_rt) {
-		snprintfrr(errmsg, errmsg_len,
-			   "%% Malformed Route Target: %s", rt_str);
-		return NB_ERR;
-	}
 
 	bgp = bgp_nb_evpn_bgp(dnode, 7, errmsg, errmsg_len);
 	if (!bgp) {
 		bgp_evpn_cfgd_rt_free(cfgd_rt);
 		return NB_ERR;
 	}
-	direction = bgp_nb_evpn_rt_direction(dnode);
 	if (is_add) {
 		if (vrf_rt_add(bgp, cfgd_rt, direction) != 0) {
-			snprintfrr(errmsg, errmsg_len,
-				   "%% RT specified already configured for this VRF: %s",
-				   rt_str);
+			/*
+			 * Idempotent re-create (CLI-converged state):
+			 * mirror the EAD-ES behaviour and accept it.
+			 */
 			bgp_evpn_cfgd_rt_free(cfgd_rt);
-			return NB_ERR;
+			return NB_OK;
 		}
 	} else {
 		if (vrf_rt_del(bgp, cfgd_rt, direction) != 0) {
@@ -9076,7 +9127,7 @@ int bgp_global_evpn_vrf_rt_create(struct nb_cb_create_args *args)
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
-		return NB_OK;
+		break;
 	case NB_EV_APPLY:
 		break;
 	}
@@ -9319,16 +9370,8 @@ int bgp_global_evpn_vni_destroy(struct nb_cb_destroy_args *args)
 	if (!bgp)
 		return NB_ERR;
 	vpn = bgp_nb_evpn_vni_lookup(args->dnode, bgp);
-	if (!vpn) {
-		snprintfrr(args->errmsg, args->errmsg_len,
-			   "%% Specified VNI does not exist");
-		return NB_ERR;
-	}
-	if (!is_vni_configured(vpn)) {
-		snprintfrr(args->errmsg, args->errmsg_len,
-			   "%% Specified VNI is not configured");
-		return NB_ERR;
-	}
+	if (!vpn || !is_vni_configured(vpn))
+		return NB_OK;
 	evpn_delete_vni(bgp, vpn);
 	return NB_OK;
 }
@@ -9427,11 +9470,8 @@ int bgp_global_evpn_vni_rd_destroy(struct nb_cb_destroy_args *args)
 			   "%% Specified VNI does not exist");
 		return NB_ERR;
 	}
-	if (!is_rd_configured(vpn)) {
-		snprintfrr(args->errmsg, args->errmsg_len,
-			   "%% RD is not configured for this VNI");
-		return NB_ERR;
-	}
+	if (!is_rd_configured(vpn))
+		return NB_OK;
 	evpn_unconfigure_rd(bgp, vpn);
 	return NB_OK;
 }
@@ -9442,29 +9482,32 @@ static int bgp_nb_evpn_vni_rt_apply(enum nb_event event,
 {
 	struct bgp *bgp;
 	struct bgpevpn *vpn;
-	struct ecommunity *ecom;
 	struct bgp_evpn_cfgd_rt *cfgd_rt;
 	enum bgp_evpn_rt_direction direction;
 	const char *rt_str;
 
+	rt_str = yang_dnode_get_string(dnode, NULL);
+	direction = bgp_nb_evpn_rt_direction(dnode);
+
+	if (event == NB_EV_VALIDATE) {
+		if (bgp_nb_evpn_vni_validate(dnode, 7, errmsg, errmsg_len)
+		    != NB_OK)
+			return NB_ERR_VALIDATION;
+		cfgd_rt = bgp_nb_evpn_cfgd_rt_from_str(
+			rt_str, direction == RT_TYPE_IMPORT, errmsg,
+			errmsg_len);
+		if (!cfgd_rt)
+			return NB_ERR_VALIDATION;
+		bgp_evpn_cfgd_rt_free(cfgd_rt);
+		return NB_OK;
+	}
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	rt_str = yang_dnode_get_string(dnode, NULL);
-	ecom = ecommunity_str2com(rt_str, ECOMMUNITY_ROUTE_TARGET, 0);
-	if (!ecom) {
-		snprintfrr(errmsg, errmsg_len,
-			   "%% Malformed Route Target: %s", rt_str);
+	cfgd_rt = bgp_nb_evpn_cfgd_rt_from_str(
+		rt_str, direction == RT_TYPE_IMPORT, errmsg, errmsg_len);
+	if (!cfgd_rt)
 		return NB_ERR;
-	}
-	ecommunity_str(ecom);
-	cfgd_rt = bgp_evpn_cfgd_rt_from_ecom(ecom, false);
-	ecommunity_free(&ecom);
-	if (!cfgd_rt) {
-		snprintfrr(errmsg, errmsg_len,
-			   "%% Malformed Route Target: %s", rt_str);
-		return NB_ERR;
-	}
 
 	bgp = bgp_nb_evpn_bgp(dnode, 7, errmsg, errmsg_len);
 	if (!bgp) {
@@ -9478,14 +9521,14 @@ static int bgp_nb_evpn_vni_rt_apply(enum nb_event event,
 			   "%% Specified VNI does not exist");
 		return NB_ERR;
 	}
-	direction = bgp_nb_evpn_rt_direction(dnode);
 	if (is_add) {
 		if (l2vni_rt_add(bgp, vpn, cfgd_rt, direction) != 0) {
-			snprintfrr(errmsg, errmsg_len,
-				   "%% RT specified already configured for this VNI: %s",
-				   rt_str);
+			/*
+			 * Idempotent re-create (CLI-converged state):
+			 * mirror the EAD-ES behaviour and accept it.
+			 */
 			bgp_evpn_cfgd_rt_free(cfgd_rt);
-			return NB_ERR;
+			return NB_OK;
 		}
 	} else {
 		if (l2vni_rt_del(bgp, vpn, cfgd_rt, direction) != 0) {
@@ -9500,16 +9543,6 @@ static int bgp_nb_evpn_vni_rt_apply(enum nb_event event,
 
 int bgp_global_evpn_vni_rt_create(struct nb_cb_create_args *args)
 {
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-		return bgp_nb_evpn_vni_validate(args->dnode, 7, args->errmsg,
-						args->errmsg_len);
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-		return NB_OK;
-	case NB_EV_APPLY:
-		break;
-	}
 	return bgp_nb_evpn_vni_rt_apply(args->event, args->dnode, true,
 					args->errmsg, args->errmsg_len);
 }

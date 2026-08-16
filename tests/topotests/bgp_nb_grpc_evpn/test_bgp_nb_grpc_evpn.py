@@ -180,8 +180,13 @@ def test_advertise_all_vni_grpc():
     )
 
     step("EVPN is effectively enabled (G-EVPN-1)")
-    output = r1.vtysh_cmd("show bgp l2vpn evpn vni json")
-    assert isinstance(output, str), "show bgp l2vpn evpn vni must answer"
+    rc, output, _ = r1.net.cmd_status(
+        ["vtysh", "-c", "show bgp l2vpn evpn vni json"]
+    )
+    assert rc == 0 and output is not None and len(output.strip()) > 0, (
+        f"show bgp l2vpn evpn vni must answer with rc=0; "
+        f"got rc={rc} output={output!r}"
+    )
 
     step("The gRPC get-config view agrees (round-trip)")
     out = run_grpc_client(r1, f"get-config,{EG}/advertise-all-vni")
