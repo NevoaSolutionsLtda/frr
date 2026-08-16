@@ -9160,7 +9160,8 @@ int bgp_global_evpn_vrf_rt_auto_destroy(struct nb_cb_destroy_args *args)
  * (the DS is the source of truth). disable clears flags, rmap and
  * withdraws, mirroring the CLI no-form.
  */
-static int bgp_nb_evpn_t5_apply(struct bgp *bgp, const struct lyd_node *t5c)
+static int bgp_nb_evpn_t5_apply(struct bgp *bgp, const struct lyd_node *t5c,
+				const char *skip_leaf)
 {
 	afi_t afi;
 	bool enable = false, gw = false;
@@ -9170,9 +9171,15 @@ static int bgp_nb_evpn_t5_apply(struct bgp *bgp, const struct lyd_node *t5c)
 							  : AFI_IP6;
 	if (yang_dnode_exists(t5c, "enable"))
 		enable = yang_dnode_get_bool(t5c, "enable");
-	if (yang_dnode_exists(t5c, "gateway-ip"))
+	/*
+	 * DESTROY callbacks see the OLD tree: skip the dying leaf so the
+	 * reapply keeps the default instead of resurrecting its value.
+	 */
+	if ((!skip_leaf || strcmp(skip_leaf, "gateway-ip"))
+	    && yang_dnode_exists(t5c, "gateway-ip"))
 		gw = yang_dnode_get_bool(t5c, "gateway-ip");
-	if (yang_dnode_exists(t5c, "route-map"))
+	if ((!skip_leaf || strcmp(skip_leaf, "route-map"))
+	    && yang_dnode_exists(t5c, "route-map"))
 		rmap = yang_dnode_get_string(t5c, "route-map");
 
 	if (!enable) {
@@ -9221,7 +9228,7 @@ static int bgp_nb_evpn_t5_common(struct nb_cb_modify_args *args)
 			   "%% Only ipv4 unicast or ipv6 unicast are supported");
 		return NB_ERR;
 	}
-	return bgp_nb_evpn_t5_apply(bgp, t5c);
+	return bgp_nb_evpn_t5_apply(bgp, t5c, NULL);
 }
 
 int bgp_global_evpn_t5_enable_modify(struct nb_cb_modify_args *args)
@@ -9254,7 +9261,9 @@ int bgp_global_evpn_t5_gateway_ip_destroy(struct nb_cb_destroy_args *args)
 	t5c = bgp_nb_evpn_t5_container(args->dnode);
 	if (!t5c)
 		return NB_ERR;
-	return bgp_nb_evpn_t5_apply(bgp, t5c);
+	return bgp_nb_evpn_t5_apply(
+		bgp, t5c,
+		args->dnode->schema ? args->dnode->schema->name : NULL);
 }
 
 int bgp_global_evpn_t5_rmap_modify(struct nb_cb_modify_args *args)
@@ -9282,7 +9291,9 @@ int bgp_global_evpn_t5_rmap_destroy(struct nb_cb_destroy_args *args)
 	t5c = bgp_nb_evpn_t5_container(args->dnode);
 	if (!t5c)
 		return NB_ERR;
-	return bgp_nb_evpn_t5_apply(bgp, t5c);
+	return bgp_nb_evpn_t5_apply(
+		bgp, t5c,
+		args->dnode->schema ? args->dnode->schema->name : NULL);
 }
 
 /* ---- vni (L2VNI) list ---- */
