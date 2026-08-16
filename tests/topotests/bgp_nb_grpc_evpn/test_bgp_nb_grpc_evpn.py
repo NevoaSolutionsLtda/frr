@@ -143,6 +143,14 @@ def run_grpc_client(r, commands):
     )
 
 
+def run_grpc_client_status(r, command):
+    if not command.endswith("\n"):
+        command += "\n"
+    return r.net.cmd_status(
+        [script_path, f"--port={GRPCP_MGMTD}"], stdin=command
+    )
+
+
 @pytest.fixture(autouse=True)
 def skip_on_failure():
     tgen = get_topogen()
@@ -150,9 +158,15 @@ def skip_on_failure():
         pytest.skip(tgen.errors)
 
 
-def _enable_evpn(r1):
-    """Idempotent: turn on advertise-all-vni (EVPN) via gRPC."""
-    run_grpc_client(r1, f"commit-set,{EG}/advertise-all-vni=true")
+def _seed(r1, evpn=True):
+    """Idempotent: seed local-as into the datastore (mgmtd's copy does
+    not track CLI-written config -- NB_CLIENT_CLI exemption) and turn
+    on advertise-all-vni (EVPN) so the per-knob validations pass."""
+    updates = f"{CPP}/global/local-as=65000"
+    if evpn:
+        updates += f",{EG}/advertise-all-vni=true"
+    # status variant: a no-op re-seed ("No changes found") is fine
+    run_grpc_client_status(r1, f"commit-set,{updates}")
 
 
 def test_advertise_all_vni_grpc():
@@ -162,8 +176,12 @@ def test_advertise_all_vni_grpc():
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
-    step("Turn on advertise-all-vni through gRPC")
-    run_grpc_client(r1, f"commit-set,{EG}/advertise-all-vni=true")
+    step("Seed local-as into the datastore, then advertise-all-vni")
+    run_grpc_client(
+        r1,
+        f"commit-set,{CPP}/global/local-as=65000,"
+        f"{EG}/advertise-all-vni=true",
+    )
 
     step("The legacy CLI shows advertise-all-vni")
     output = r1.vtysh_cmd("show running-config bgpd")
@@ -186,7 +204,7 @@ def test_globals_flooding_dad_soo_grpc():
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
-    _enable_evpn(r1)
+    _seed(r1)
     step("Commit flooding disable + DAD knobs + SoO")
     run_grpc_client(
         r1,
@@ -226,6 +244,7 @@ def test_default_originate_grpc():
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
+    _seed(r1, evpn=False)
     run_grpc_client(
         r1,
         [
@@ -260,7 +279,7 @@ def test_multihoming_knobs_grpc():
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
-    _enable_evpn(r1)
+    _seed(r1)
     step("Commit use-es-l3nhg, ead-evi rx/tx, ead-es-frag and EAD-ES RT")
     run_grpc_client(
         r1,
@@ -303,7 +322,7 @@ def test_vni_grpc():
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
-    _enable_evpn(r1)
+    _seed(r1)
     step("Create vni 100 with rd + RTs (leaf modify creates the entry)")
     run_grpc_client(
         r1,
@@ -352,6 +371,7 @@ def test_vrf_rd_rt_type5_grpc():
         "route-map RM permit 10\nend\n"
     )
 
+    run_grpc_client(r1, f"commit-set,{CPPV}/global/local-as=65000")
     step("Commit rd + export RT + auto RT + type-5 knobs")
     run_grpc_client(
         r1,
@@ -393,6 +413,7 @@ def test_vrf_pip_grpc():
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
+    run_grpc_client(r1, f"commit-set,{CPPV}/global/local-as=65000")
     run_grpc_client(
         r1,
         [
@@ -474,7 +495,7 @@ def test_autort_roundtrip_grpc():
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
-    _enable_evpn(r1)
+    _seed(r1)
     run_grpc_client(
         r1, f"commit-set,{EG}/autort-rfc8365-compatible=true"
     )

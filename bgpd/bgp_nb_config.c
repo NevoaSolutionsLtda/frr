@@ -8190,10 +8190,26 @@ static vni_t bgp_nb_evpn_vni_key(const struct lyd_node *dnode)
 	return yang_dnode_get_uint32(dnode, "vni");
 }
 
+/*
+ * Resolve the bgpevpn for a callback dnode: either the vni list
+ * entry itself (create/destroy) or a leaf inside it (rd, route
+ * targets). Leaf-level reads MUST go through the parent entry --
+ * the yang wrappers abort the daemon on a missing node.
+ */
 static struct bgpevpn *bgp_nb_evpn_vni_lookup(const struct lyd_node *dnode,
 					      struct bgp *bgp)
 {
-	return bgp_evpn_lookup_vni(bgp, bgp_nb_evpn_vni_key(dnode));
+	const struct lyd_node *entry;
+
+	if (dnode->schema && !strcmp(dnode->schema->name, "vni"))
+		entry = dnode;
+	else {
+		entry = yang_dnode_get_parent(dnode, "vni");
+		if (!entry)
+			return NULL;
+	}
+	return bgp_evpn_lookup_vni(
+		bgp, yang_dnode_get_uint32(entry, "vni"));
 }
 
 /*
@@ -9466,8 +9482,7 @@ static int bgp_nb_evpn_vni_rt_apply(enum nb_event event,
 		bgp_evpn_cfgd_rt_free(cfgd_rt);
 		return NB_ERR;
 	}
-	vpn = bgp_evpn_lookup_vni(bgp,
-				  yang_dnode_get_uint32(dnode, "../vni"));
+	vpn = bgp_nb_evpn_vni_lookup(dnode, bgp);
 	if (!vpn) {
 		bgp_evpn_cfgd_rt_free(cfgd_rt);
 		snprintfrr(errmsg, errmsg_len,
