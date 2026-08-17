@@ -9,7 +9,7 @@
  * tree. The trailing comment is the stub class column:
  * core = reject-strict for programmatic clients,
  * warn = NB_OK no-op with aggregated warning.
- * Current population: 3 core, 1631 warn.
+ * Current population: 0 core, 1631 warn.
  *
  * Real handlers for any of these xpaths should be
  * added to bgp_nb.c (above the #include of this file)
@@ -547,12 +547,6 @@
   .cbs = { .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/bmp-config/target-list/afi-safis/afi-safi/ipv6-unicast/common-config/pre-policy",
   .cbs = { .modify = bgp_nb_stub_modify, } }, /* class: warn */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/bmp-config/target-list/afi-safis/afi-safi/l2vpn-evpn/common-config/loc-rib",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/bmp-config/target-list/afi-safis/afi-safi/l2vpn-evpn/common-config/post-policy",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/bmp-config/target-list/afi-safis/afi-safi/l2vpn-evpn/common-config/pre-policy",
-  .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: core */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/bmp-config/target-list/afi-safis/afi-safi/l3vpn-ipv4-unicast/common-config/loc-rib",
   .cbs = { .modify = bgp_nb_stub_modify, } }, /* class: warn */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/bmp-config/target-list/afi-safis/afi-safi/l3vpn-ipv4-unicast/common-config/post-policy",

@@ -19,6 +19,7 @@
 #include "bgpd/bgp_nb.h"
 #include "bgpd/bgp_addpath.h"
 #include "bgpd/bgp_bfd.h"
+#include "bgpd/bgp_nb_bmp.h"
 #include "bgpd/bgp_conditional_adv.h"
 #include "bgpd/bgp_fsm.h"
 #include "bgpd/bgp_ls.h"
@@ -10549,4 +10550,129 @@ int bgp_global_evpn_vni_flooding_modify(struct nb_cb_modify_args *args)
 	vpn->vxlan_flood_ctrl = flood_ctrl;
 	bgp_evpn_flood_control_change(bgp);
 	return NB_OK;
+}
+
+/*
+ * ---- bmp monitor -------------------------------------------------------
+ * global/bmp-config/target-list/afi-safis/afi-safi/l2vpn-evpn/
+ * common-config/{pre,post-policy,loc-rib}: mirror the "bmp monitor
+ * <afi> <safi> <policy>" CLI onto bmp_monitor_apply(), the shared
+ * internal the DEFUN calls, so the datastore and the bgpd internals
+ * cannot drift apart.
+ *
+ * bgp_bmp.c is a dlopen module: it cannot be linked from here, so it
+ * publishes its internals through bgp_nb_bmp_ops at load time. While
+ * the module is not loaded the commit fails with an explicit error.
+ * The bmp target group must also already exist in bgpd (created with
+ * the legacy CLI -- NB_CLIENT_CLI seeding rationale, same as
+ * unnumbered neighbors): a commit against a missing group fails with
+ * an explicit error instead of a silent no-op.
+ */
+struct bgp_nb_bmp_ops bgp_nb_bmp_ops;
+
+/*
+ * Resolve the bmp target group and afi/safi for one monitor leaf.
+ * Read-only, so it runs at VALIDATE -- rejecting bad commits before
+ * any partial APPLY of a multi-change commit -- and again at APPLY.
+ * Returns 0 with *bt_out/*afi_out/*safi_out filled, -1 with errmsg.
+ */
+static int bgp_nb_bmp_afimon_resolve(struct nb_cb_modify_args *args,
+				     afi_t *afi_out, safi_t *safi_out,
+				     struct bmp_targets **bt_out)
+{
+	const struct lyd_node *af_entry, *target_entry;
+	const char *afi_safi_id, *name;
+	struct bmp_targets *bt;
+	struct bgp *bgp;
+	afi_t afi;
+	safi_t safi;
+
+	if (!bgp_nb_bmp_ops.find_target || !bgp_nb_bmp_ops.monitor_apply) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bmp monitor: the bgpd_bmp module is not loaded");
+		return -1;
+	}
+
+	/* afi-safi list entry -> target-name key of the enclosing bmp
+	 * target-list; the control-plane-protocol entry carrying the
+	 * vrf key sits 9 hops up from the leaf.
+	 */
+	af_entry = yang_dnode_get_parent(args->dnode, "afi-safi");
+	target_entry = af_entry ?
+		yang_dnode_get_parent(af_entry, "target-list") : NULL;
+	if (!target_entry) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bmp monitor: missing bmp target-list");
+		return -1;
+	}
+
+	name = yang_dnode_get_string(target_entry, "target-name");
+	afi_safi_id = yang_dnode_get_string(af_entry, "afi-safi-name");
+	if (bgp_nb_af_id_to_afi_safi(afi_safi_id, &afi, &safi) < 0) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bmp monitor: unknown afi-safi %s", afi_safi_id);
+		return -1;
+	}
+
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 9);
+	if (!bgp) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bmp monitor: bgp instance not found");
+		return -1;
+	}
+
+	bt = bgp_nb_bmp_ops.find_target(bgp, name);
+	if (!bt) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bmp targets %s not found (create it with the CLI first)",
+			   name);
+		return -1;
+	}
+
+	*bt_out = bt;
+	*afi_out = afi;
+	*safi_out = safi;
+	return 0;
+}
+
+static int bgp_nb_bmp_afimon_modify(struct nb_cb_modify_args *args,
+				    uint8_t flag)
+{
+	struct bmp_targets *bt = NULL;
+	afi_t afi = 0;
+	safi_t safi = 0;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		if (bgp_nb_bmp_afimon_resolve(args, &afi, &safi, &bt) < 0)
+			return NB_ERR_VALIDATION;
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+
+	if (bgp_nb_bmp_afimon_resolve(args, &afi, &safi, &bt) < 0)
+		return NB_ERR;
+
+	bgp_nb_bmp_ops.monitor_apply(bt, afi, safi, flag,
+				     yang_dnode_get_bool(args->dnode, NULL));
+	return NB_OK;
+}
+
+int bgp_bmp_monitor_pre_policy_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_bmp_afimon_modify(args, BMP_MON_PREPOLICY);
+}
+
+int bgp_bmp_monitor_post_policy_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_bmp_afimon_modify(args, BMP_MON_POSTPOLICY);
+}
+
+int bgp_bmp_monitor_loc_rib_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_bmp_afimon_modify(args, BMP_MON_LOC_RIB);
 }

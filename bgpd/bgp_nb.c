@@ -2441,6 +2441,15 @@ const struct frr_yang_module_info frr_bgp_info = {
 #define BGP_NB_EVPN_AF_XPATH(_ctx, _leaf)                                     \
 	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/" \
 	"frr-bgp:bgp/" _ctx "/afi-safis/afi-safi/l2vpn-evpn/" _leaf
+/*
+ * bmp monitor: the l2vpn-evpn leaves of the bmp target-list mirror
+ * the "bmp monitor <afi> <safi> <policy>" CLI onto the shared
+ * bmp_monitor_apply() internal.
+ */
+#define BGP_NB_BMP_MON_XPATH(_leaf)                                            \
+	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/" \
+	"frr-bgp:bgp/global/bmp-config/target-list/afi-safis/afi-safi/" \
+	"l2vpn-evpn/common-config/" _leaf
 		{ .xpath = BGP_NB_PL_XPATH("neighbors/neighbor", "ipv4-unicast",
 					   "direction-list"),
 		  .cbs = {
@@ -5524,6 +5533,19 @@ const struct frr_yang_module_info frr_bgp_info = {
 		  .cbs = {
 			  .modify = bgp_neighbor_af_upa_modify,
 			  .cli_show = bgp_neighbor_af_upa_cli_show,
+		  } },
+
+		{ .xpath = BGP_NB_BMP_MON_XPATH("pre-policy"),
+		  .cbs = {
+			  .modify = bgp_bmp_monitor_pre_policy_modify,
+		  } },
+		{ .xpath = BGP_NB_BMP_MON_XPATH("post-policy"),
+		  .cbs = {
+			  .modify = bgp_bmp_monitor_post_policy_modify,
+		  } },
+		{ .xpath = BGP_NB_BMP_MON_XPATH("loc-rib"),
+		  .cbs = {
+			  .modify = bgp_bmp_monitor_loc_rib_modify,
 		  } },
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/ipv4-listen-range",

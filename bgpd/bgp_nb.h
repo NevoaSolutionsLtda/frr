@@ -723,6 +723,10 @@ int bgp_global_evpn_vni_adv_subnet_modify(
 int bgp_global_evpn_vni_flooding_modify(
 	struct nb_cb_modify_args *args);
 
+int bgp_bmp_monitor_pre_policy_modify(struct nb_cb_modify_args *args);
+int bgp_bmp_monitor_post_policy_modify(struct nb_cb_modify_args *args);
+int bgp_bmp_monitor_loc_rib_modify(struct nb_cb_modify_args *args);
+
 #ifdef __cplusplus
 }
 #endif
