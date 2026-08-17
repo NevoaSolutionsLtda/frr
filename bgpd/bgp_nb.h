@@ -383,6 +383,7 @@ _BGP_NB_PEER_AF_FLAG_DECL(attr_unchanged_next_hop);
 _BGP_NB_PEER_AF_FLAG_DECL(attr_unchanged_med);
 _BGP_NB_PEER_AF_FLAG_DECL(rmap_import);
 _BGP_NB_PEER_AF_FLAG_DECL(rmap_export);
+_BGP_NB_PEER_AF_FLAG_DECL(upa);
 #undef _BGP_NB_PEER_AF_FLAG_DECL
 
 /* prefix-limit (shared across neighbor/unnumbered/peer-group) */
@@ -390,6 +391,75 @@ int bgp_peer_af_prefix_limit_create(struct nb_cb_create_args *args);
 int bgp_peer_af_prefix_limit_destroy(struct nb_cb_destroy_args *args);
 int bgp_peer_af_prefix_limit_max_modify(struct nb_cb_modify_args *args);
 int bgp_peer_af_prefix_limit_force_modify(struct nb_cb_modify_args *args);
+
+/* per-AF neighbor fanout (l2vpn-evpn S059; shared across the three
+ * neighbor contexts)
+ */
+int bgp_neighbor_af_addpath_rx_limit_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_addpath_rx_limit_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_addpath_best_selected_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_addpath_best_selected_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_allow_own_as_modify(struct nb_cb_modify_args *args);
+int bgp_neighbor_af_allow_own_as_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_allow_own_origin_as_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_allow_own_origin_as_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_allowas_in_route_map_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_allowas_in_route_map_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_cond_adv_advertise_map_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_cond_adv_advertise_map_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_cond_adv_exist_map_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_cond_adv_exist_map_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_cond_adv_non_exist_map_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_cond_adv_non_exist_map_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_access_list_import_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_access_list_import_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_access_list_export_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_access_list_export_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_as_path_filter_import_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_as_path_filter_import_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_as_path_filter_export_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_as_path_filter_export_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_plist_import_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_plist_import_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_plist_export_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_plist_export_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_unsuppress_map_import_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_unsuppress_map_import_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_unsuppress_map_export_modify(
+	struct nb_cb_modify_args *args);
+int bgp_neighbor_af_unsuppress_map_export_destroy(
+	struct nb_cb_destroy_args *args);
+int bgp_neighbor_af_soo_modify(struct nb_cb_modify_args *args);
+int bgp_neighbor_af_soo_destroy(struct nb_cb_destroy_args *args);
 int bgp_peer_af_prefix_limit_option_modify(
 	struct nb_cb_modify_args *args);
 int bgp_peer_af_prefix_limit_option_destroy(
@@ -538,6 +608,24 @@ _BGP_CLI(bgp_neighbor_af_disable_addpath_rx);
 _BGP_CLI(bgp_neighbor_af_add_paths_path_type);
 _BGP_CLI(bgp_neighbor_af_rmap_import);
 _BGP_CLI(bgp_neighbor_af_rmap_export);
+_BGP_CLI(bgp_neighbor_af_upa);
+_BGP_CLI(bgp_neighbor_af_addpath_rx_limit);
+_BGP_CLI(bgp_neighbor_af_addpath_best_selected);
+_BGP_CLI(bgp_neighbor_af_allow_own_as);
+_BGP_CLI(bgp_neighbor_af_allow_own_origin_as);
+_BGP_CLI(bgp_neighbor_af_allowas_in_route_map);
+_BGP_CLI(bgp_neighbor_af_cond_adv_advertise_map);
+_BGP_CLI(bgp_neighbor_af_cond_adv_exist_map);
+_BGP_CLI(bgp_neighbor_af_cond_adv_non_exist_map);
+_BGP_CLI(bgp_neighbor_af_access_list_import);
+_BGP_CLI(bgp_neighbor_af_access_list_export);
+_BGP_CLI(bgp_neighbor_af_as_path_filter_import);
+_BGP_CLI(bgp_neighbor_af_as_path_filter_export);
+_BGP_CLI(bgp_neighbor_af_plist_import);
+_BGP_CLI(bgp_neighbor_af_plist_export);
+_BGP_CLI(bgp_neighbor_af_unsuppress_map_import);
+_BGP_CLI(bgp_neighbor_af_unsuppress_map_export);
+_BGP_CLI(bgp_neighbor_af_soo);
 _BGP_CLI(bgp_peer_af_prefix_limit_max);
 _BGP_CLI(bgp_global_af_network_config);
 _BGP_CLI(bgp_global_af_network_pl);

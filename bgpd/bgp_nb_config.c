@@ -4949,28 +4949,33 @@ int bgp_neighbor_capabilities_negotiate_destroy(struct nb_cb_destroy_args *args)
 static int bgp_nb_af_id_to_afi_safi(const char *afi_safi_id, afi_t *afi_out,
 				    safi_t *safi_out);
 
+static struct peer *bgp_nb_peer_ctx_lookup(const struct lyd_node *af_entry);
+
 static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode, int ups,
 				 struct peer **peer_out, afi_t *afi_out,
 				 safi_t *safi_out)
 {
-	static const char *const af_rel[] = { NULL, "../", "../../",
-					      "../../../" };
-	static const char *const peer_rel[] = { NULL, "../../..",
-						"../../../..",
-						"../../../../.." };
+	const struct lyd_node *af_entry;
 	struct peer *peer;
 	const char *afi_safi_id;
-	char key_xpath[64];
 
 	assert(ups >= 1 && ups <= 3);
 
-	peer = bgp_nb_lookup_peer(dnode, peer_rel[ups], 5 + ups);
+	/*
+	 * afi-safi entries are instantiated under neighbors/neighbor,
+	 * neighbors/unnumbered-neighbor and peer-groups/peer-group;
+	 * resolve the peer by probing the context list key so the
+	 * per-AF callbacks serve all three contexts (PL pattern).
+	 */
+	af_entry = yang_dnode_get_parent(dnode, "afi-safi");
+	if (!af_entry)
+		return -1;
+
+	peer = bgp_nb_peer_ctx_lookup(af_entry);
 	if (!peer)
 		return -1;
 
-	snprintfrr(key_xpath, sizeof(key_xpath), "%safi-safi-name",
-		 af_rel[ups]);
-	afi_safi_id = yang_dnode_get_string(dnode, "%s", key_xpath);
+	afi_safi_id = yang_dnode_get_string(af_entry, "afi-safi-name");
 	if (!afi_safi_id)
 		return -1;
 
@@ -5159,6 +5164,7 @@ BGP_NEIGHBOR_AF_FLAG_MOD_CB(attr_unchanged_next_hop,
 			PEER_FLAG_NEXTHOP_UNCHANGED, 3)
 BGP_NEIGHBOR_AF_FLAG_MOD_CB(attr_unchanged_med,
 			PEER_FLAG_MED_UNCHANGED, 3)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(upa, PEER_FLAG_UPA, 2)
 
 /*
  * encapsulation/type is a leaf-list: each entry maps to one
@@ -5736,6 +5742,685 @@ int bgp_peer_af_prefix_limit_option_destroy(struct nb_cb_destroy_args *args)
 	return bgp_nb_pl_option_common(
 		args->dnode,
 		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+/*
+ * Per-AF neighbor fanout (S059): the l2vpn-evpn per-neighbor knobs
+ * under neighbors/neighbor, neighbors/unnumbered-neighbor and
+ * peer-groups/peer-group. The callbacks resolve the peer through the
+ * context-probing lookup above, so the same callbacks serve all three
+ * contexts, and every knob maps 1:1 onto the legacy setter the CLI
+ * DEFUNs call (peer_allowas_in_set, peer_distribute_set,
+ * peer_advertise_map_set, peer_unsuppress_map_set, the addpath and
+ * SoO paths). Multi-leaf knobs follow the Fase B datastore-truth
+ * pattern: each callback re-derives the full knob set from the
+ * sibling leaves and destroy skips the dying leaf (the dnode shows
+ * the OLD tree on destroy).
+ */
+
+/*
+ * addpath-rx-paths-limit: the flag table maps the limit flag to
+ * peer_change_none, so the capability announce is driven here exactly
+ * like the CLI DEFUN does (flag, then the send limit, then the
+ * dynamic capability update).
+ */
+static int bgp_nb_addpath_rx_limit_apply(const struct lyd_node *dnode,
+					 char *errmsg, size_t errmsg_len,
+					 bool set)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	int ret;
+
+	if (bgp_nb_peer_af_lookup(dnode, 3, &peer, &afi, &safi) < 0)
+		return set ? NB_ERR : NB_OK;
+	ret = set ? peer_af_flag_set(peer, afi, safi,
+				     PEER_FLAG_ADDPATH_RX_PATHS_LIMIT)
+		  : peer_af_flag_unset(peer, afi, safi,
+				       PEER_FLAG_ADDPATH_RX_PATHS_LIMIT);
+	peer->addpath_paths_limit[afi][safi].send =
+		set ? yang_dnode_get_uint16(dnode, NULL) : 0;
+	bgp_capability_send(peer->connection, afi, safi,
+			    CAPABILITY_CODE_PATHS_LIMIT,
+			    CAPABILITY_ACTION_SET);
+	return bgp_nb_setter_result(ret, errmsg, errmsg_len);
+}
+
+int bgp_neighbor_af_addpath_rx_limit_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_addpath_rx_limit_apply(args->dnode, args->errmsg,
+					     args->errmsg_len, true);
+}
+
+int bgp_neighbor_af_addpath_rx_limit_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_addpath_rx_limit_apply(args->dnode, args->errmsg,
+					     args->errmsg_len, false);
+}
+
+/*
+ * addpath-tx-best-selected: only instantiable when path-type is
+ * best-selected (schema when); destroy resets the count like the
+ * legacy "no" form.
+ */
+static int bgp_nb_addpath_best_selected_apply(
+	const struct lyd_node *dnode, bool set)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+
+	if (bgp_nb_peer_af_lookup(dnode, 3, &peer, &afi, &safi) < 0)
+		return set ? NB_ERR : NB_OK;
+	bgp_addpath_set_peer_type(peer, afi, safi,
+				  BGP_ADDPATH_BEST_SELECTED,
+				  set ? yang_dnode_get_uint8(dnode, NULL)
+				      : 0);
+	return NB_OK;
+}
+
+int bgp_neighbor_af_addpath_best_selected_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_addpath_best_selected_apply(args->dnode, true);
+}
+
+int bgp_neighbor_af_addpath_best_selected_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_addpath_best_selected_apply(args->dnode, false);
+}
+
+/*
+ * allowas-in: one legacy knob fed by three sibling leaves
+ * (allow-own-as, allow-own-origin-as, allowas-in-route-map). The
+ * datastore is the source of truth: every modify re-applies the
+ * setter with all surviving siblings and every destroy skips the
+ * dying leaf; nothing left standing maps onto peer_allowas_in_unset.
+ */
+static int bgp_nb_allowas_in_apply(const struct lyd_node *dnode,
+				   const char *skip_leaf, char *errmsg,
+				   size_t errmsg_len)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const struct lyd_node *aspo;
+	const char *rmap = NULL;
+	int num = BGP_ALLOWAS_IN_DEFAULT;
+	bool origin = false;
+	bool have_any = false;
+
+	/* destroy must not abort the transaction (house convention) */
+	if (bgp_nb_peer_af_lookup(dnode, 3, &peer, &afi, &safi) < 0)
+		return skip_leaf ? NB_OK : NB_ERR;
+
+	aspo = yang_dnode_get_parent(dnode, "as-path-options");
+	if (!aspo)
+		return NB_ERR;
+
+	if ((!skip_leaf || !strmatch(skip_leaf, "allow-own-as"))
+	    && yang_dnode_exists(aspo, "allow-own-as")) {
+		num = yang_dnode_get_uint8(aspo, "allow-own-as");
+		have_any = true;
+	}
+	if ((!skip_leaf || !strmatch(skip_leaf, "allow-own-origin-as"))
+	    && yang_dnode_exists(aspo, "allow-own-origin-as")
+	    && yang_dnode_get_bool(aspo, "allow-own-origin-as")) {
+		origin = true;
+		have_any = true;
+	}
+	if ((!skip_leaf || !strmatch(skip_leaf, "allowas-in-route-map"))
+	    && yang_dnode_exists(aspo, "allowas-in-route-map")) {
+		rmap = yang_dnode_get_string(aspo, "allowas-in-route-map");
+		have_any = true;
+	}
+
+	if (!have_any)
+		return bgp_nb_setter_result(
+			peer_allowas_in_unset(peer, afi, safi), errmsg,
+			errmsg_len);
+
+	if (origin)
+		num = 0;
+	return bgp_nb_setter_result(
+		peer_allowas_in_set(peer, afi, safi, num, origin, rmap),
+		errmsg, errmsg_len);
+}
+
+int bgp_neighbor_af_allow_own_as_modify(struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(args->dnode, NULL, args->errmsg,
+				       args->errmsg_len);
+}
+
+int bgp_neighbor_af_allow_own_as_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+int bgp_neighbor_af_allow_own_origin_as_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(args->dnode, NULL, args->errmsg,
+				       args->errmsg_len);
+}
+
+int bgp_neighbor_af_allow_own_origin_as_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+int bgp_neighbor_af_allowas_in_route_map_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(args->dnode, NULL, args->errmsg,
+				       args->errmsg_len);
+}
+
+int bgp_neighbor_af_allowas_in_route_map_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+/*
+ * Conditional advertisement: the legacy knob needs the advertise-map
+ * AND the condition together, so a half-configured tree programs
+ * nothing; the knob arms once both halves exist. Destroy reads the
+ * OLD tree (the dying pair is still visible) and tears the pair down.
+ */
+static int bgp_nb_cond_adv_apply(const struct lyd_node *dnode, bool set,
+				 char *errmsg, size_t errmsg_len)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const struct lyd_node *ca;
+	const char *adv = NULL;
+	const char *cond = NULL;
+	bool condition = CONDITION_EXIST;
+
+	if (bgp_nb_peer_af_lookup(dnode, 3, &peer, &afi, &safi) < 0)
+		return set ? NB_ERR : NB_OK;
+
+	ca = yang_dnode_get_parent(dnode, "conditional-advertisement");
+	if (!ca)
+		return set ? NB_ERR : NB_OK;
+
+	if (yang_dnode_exists(ca, "advertise-map"))
+		adv = yang_dnode_get_string(ca, "advertise-map");
+	if (yang_dnode_exists(ca, "exist-map")) {
+		cond = yang_dnode_get_string(ca, "exist-map");
+		condition = CONDITION_EXIST;
+	} else if (yang_dnode_exists(ca, "non-exist-map")) {
+		cond = yang_dnode_get_string(ca, "non-exist-map");
+		condition = CONDITION_NON_EXIST;
+	}
+
+	if (set) {
+		if (!adv || !cond)
+			return NB_OK;
+		return bgp_nb_setter_result(
+			peer_advertise_map_set(
+				peer, afi, safi, adv,
+				route_map_lookup_by_name(adv), cond,
+				route_map_lookup_by_name(cond), condition),
+			errmsg, errmsg_len);
+	}
+
+	if (!adv && !cond)
+		return NB_OK;
+	return bgp_nb_setter_result(
+		peer_advertise_map_unset(
+			peer, afi, safi, adv, adv ? route_map_lookup_by_name(adv) : NULL,
+			cond, cond ? route_map_lookup_by_name(cond) : NULL,
+			condition),
+		errmsg, errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_advertise_map_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, true, args->errmsg,
+				     args->errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_advertise_map_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, false, args->errmsg,
+				     args->errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_exist_map_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, true, args->errmsg,
+				     args->errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_exist_map_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, false, args->errmsg,
+				     args->errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_non_exist_map_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, true, args->errmsg,
+				     args->errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_non_exist_map_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, false, args->errmsg,
+				     args->errmsg_len);
+}
+
+/*
+ * Per-AF name-based filters: distribute-list (access-list),
+ * filter-list (as-path access-list) and prefix-list. Same shape as
+ * the route-map filters above: bind by name, the referenced object
+ * does not have to exist yet.
+ */
+static int bgp_neighbor_af_name_filter_modify(
+	struct nb_cb_modify_args *args, int kind, int direct)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const char *name;
+	int ret = 0;
+
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_ERR;
+	name = yang_dnode_get_string(args->dnode, NULL);
+	switch (kind) {
+	case 0:
+		ret = peer_distribute_set(peer, afi, safi, direct, name);
+		break;
+	case 1:
+		ret = peer_aslist_set(peer, afi, safi, direct, name);
+		break;
+	case 2:
+		ret = peer_prefix_list_set(peer, afi, safi, direct, name);
+		break;
+	}
+	return bgp_nb_setter_result(ret, args->errmsg, args->errmsg_len);
+}
+
+static int bgp_neighbor_af_name_filter_destroy(
+	struct nb_cb_destroy_args *args, int kind, int direct)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	int ret = 0;
+
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_OK;
+	switch (kind) {
+	case 0:
+		ret = peer_distribute_unset(peer, afi, safi, direct);
+		break;
+	case 1:
+		ret = peer_aslist_unset(peer, afi, safi, direct);
+		break;
+	case 2:
+		ret = peer_prefix_list_unset(peer, afi, safi, direct);
+		break;
+	}
+	return bgp_nb_setter_result(ret, args->errmsg, args->errmsg_len);
+}
+
+#define BGP_NEIGHBOR_AF_NAME_FILTER_CB(_kind, _direct, _kindname, _dirname)    \
+	int bgp_neighbor_af_##_kindname##_##_dirname##_modify(                 \
+		struct nb_cb_modify_args *args)                               \
+	{                                                                      \
+		return bgp_neighbor_af_name_filter_modify(args, (_kind),     \
+							  (_direct));             \
+	}                                                                      \
+	int bgp_neighbor_af_##_kindname##_##_dirname##_destroy(                \
+		struct nb_cb_destroy_args *args)                              \
+	{                                                                      \
+		return bgp_neighbor_af_name_filter_destroy(args, (_kind),     \
+							   (_direct));            \
+	}
+
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(0, FILTER_IN, access_list, import)
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(0, FILTER_OUT, access_list, export)
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(1, FILTER_IN, as_path_filter, import)
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(1, FILTER_OUT, as_path_filter, export)
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(2, FILTER_IN, plist, import)
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(2, FILTER_OUT, plist, export)
+
+/*
+ * unsuppress-map: one legacy knob (filter->usmap) exposed as import
+ * and export leaves. Whatever leaf survives wins; nothing left maps
+ * onto peer_unsuppress_map_unset.
+ */
+static int bgp_nb_usmap_apply(const struct lyd_node *dnode,
+			      const char *skip_leaf, char *errmsg,
+			      size_t errmsg_len)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const struct lyd_node *fc;
+	const char *name = NULL;
+
+	if (bgp_nb_peer_af_lookup(dnode, 3, &peer, &afi, &safi) < 0)
+		return skip_leaf ? NB_OK : NB_ERR;
+
+	fc = yang_dnode_get_parent(dnode, "filter-config");
+	if (!fc)
+		return NB_ERR;
+
+	if ((!skip_leaf || !strmatch(skip_leaf, "unsuppress-map-export"))
+	    && yang_dnode_exists(fc, "unsuppress-map-export"))
+		name = yang_dnode_get_string(fc, "unsuppress-map-export");
+	if (!name
+	    && (!skip_leaf || !strmatch(skip_leaf, "unsuppress-map-import"))
+	    && yang_dnode_exists(fc, "unsuppress-map-import"))
+		name = yang_dnode_get_string(fc, "unsuppress-map-import");
+
+	if (name)
+		return bgp_nb_setter_result(
+			peer_unsuppress_map_set(
+				peer, afi, safi, name,
+				route_map_lookup_by_name(name)),
+			errmsg, errmsg_len);
+	return bgp_nb_setter_result(
+		peer_unsuppress_map_unset(peer, afi, safi), errmsg,
+		errmsg_len);
+}
+
+int bgp_neighbor_af_unsuppress_map_export_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_usmap_apply(args->dnode, NULL, args->errmsg,
+				  args->errmsg_len);
+}
+
+int bgp_neighbor_af_unsuppress_map_export_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_usmap_apply(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+int bgp_neighbor_af_unsuppress_map_import_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_usmap_apply(args->dnode, NULL, args->errmsg,
+				  args->errmsg_len);
+}
+
+int bgp_neighbor_af_unsuppress_map_import_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_usmap_apply(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+/*
+ * Site-of-Origin: parse in VALIDATE so a malformed community fails
+ * the commit instead of poisoning the APPLY path (S058 lesson).
+ */
+int bgp_neighbor_af_soo_modify(struct nb_cb_modify_args *args)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	struct ecommunity *ecomm_soo;
+	const char *str;
+	int ret;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE: {
+		struct ecommunity *probe;
+
+		probe = ecommunity_str2com(
+			yang_dnode_get_string(args->dnode, NULL),
+			ECOMMUNITY_SITE_ORIGIN, 0);
+		if (!probe) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "Malformed SoO extended community");
+			return NB_ERR_VALIDATION;
+		}
+		ecommunity_free(&probe);
+		return NB_OK;
+	}
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_ERR;
+	str = yang_dnode_get_string(args->dnode, NULL);
+	ecomm_soo = ecommunity_str2com(str, ECOMMUNITY_SITE_ORIGIN, 0);
+	if (!ecomm_soo) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "Malformed SoO extended community");
+		return NB_ERR;
+	}
+	ecommunity_str(ecomm_soo);
+
+	if (!ecommunity_match(peer->soo[afi][safi], ecomm_soo)) {
+		ecommunity_free(&peer->soo[afi][safi]);
+		peer->soo[afi][safi] = ecomm_soo;
+		peer_af_flag_unset(peer, afi, safi, PEER_FLAG_SOO);
+	} else {
+		ecommunity_free(&ecomm_soo);
+	}
+
+	ret = peer_af_flag_set(peer, afi, safi, PEER_FLAG_SOO);
+	return bgp_nb_setter_result(ret, args->errmsg, args->errmsg_len);
+}
+
+int bgp_neighbor_af_soo_destroy(struct nb_cb_destroy_args *args)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_OK;
+	ecommunity_free(&peer->soo[afi][safi]);
+	return bgp_nb_setter_result(
+		peer_af_flag_unset(peer, afi, safi, PEER_FLAG_SOO),
 		args->errmsg, args->errmsg_len);
 }
 
@@ -7378,58 +8063,57 @@ BGP_NEIGHBOR_BOOL_CLI_SHOW(peer_graceful_shutdown, "graceful-shutdown")
  * responsible for emitting the surrounding `address-family ... exit-
  * address-family` block in legacy code, so cli_show here only emits
  * the inner per-neighbor command. */
-#define BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(_name, _keyword, _peer_rel)              \
+#define BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(_name, _keyword)                         \
 	void bgp_neighbor_af_##_name##_cli_show(struct vty *vty,               \
 		const struct lyd_node *dnode, bool show_defaults)              \
 	{                                                                      \
-		const char *peer = yang_dnode_get_string(dnode, _peer_rel);    \
+		const char *peer = bgp_nb_af_peer_name(dnode);                 \
 		if (yang_dnode_get_bool(dnode, NULL))                          \
 			vty_out(vty, "  neighbor %s %s\n", peer, _keyword);    \
 	}
 
-/* _peer_rel: leaf -> neighbor entry. <AFI>/<leaf> nodes are 4 levels
- * deep, <AFI>/<group>/<leaf> nodes are 5. */
-#define BGP_NB_AF_PEER_REL4 "../../../../remote-address"
-#define BGP_NB_AF_PEER_REL5 "../../../../../remote-address"
+static const char *bgp_nb_af_ctx_key(const struct lyd_node *af_entry);
 
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(soft_reconfig_in, "soft-reconfiguration inbound",
-			      BGP_NB_AF_PEER_REL4)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(as_override, "as-override", BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rr_client, "route-reflector-client",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rs_client, "route-server-client",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self, "next-hop-self",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self_force, "next-hop-self force",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as, "remove-private-AS",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_all, "remove-private-AS all",
-			      BGP_NB_AF_PEER_REL5)
+/*
+ * Peer name for per-AF cli_show: probe the context list key so the
+ * same emitter serves numbered, unnumbered and peer-group rows.
+ */
+static const char *bgp_nb_af_peer_name(const struct lyd_node *dnode)
+{
+	const struct lyd_node *af_entry;
+
+	af_entry = yang_dnode_get_parent(dnode, "afi-safi");
+	if (!af_entry)
+		return NULL;
+	return bgp_nb_af_ctx_key(af_entry);
+}
+
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(soft_reconfig_in, "soft-reconfiguration inbound")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(as_override, "as-override")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rr_client, "route-reflector-client")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rs_client, "route-server-client")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self, "next-hop-self")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self_force, "next-hop-self force")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as, "remove-private-AS")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_all, "remove-private-AS all")
 BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_replace,
-			      "remove-private-AS replace-AS",
-			      BGP_NB_AF_PEER_REL5)
+			      "remove-private-AS replace-AS")
 BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_all_replace,
-			      "remove-private-AS all replace-AS",
-			      BGP_NB_AF_PEER_REL5)
+			      "remove-private-AS all replace-AS")
 BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_local_unchanged,
-			      "nexthop-local unchanged", BGP_NB_AF_PEER_REL4)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_community, "send-community",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_ext_community, "send-community extended",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_large_community, "send-community large",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(accept_own, "accept-own", BGP_NB_AF_PEER_REL4)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(disable_addpath_rx, "disable-addpath-rx",
-			      BGP_NB_AF_PEER_REL5)
+			      "nexthop-local unchanged")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_community, "send-community")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_ext_community, "send-community extended")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_large_community, "send-community large")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(accept_own, "accept-own")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(disable_addpath_rx, "disable-addpath-rx")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(upa, "upa")
 
 /* add-paths/path-type enum: one emitter for both legacy keywords. */
 void bgp_neighbor_af_add_paths_path_type_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
-	const char *peer = yang_dnode_get_string(dnode, BGP_NB_AF_PEER_REL5);
+	const char *peer = bgp_nb_af_peer_name(dnode);
 	const char *val = yang_dnode_get_string(dnode, NULL);
 
 	if (strmatch(val, "all"))
@@ -7448,7 +8132,7 @@ static void bgp_neighbor_af_rmap_filter_cli_show(struct vty *vty,
 						 const struct lyd_node *dnode,
 						 const char *direct)
 {
-	const char *peer = yang_dnode_get_string(dnode, BGP_NB_AF_PEER_REL5);
+	const char *peer = bgp_nb_af_peer_name(dnode);
 
 	vty_out(vty, "  neighbor %s route-map %s %s\n", peer,
 		yang_dnode_get_string(dnode, NULL), direct);
@@ -7466,12 +8150,205 @@ void bgp_neighbor_af_rmap_export_cli_show(struct vty *vty,
 	bgp_neighbor_af_rmap_filter_cli_show(vty, dnode, "out");
 }
 
+/* addpath counters: one line per leaf, ctx-aware peer name. */
+void bgp_neighbor_af_addpath_rx_limit_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	vty_out(vty, "  neighbor %s addpath-rx-paths-limit %u\n",
+		bgp_nb_af_peer_name(dnode),
+		yang_dnode_get_uint16(dnode, NULL));
+}
+
+void bgp_neighbor_af_addpath_best_selected_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	vty_out(vty, "  neighbor %s addpath-tx-best-selected %u\n",
+		bgp_nb_af_peer_name(dnode),
+		yang_dnode_get_uint8(dnode, NULL));
+}
+
+/*
+ * allowas-in: the legacy writer emits ONE line from the three
+ * sibling leaves, so only the most significant present leaf renders
+ * (allow-own-as, then a true allow-own-origin-as, then the
+ * route-map) and the siblings stay silent.
+ */
+static void bgp_nb_allowas_in_cli_show_common(struct vty *vty,
+	const struct lyd_node *dnode, const char *self_leaf)
+{
+	const struct lyd_node *aspo;
+	const char *peer = bgp_nb_af_peer_name(dnode);
+	const char *rmap = NULL;
+	const char *designated;
+	bool origin = false;
+	int num = BGP_ALLOWAS_IN_DEFAULT;
+
+	aspo = yang_dnode_get_parent(dnode, "as-path-options");
+	if (!aspo)
+		return;
+
+	designated = yang_dnode_exists(aspo, "allow-own-as")
+			     ? "allow-own-as"
+			     : ((yang_dnode_exists(aspo,
+						   "allow-own-origin-as")
+				 && yang_dnode_get_bool(
+					 aspo, "allow-own-origin-as"))
+					? "allow-own-origin-as"
+					: (yang_dnode_exists(
+						   aspo,
+						   "allowas-in-route-map")
+					       ? "allowas-in-route-map"
+					       : NULL));
+	if (!designated || !strmatch(self_leaf, designated))
+		return;
+
+	if (yang_dnode_exists(aspo, "allow-own-as"))
+		num = yang_dnode_get_uint8(aspo, "allow-own-as");
+	if (yang_dnode_exists(aspo, "allow-own-origin-as"))
+		origin = yang_dnode_get_bool(aspo,
+					     "allow-own-origin-as");
+	if (yang_dnode_exists(aspo, "allowas-in-route-map"))
+		rmap = yang_dnode_get_string(aspo,
+					     "allowas-in-route-map");
+
+	vty_out(vty, "  neighbor %s allowas-in", peer);
+	if (rmap)
+		vty_out(vty, " route-map %s", rmap);
+	if (origin)
+		vty_out(vty, " origin\n");
+	else if (num != BGP_ALLOWAS_IN_DEFAULT)
+		vty_out(vty, " %d\n", num);
+	else
+		vty_out(vty, "\n");
+}
+
+void bgp_neighbor_af_allow_own_as_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_nb_allowas_in_cli_show_common(vty, dnode, "allow-own-as");
+}
+
+void bgp_neighbor_af_allow_own_origin_as_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_nb_allowas_in_cli_show_common(vty, dnode,
+					  "allow-own-origin-as");
+}
+
+void bgp_neighbor_af_allowas_in_route_map_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_nb_allowas_in_cli_show_common(vty, dnode,
+					  "allowas-in-route-map");
+}
+
+/*
+ * Conditional advertisement: only the advertise-map leaf renders,
+ * and only once the condition half exists (the knob arms as a pair).
+ */
+static void bgp_nb_cond_adv_cli_show_common(struct vty *vty,
+	const struct lyd_node *dnode)
+{
+	const struct lyd_node *ca;
+	const char *peer = bgp_nb_af_peer_name(dnode);
+
+	ca = yang_dnode_get_parent(dnode,
+				   "conditional-advertisement");
+	if (!ca || !yang_dnode_exists(ca, "advertise-map"))
+		return;
+	if (yang_dnode_exists(ca, "exist-map"))
+		vty_out(vty, "  neighbor %s advertise-map %s exist-map %s\n",
+			peer, yang_dnode_get_string(ca, "advertise-map"),
+			yang_dnode_get_string(ca, "exist-map"));
+	else if (yang_dnode_exists(ca, "non-exist-map"))
+		vty_out(vty,
+			"  neighbor %s advertise-map %s non-exist-map %s\n",
+			peer, yang_dnode_get_string(ca, "advertise-map"),
+			yang_dnode_get_string(ca, "non-exist-map"));
+}
+
+void bgp_neighbor_af_cond_adv_advertise_map_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_nb_cond_adv_cli_show_common(vty, dnode);
+}
+
+void bgp_neighbor_af_cond_adv_exist_map_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	/* rendered by the advertise-map leaf */
+}
+
+void bgp_neighbor_af_cond_adv_non_exist_map_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	/* rendered by the advertise-map leaf */
+}
+
+/*
+ * Name-based filters: "distribute-list|filter-list|prefix-list NAME
+ * in|out", one line per leaf.
+ */
+#define BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(_kindname, _dirname, _keyword, _direct) \
+	void bgp_neighbor_af_##_kindname##_##_dirname##_cli_show(           \
+		struct vty *vty, const struct lyd_node *dnode,              \
+		bool show_defaults)                                         \
+	{                                                                      \
+		vty_out(vty, "  neighbor %s " _keyword " %s " _direct "\n",    \
+			bgp_nb_af_peer_name(dnode),                          \
+			yang_dnode_get_string(dnode, NULL));                 \
+	}
+
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(access_list, import,
+				     "distribute-list", "in")
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(access_list, export,
+				     "distribute-list", "out")
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(as_path_filter, import,
+				     "filter-list", "in")
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(as_path_filter, export,
+				     "filter-list", "out")
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(plist, import, "prefix-list", "in")
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(plist, export, "prefix-list", "out")
+
+/*
+ * unsuppress-map: one legacy knob, so the export leaf renders and
+ * the import leaf only renders when export is absent.
+ */
+void bgp_neighbor_af_unsuppress_map_export_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	vty_out(vty, "  neighbor %s unsuppress-map %s\n",
+		bgp_nb_af_peer_name(dnode),
+		yang_dnode_get_string(dnode, NULL));
+}
+
+void bgp_neighbor_af_unsuppress_map_import_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	const struct lyd_node *fc;
+
+	fc = yang_dnode_get_parent(dnode, "filter-config");
+	if (fc && yang_dnode_exists(fc, "unsuppress-map-export"))
+		return;
+	vty_out(vty, "  neighbor %s unsuppress-map %s\n",
+		bgp_nb_af_peer_name(dnode),
+		yang_dnode_get_string(dnode, NULL));
+}
+
+void bgp_neighbor_af_soo_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	vty_out(vty, "  neighbor %s soo %s\n",
+		bgp_nb_af_peer_name(dnode),
+		yang_dnode_get_string(dnode, NULL));
+}
+
 /*
  * Prefix-limit cli_show: rendered from the max-prefixes leaf so each
  * direction-list entry prints exactly one legacy line (matching
  * bgp_config_write_family byte for byte).
  */
-static const char *bgp_nb_pl_ctx_key(const struct lyd_node *af_entry)
+static const char *bgp_nb_af_ctx_key(const struct lyd_node *af_entry)
 {
 	if (yang_dnode_exists(af_entry, "../../remote-address"))
 		return yang_dnode_get_string(af_entry,
@@ -7490,7 +8367,7 @@ void bgp_peer_af_prefix_limit_max_cli_show(struct vty *vty,
 
 	dl = yang_dnode_get_parent(dnode, "direction-list");
 	af_entry = yang_dnode_get_parent(dl, "afi-safi");
-	key = bgp_nb_pl_ctx_key(af_entry);
+	key = bgp_nb_af_ctx_key(af_entry);
 	direction = yang_dnode_get_string(dl, "direction");
 
 	if (strmatch(direction, "out")) {
