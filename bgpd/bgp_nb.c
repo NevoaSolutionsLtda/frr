@@ -1123,7 +1123,6 @@ const struct frr_yang_module_info frr_bgp_info = {
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/timers",
 			.cbs = {
-				.apply_finish = bgp_neighbor_timers_apply_finish,
 				.cli_show = bgp_neighbor_timers_cli_show,
 			},
 		},
@@ -2423,6 +2422,72 @@ const struct frr_yang_module_info frr_bgp_info = {
 			  .modify = bgp_neighbor_af_rmap_export_modify,
 			  .destroy = bgp_neighbor_af_rmap_export_destroy,
 			  .cli_show = bgp_neighbor_af_rmap_export_cli_show,
+		  } },
+
+		/*
+		 * session timers: shared callbacks across the three
+		 * neighbor contexts (numbered, unnumbered, peer-group).
+		 */
+#define BGP_NB_TIMERS_XPATH(_ctx, _leaf)                                      \
+	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/" \
+	"frr-bgp:bgp/" _ctx "/timers/" _leaf
+
+		{ .xpath = BGP_NB_TIMERS_XPATH("neighbors/neighbor", ""),
+		  .cbs = {
+			  .cli_show = bgp_neighbor_timers_cli_show,
+		  } },
+		{ .xpath = BGP_NB_TIMERS_XPATH("neighbors/neighbor",
+					       "keepalive"),
+		  .cbs = {
+			  .modify  = bgp_neighbor_timers_keepalive_modify,
+			  .destroy = bgp_neighbor_timers_keepalive_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_TIMERS_XPATH("neighbors/neighbor",
+					       "hold-time"),
+		  .cbs = {
+			  .modify  = bgp_neighbor_timers_holdtime_modify,
+			  .destroy = bgp_neighbor_timers_holdtime_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_TIMERS_XPATH(
+				  "neighbors/unnumbered-neighbor", ""),
+		  .cbs = {
+			  .cli_show = bgp_neighbor_timers_cli_show,
+		  } },
+		{ .xpath = BGP_NB_TIMERS_XPATH(
+				  "neighbors/unnumbered-neighbor",
+				  "keepalive"),
+		  .cbs = {
+			  .modify  = bgp_neighbor_timers_keepalive_modify,
+			  .destroy = bgp_neighbor_timers_keepalive_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_TIMERS_XPATH(
+				  "neighbors/unnumbered-neighbor",
+				  "hold-time"),
+		  .cbs = {
+			  .modify  = bgp_neighbor_timers_holdtime_modify,
+			  .destroy = bgp_neighbor_timers_holdtime_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_TIMERS_XPATH("peer-groups/peer-group", ""),
+		  .cbs = {
+			  .cli_show = bgp_neighbor_timers_cli_show,
+		  } },
+		{ .xpath = BGP_NB_TIMERS_XPATH("peer-groups/peer-group",
+					       "keepalive"),
+		  .cbs = {
+			  .modify  = bgp_neighbor_timers_keepalive_modify,
+			  .destroy = bgp_neighbor_timers_keepalive_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
+		  } },
+		{ .xpath = BGP_NB_TIMERS_XPATH("peer-groups/peer-group",
+					       "hold-time"),
+		  .cbs = {
+			  .modify  = bgp_neighbor_timers_holdtime_modify,
+			  .destroy = bgp_neighbor_timers_holdtime_destroy,
+			  .cli_show = bgp_nb_handled_by_parent_cli_show,
 		  } },
 
 		/*

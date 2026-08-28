@@ -7520,35 +7520,90 @@ int bgp_neighbor_gr_disable_destroy(struct nb_cb_destroy_args *args)
 
 /*
  * XPath:
- *   .../neighbors/neighbor[remote-address]/timers (apply_finish on container)
+ *   .../neighbors/{neighbor,unnumbered-neighbor,peer-group}/timers/
+ *     {keepalive,hold-time}
  *
- * keepalive + hold-time are paired (peer_timers_set). Use apply_finish
- * so both leaves are applied atomically when either changes.
+ * keepalive + hold-time are paired (peer_timers_set consumes both at
+ * once), so every leaf (re)applies the setter with the current value
+ * of its sibling and the datastore is the source of truth: an absent
+ * sibling falls back to its YANG default (60/180), never to a stale
+ * peer field. The peer is resolved by walking up to the context list
+ * entry by schema name and probing its key leaf, so the same
+ * callbacks serve the numbered, unnumbered and peer-group contexts
+ * (peer_timers_set/peer_timers_unset fan group config out to the
+ * members themselves). Destroy skips the dying leaf -- the dnode
+ * still shows it -- and unsets the whole knob family when no sibling
+ * keeps the container configured.
  */
-void bgp_neighbor_timers_apply_finish(struct nb_cb_apply_finish_args *args)
+#define BGP_NB_TIMERS_DEF_KEEPALIVE 60
+#define BGP_NB_TIMERS_DEF_HOLDTIME 180
+
+static struct peer *bgp_nb_timers_peer(const struct lyd_node *dnode)
 {
-	struct peer *peer;
-	uint32_t keepalive = 0, holdtime = 0;
-	bool have_k = false, have_h = false;
+	static const char *const ctx_schemas[] = {
+		"neighbor", "unnumbered-neighbor", "peer-group"
+	};
+	const struct lyd_node *ctx = NULL, *bgp_entry;
+	struct bgp *bgp;
+	union sockunion su;
+	struct peer_group *group;
 
-	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
-	if (!peer)
-		return;
+	for (size_t i = 0; i < array_size(ctx_schemas); i++) {
+		ctx = yang_dnode_get_parent(dnode, ctx_schemas[i]);
+		if (ctx)
+			break;
+	}
+	if (!ctx)
+		return NULL;
 
-	if (yang_dnode_exists(args->dnode, "./keepalive")) {
-		keepalive = yang_dnode_get_uint16(args->dnode, "./keepalive");
-		have_k = true;
+	bgp_entry = yang_dnode_get_parent(ctx, "bgp");
+	if (!bgp_entry)
+		return NULL;
+	bgp = bgp_lookup_by_name(bgp_nb_vrf_to_name(
+		yang_dnode_get_string(bgp_entry, "vrf")));
+	if (!bgp)
+		return NULL;
+
+	if (yang_dnode_exists(ctx, "remote-address")) {
+		if (str2sockunion(yang_dnode_get_string(ctx,
+						       "remote-address"),
+				  &su) < 0)
+			return NULL;
+		return peer_lookup(bgp, &su);
 	}
-	if (yang_dnode_exists(args->dnode, "./hold-time")) {
-		holdtime = yang_dnode_get_uint16(args->dnode, "./hold-time");
-		have_h = true;
+	if (yang_dnode_exists(ctx, "interface"))
+		return peer_lookup_by_conf_if(
+			bgp, yang_dnode_get_string(ctx, "interface"));
+	if (yang_dnode_exists(ctx, "peer-group-name")) {
+		group = peer_group_lookup(
+			bgp, yang_dnode_get_string(ctx,
+						   "peer-group-name"));
+		return group ? group->conf : NULL;
 	}
-	if (have_k && have_h)
-		peer_timers_set(peer, keepalive, holdtime);
-	return;
+	return NULL;
 }
 
-int bgp_neighbor_timers_destroy(struct nb_cb_destroy_args *args)
+static int bgp_nb_timers_apply(struct peer *peer, const struct lyd_node *dnode,
+			       const char *skip_leaf, char *errmsg,
+			       size_t errmsg_len)
+{
+	uint32_t keepalive = BGP_NB_TIMERS_DEF_KEEPALIVE;
+	uint32_t holdtime = BGP_NB_TIMERS_DEF_HOLDTIME;
+
+	if (!skip_leaf || strcmp(skip_leaf, "keepalive"))
+		if (yang_dnode_exists(dnode, "../keepalive"))
+			keepalive = yang_dnode_get_uint16(dnode,
+							  "../keepalive");
+	if (!skip_leaf || strcmp(skip_leaf, "hold-time"))
+		if (yang_dnode_exists(dnode, "../hold-time"))
+			holdtime = yang_dnode_get_uint16(dnode,
+							 "../hold-time");
+	return bgp_nb_setter_result(
+		peer_timers_set(peer, keepalive, holdtime), errmsg,
+		errmsg_len);
+}
+
+static int bgp_nb_timers_modify(struct nb_cb_modify_args *args)
 {
 	struct peer *peer;
 
@@ -7560,11 +7615,63 @@ int bgp_neighbor_timers_destroy(struct nb_cb_destroy_args *args)
 	case NB_EV_APPLY:
 		break;
 	}
-	peer = bgp_nb_lookup_peer(args->dnode, "..", 4);
+
+	peer = bgp_nb_timers_peer(args->dnode);
+	if (!peer)
+		return NB_ERR;
+
+	return bgp_nb_timers_apply(peer, args->dnode, NULL, args->errmsg,
+				   args->errmsg_len);
+}
+
+static int bgp_nb_timers_leaf_destroy(struct nb_cb_destroy_args *args)
+{
+	struct peer *peer;
+	const char *dying;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+
+	peer = bgp_nb_timers_peer(args->dnode);
 	if (!peer)
 		return NB_OK;
+
+	dying = args->dnode->schema ? args->dnode->schema->name : NULL;
+	if (yang_dnode_exists(args->dnode,
+			      dying && !strcmp(dying, "keepalive")
+				      ? "../hold-time"
+				      : "../keepalive"))
+		return bgp_nb_timers_apply(peer, args->dnode, dying,
+					   args->errmsg, args->errmsg_len);
+
 	peer_timers_unset(peer);
 	return NB_OK;
+}
+
+int bgp_neighbor_timers_keepalive_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_timers_modify(args);
+}
+
+int bgp_neighbor_timers_keepalive_destroy(struct nb_cb_destroy_args *args)
+{
+	return bgp_nb_timers_leaf_destroy(args);
+}
+
+int bgp_neighbor_timers_holdtime_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_timers_modify(args);
+}
+
+int bgp_neighbor_timers_holdtime_destroy(struct nb_cb_destroy_args *args)
+{
+	return bgp_nb_timers_leaf_destroy(args);
 }
 
 /*
@@ -8537,12 +8644,29 @@ void bgp_neighbor_local_as_cli_show(struct vty *vty,
 void bgp_neighbor_timers_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
-	const char *peer = yang_dnode_get_string(dnode, "../remote-address");
-	if (yang_dnode_exists(dnode, "./keepalive") &&
+	const char *peer;
+	uint32_t keepalive = BGP_NB_TIMERS_DEF_KEEPALIVE;
+	uint32_t holdtime = BGP_NB_TIMERS_DEF_HOLDTIME;
+
+	/* context list key: numbered, unnumbered or peer-group */
+	if (yang_dnode_exists(dnode, "../remote-address"))
+		peer = yang_dnode_get_string(dnode, "../remote-address");
+	else if (yang_dnode_exists(dnode, "../interface"))
+		peer = yang_dnode_get_string(dnode, "../interface");
+	else
+		peer = yang_dnode_get_string(dnode,
+					     "../peer-group-name");
+
+	if (yang_dnode_exists(dnode, "./keepalive") ||
 	    yang_dnode_exists(dnode, "./hold-time")) {
-		vty_out(vty, " neighbor %s timers %s %s\n", peer,
-			yang_dnode_get_string(dnode, "./keepalive"),
-			yang_dnode_get_string(dnode, "./hold-time"));
+		if (yang_dnode_exists(dnode, "./keepalive"))
+			keepalive = yang_dnode_get_uint16(dnode,
+							  "./keepalive");
+		if (yang_dnode_exists(dnode, "./hold-time"))
+			holdtime = yang_dnode_get_uint16(dnode,
+							 "./hold-time");
+		vty_out(vty, " neighbor %s timers %u %u\n", peer,
+			keepalive, holdtime);
 	}
 	if (yang_dnode_exists(dnode, "./connect-time"))
 		vty_out(vty, " neighbor %s timers connect %s\n", peer,
