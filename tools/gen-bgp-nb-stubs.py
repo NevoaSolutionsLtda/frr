@@ -107,10 +107,6 @@ REJECT_OP_TO_CB = {
 _BGP = ("/frr-routing:routing/control-plane-protocols/"
         "control-plane-protocol/frr-bgp:bgp")
 ALLOWLIST = [
-    (_BGP + "/peer-groups/peer-group/afi-safis/afi-safi/enabled",
-     "AF-activation leaf of the unwired fanout contexts (issue #39)"),
-    (_BGP + "/neighbors/unnumbered-neighbor/afi-safis/afi-safi/enabled",
-     "AF-activation leaf of the unwired fanout contexts (issue #39)"),
     (_BGP + "/global/local-as",
      "BGP-instance leaf: legacy boot mirrors only the default "
      "instance; programmatic instance creation (e.g. a VRF) needs it "

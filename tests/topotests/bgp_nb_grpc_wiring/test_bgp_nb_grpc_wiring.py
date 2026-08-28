@@ -107,6 +107,10 @@ def build_topo(tgen):
     tgen.add_router("r1")
     switch = tgen.add_switch("s1")
     switch.add_link(tgen.gears["r1"])
+    # second, idle link: r1-eth1 is reserved for the AF-activation gate
+    # so it never contends with the r1-eth0 state of the other tests
+    switch2 = tgen.add_switch("s2")
+    switch2.add_link(tgen.gears["r1"])
 
 
 def setup_module(mod):
@@ -900,4 +904,74 @@ def test_unnumbered_remote_as_grpc():
     peer = summary["ipv4Unicast"]["peers"][IF_RA]
     assert peer["remoteAs"] == 65101, (
         f"unnumbered AS change did not apply; got: {peer['remoteAs']}"
+    )
+
+
+PG_AF = "pg-af"
+NBPG_AF = f"{CPP}/peer-groups/peer-group[peer-group-name='{PG_AF}']"
+IF_AF = "r1-eth1"
+NBIF_AF = f"{CPP}/neighbors/unnumbered-neighbor[interface='{IF_AF}']"
+AF_EVPN_IF = (f"{NBIF_AF}/afi-safis"
+              "/afi-safi[afi-safi-name='frr-routing:l2vpn-evpn']")
+AF_EVPN_PG = (f"{NBPG_AF}/afi-safis"
+              "/afi-safi[afi-safi-name='frr-routing:l2vpn-evpn']")
+
+
+def test_fanout_af_enabled_grpc():
+    """The AF-activation leaf of the unnumbered and peer-group contexts
+    is wired: peer_activate/peer_deactivate through the shared
+    per-AF callbacks (the context lookup probes the list key), where
+    activate on a group conf propagates to the members. Both contexts
+    are created by the same gRPC transactions -- no CLI seeding."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Create the peer-group and activate l2vpn-evpn in one shot")
+    run_grpc_client(
+        r1,
+        [
+            f"commit-result,ALL,"
+            f"{CPP}/global/local-as=65000,"
+            f"{NBPG_AF}/neighbor-remote-as/remote-as-type=as-specified,"
+            f"{NBPG_AF}/neighbor-remote-as/remote-as=65090,"
+            f"{AF_EVPN_PG}/enabled=true",
+        ]
+    )
+
+    step("Create the unnumbered neighbor and activate l2vpn-evpn")
+    run_grpc_client(
+        r1,
+        [
+            f"commit-result,ALL,"
+            f"{NBIF_AF}/neighbor-remote-as/remote-as-type=as-specified,"
+            f"{NBIF_AF}/neighbor-remote-as/remote-as=65110,"
+            f"{AF_EVPN_IF}/enabled=true",
+        ]
+    )
+
+    step("Both activations render under the l2vpn-evpn address-family")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "address-family l2vpn evpn" in output, (
+        f"l2vpn evpn af block missing; got:\n{output}"
+    )
+    assert f"neighbor {PG_AF} activate" in output, (
+        f"peer-group activation missing; got:\n{output}"
+    )
+    assert f"neighbor {IF_AF} activate" in output, (
+        f"unnumbered activation missing; got:\n{output}"
+    )
+
+    step("The group activation propagates to a CLI-added member")
+    r1.vtysh_cmd(
+        f"configure terminal\nrouter bgp 65000\n"
+        f"neighbor 10.0.0.19 peer-group {PG_AF}\n"
+        f"end\n"
+    )
+    summary = json.loads(r1.vtysh_cmd("show bgp summary json"))
+    assert "l2VpnEvpn" in summary, (
+        f"l2vpn evpn section missing from summary; got: {summary.keys()}"
+    )
+    assert "10.0.0.19" in summary["l2VpnEvpn"]["peers"], (
+        f"member not activated by the group; got: "
+        f"{summary['l2VpnEvpn']['peers'].keys()}"
     )
