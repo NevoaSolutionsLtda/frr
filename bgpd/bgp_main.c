@@ -436,8 +436,17 @@ static const struct frr_yang_module_info *const bgpd_yang_modules[] = {
  * Shared modules without a bgpd northbound consumer
  * (frr-host, frr-logging, frr-vrf, frr-interface) are intentionally
  * not subscribed — bgpd reads them via its own legacy config path.
+ *
+ * The daemon-wide /frr-bgp:bgp-daemon subtree is subscribed so the
+ * reject-strict stub policy holds there too: without the subscription
+ * mgmtd never forwards those nodes to bgpd and programmatic commits
+ * on them would be silent datastore-only no-ops (issue #39 Phase D).
+ * Every stub under the prefix is class reject — the knobs keep their
+ * legacy CLI authority (NB_CLIENT_CLI exemption) until they get real
+ * callbacks.
  */
 static const char *const bgpd_config_xpaths[] = {
+	"/frr-bgp:bgp-daemon",
 	"/frr-filter:lib",
 	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp",
 	"/frr-route-map:lib",

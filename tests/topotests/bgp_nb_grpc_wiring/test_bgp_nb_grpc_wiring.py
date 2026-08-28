@@ -676,6 +676,58 @@ def test_peer_group_timers_grpc():
 
 
 UNWIRED_KNOB = CPP + "/global/graceful-restart/disable-eor"
+DAEMON_KNOB = "/frr-bgp:bgp-daemon/session-dscp"
+
+
+def test_daemon_subtree_rejected_grpc():
+    """Fase D follow-up: the daemon-wide /frr-bgp:bgp-daemon subtree is
+    now in bgpd_config_xpaths, so the reject-strict class can actually
+    fire there. Before the subscription a programmatic write on the
+    subtree never reached bgpd: mgmtd committed it datastore-only and
+    the client saw a false commit-OK (silent no-op)."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Ensure the router base exists so a refusal cannot hide behind"
+         " the mandatory local-as check")
+    run_grpc_client_status(r1, f"commit-set,{CPP}/global/local-as=65000")
+
+    step("A gRPC write on the bgp-daemon subtree is refused"
+         " (reject-strict)")
+    rc, stdout, stderr = run_grpc_client_status(
+        r1, f"commit-set,{DAEMON_KNOB}=10"
+    )
+    assert "reject-strict" in (stdout + stderr), (
+        f"bgp-daemon write must fail with reject-strict now that bgpd"
+        f" subscribes the prefix; got: {stdout + stderr}"
+    )
+
+    step("The legacy CLI still owns the knob (CLI is exempt)")
+    r1.vtysh_cmd("configure terminal\nbgp session-dscp 10\n")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "bgp session-dscp 10" in output, (
+        f"CLI write must keep authority over the daemon knob; got:\n"
+        f"{output}"
+    )
+
+    step("A gRPC re-assertion of the CLI-applied knob is refused too")
+    rc, stdout, stderr = run_grpc_client_status(
+        r1, f"commit-set,{DAEMON_KNOB}=10"
+    )
+    assert "reject-strict" in (stdout + stderr), (
+        f"programmatic re-assertion of the CLI-applied daemon knob must"
+        f" fail with reject-strict; got: {stdout + stderr}"
+    )
+
+    step("The refusals leave the commit path healthy (wired knob)")
+    # 250 (not 200) so the health check of test_unwired_write_rejected
+    # -- which re-asserts local-pref=200 -- never degenerates into an
+    # empty "No changes found" commit when both tests run in sequence
+    run_grpc_client(r1, f"commit-set,{CPP}/global/local-pref=250")
+    out = run_grpc_client(r1, f"get-config,{CPP}/global/local-pref")
+    assert "250" in out, (
+        f"wired commit after the refusals must still apply; got: {out}"
+    )
 
 
 def test_unwired_write_rejected_grpc():
