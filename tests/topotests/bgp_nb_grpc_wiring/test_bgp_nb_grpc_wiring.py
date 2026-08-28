@@ -12,6 +12,10 @@ lines, proving the datastore and the bgpd internals agree.
 
 Fase C fatia 1 wired the l2vpn-evpn prefix-limit fanout (shared
 callbacks); the flipped test guards that the commit now applies.
+
+Fase D flipped the stub policy to default-reject: a programmatic write
+on a knob that is neither wired nor allowlisted must fail validation
+with the reject-strict error, while the legacy CLI keeps its exemption.
 """
 import glob
 import json
@@ -668,4 +672,70 @@ def test_peer_group_timers_grpc():
     output = r1.vtysh_cmd("show running-config bgpd")
     assert "neighbor s061pg timers " not in output, (
         f"peer-group timers should be gone; got:\n{output}"
+    )
+
+
+UNWIRED_KNOB = CPP + "/global/graceful-restart/disable-eor"
+
+
+def test_unwired_write_rejected_grpc():
+    """Fase D: the default-reject policy. A knob that is neither wired
+    nor allowlisted (global/graceful-restart/disable-eor) refuses
+    programmatic writes with the reject-strict error -- including an
+    re-assertion attempt after the legacy CLI has applied the knob --
+    while the CLI dual-write keeps its NB_CLIENT_CLI exemption and
+    later wired commits stay unaffected.
+
+    The knob must live under a prefix bgpd subscribes to through
+    mgmt_be (bgpd_config_xpaths): the /frr-bgp:bgp-daemon twin is NOT
+    in that list, so commits there stay datastore-only and no stub
+    class can fire."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Ensure the router base exists so a refusal cannot hide behind"
+         " the mandatory local-as check")
+    # best-effort: re-stating local-as when it is already set is an
+    # empty commit mgmtd refuses (ABORTED); only the steps below are
+    # under assert
+    run_grpc_client_status(r1, f"commit-set,{CPP}/global/local-as=65000")
+
+    step("A gRPC write on the unwired knob is refused (reject-strict)")
+    rc, stdout, stderr = run_grpc_client_status(
+        r1, f"commit-set,{UNWIRED_KNOB}=true"
+    )
+    assert "reject-strict" in (stdout + stderr), (
+        f"unwired write must fail with reject-strict; got: "
+        f"{stdout + stderr}"
+    )
+
+    step("The legacy CLI still owns the knob (CLI is exempt)")
+    r1.vtysh_cmd(
+        "configure terminal\nrouter bgp 65000\n"
+        "bgp graceful-restart disable-eor\n"
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "bgp graceful-restart disable-eor" in output, (
+        f"CLI write must keep authority over the knob; got:\n{output}"
+    )
+
+    step("A gRPC re-assertion of the CLI-applied knob is refused too")
+    rc, stdout, stderr = run_grpc_client_status(
+        r1, f"commit-set,{UNWIRED_KNOB}=true"
+    )
+    assert "reject-strict" in (stdout + stderr), (
+        f"programmatic re-assertion of the CLI-applied knob must fail "
+        f"with reject-strict; got: {stdout + stderr}"
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "bgp graceful-restart disable-eor" in output, (
+        f"the refused overwrite must leave the CLI knob intact; "
+        f"got:\n{output}"
+    )
+
+    step("The refusals leave the commit path healthy (wired knob)")
+    run_grpc_client(r1, f"commit-set,{CPP}/global/local-pref=200")
+    out = run_grpc_client(r1, f"get-config,{CPP}/global/local-pref")
+    assert "200" in out, (
+        f"wired commit after the refusals must still apply; got: {out}"
     )
