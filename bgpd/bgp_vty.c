@@ -2611,19 +2611,10 @@ DEFPY_YANG (bgp_confederation_identifier,
 	    AS_STR)
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
-	as_t as = 0;
 	char numbuf[16];
 
-	if (!asn_str2asn(asn_str, &as)) {
-		vty_out(vty, "%% BGP: No such AS %s\n", asn_str);
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-
-	/*
-	 * YANG leaf type is inet:as-number (uint32). Render as plain decimal
-	 * so the NB callback can yang_dnode_get_uint32().
-	 */
-	snprintfrr(numbuf, sizeof(numbuf), "%u", as);
+	/* the ASNUM token arrives already parsed */
+	snprintfrr(numbuf, sizeof(numbuf), "%u", asn_str);
 	nb_cli_enqueue_change(vty, "./confederation/identifier",
 			      NB_OP_MODIFY, numbuf);
 	return nb_cli_apply_changes(vty, BGP_GLOBAL_XPATH, "frr-bgp:bgp",
@@ -6665,18 +6656,16 @@ DEFPY_YANG (neighbor_local_as,
 {
 	struct peer *p;
 	int ret;
-	as_t as = 0;
+	char numbuf[16];
 
 	p = peer_and_group_lookup_vty(vty, peer);
 	if (!p)
 		return CMD_WARNING_CONFIG_FAILED;
-	if (!asn_str2asn(asnum, &as)) {
-		vty_out(vty, "%% Invalid neighbor local-as value: %s\n", asnum);
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-	ret = peer_local_as_set(p, as, 0, 0, 0, asnum);
+	/* the ASNUM token arrives already parsed */
+	snprintfrr(numbuf, sizeof(numbuf), "%u", asnum);
+	ret = peer_local_as_set(p, asnum, 0, 0, 0, numbuf);
 	if (ret == 0)
-		bgp_nb_enqueue_local_as(vty, peer, asnum, false, false, false);
+		bgp_nb_enqueue_local_as(vty, peer, numbuf, false, false, false);
 	return bgp_vty_return(vty, ret);
 }
 
@@ -6691,18 +6680,16 @@ DEFPY_YANG (neighbor_local_as_no_prepend,
 {
 	struct peer *p;
 	int ret;
-	as_t as = 0;
+	char numbuf[16];
 
 	p = peer_and_group_lookup_vty(vty, peer);
 	if (!p)
 		return CMD_WARNING_CONFIG_FAILED;
-	if (!asn_str2asn(asnum, &as)) {
-		vty_out(vty, "%% Invalid neighbor local-as value: %s\n", asnum);
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-	ret = peer_local_as_set(p, as, 1, 0, 0, asnum);
+	/* the ASNUM token arrives already parsed */
+	snprintfrr(numbuf, sizeof(numbuf), "%u", asnum);
+	ret = peer_local_as_set(p, asnum, 1, 0, 0, numbuf);
 	if (ret == 0)
-		bgp_nb_enqueue_local_as(vty, peer, asnum, true, false, false);
+		bgp_nb_enqueue_local_as(vty, peer, numbuf, true, false, false);
 	return bgp_vty_return(vty, ret);
 }
 
@@ -6719,18 +6706,17 @@ DEFPY_YANG (neighbor_local_as_no_prepend_replace_as,
 {
 	struct peer *p;
 	int ret;
-	as_t as = 0;
+	char numbuf[16];
 
 	p = peer_and_group_lookup_vty(vty, peer);
 	if (!p)
 		return CMD_WARNING_CONFIG_FAILED;
-	if (!asn_str2asn(asnum, &as)) {
-		vty_out(vty, "%% Invalid neighbor local-as value: %s\n", asnum);
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-	ret = peer_local_as_set(p, as, 1, 1, !!dual_as, asnum);
+	/* the ASNUM token arrives already parsed */
+	snprintfrr(numbuf, sizeof(numbuf), "%u", asnum);
+	ret = peer_local_as_set(p, asnum, 1, 1, !!dual_as, numbuf);
 	if (ret == 0)
-		bgp_nb_enqueue_local_as(vty, peer, asnum, true, true, !!dual_as);
+		bgp_nb_enqueue_local_as(vty, peer, numbuf, true, true,
+					!!dual_as);
 	return bgp_vty_return(vty, ret);
 }
 
