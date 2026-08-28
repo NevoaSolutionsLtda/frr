@@ -3961,6 +3961,120 @@ int bgp_neighbor_remote_as_destroy(struct nb_cb_destroy_args *args)
 }
 
 /*
+ * XPath:
+ *   .../peer-groups/peer-group[peer-group-name]/neighbor-remote-as/
+ *     {remote-as,remote-as-type}
+ *
+ * The peer-group context-creation pair (Phase D allowlist, issue #39):
+ * a programmatic commit that creates a peer-group carries these leaves
+ * in the same transaction. The list create (bgp_peer_group_create)
+ * runs before the leaf modifies, so the group exists at apply time.
+ * peer_group_remote_as() propagates the AS to every member without a
+ * per-peer override -- the same internal `neighbor <pg> remote-as`
+ * lands on.
+ */
+int bgp_peer_group_remote_as_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	const char *name;
+	as_t as;
+	char as_buf[16];
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 5);
+	if (!bgp)
+		return NB_ERR;
+
+	name = yang_dnode_get_string(args->dnode, "../../peer-group-name");
+	as = (as_t)yang_dnode_get_uint32(args->dnode, NULL);
+	snprintfrr(as_buf, sizeof(as_buf), "%u", as);
+
+	if (peer_group_remote_as(bgp, name, &as, AS_SPECIFIED, as_buf) < 0) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "peer-group %s not found", name);
+		return NB_ERR;
+	}
+	return NB_OK;
+}
+
+int bgp_peer_group_remote_as_type_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	const char *name;
+	enum peer_asn_type new_type;
+	as_t as = 0;
+	const char *as_str = NULL;
+	char as_buf[16];
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 5);
+	if (!bgp)
+		return NB_ERR;
+
+	name = yang_dnode_get_string(args->dnode, "../../peer-group-name");
+
+	new_type = bgp_nb_yang_as_type(yang_dnode_get_string(args->dnode, NULL));
+	if (new_type == AS_SPECIFIED &&
+	    yang_dnode_exists(args->dnode, "../remote-as")) {
+		as = (as_t)yang_dnode_get_uint32(args->dnode, "../remote-as");
+		snprintfrr(as_buf, sizeof(as_buf), "%u", as);
+		as_str = as_buf;
+	}
+
+	if (peer_group_remote_as(bgp, name, &as, new_type, as_str) < 0) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "peer-group %s not found", name);
+		return NB_ERR;
+	}
+	return NB_OK;
+}
+
+int bgp_peer_group_remote_as_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+	case NB_EV_APPLY:
+		break;
+	}
+	/*
+	 * Same when-clause rationale as the numbered twin: the
+	 * remote-as-type modify owns the side effect.
+	 */
+	return NB_OK;
+}
+
+int bgp_peer_group_remote_as_type_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+	case NB_EV_APPLY:
+		break;
+	}
+	/* Destroying the container removes the group itself. */
+	return NB_OK;
+}
+
+/*
  * Lookup the peer owning the dnode at `depth_to_cpp` hops above the
  * control-plane-protocol entry. `neighbor_rel_xpath` is the relative xpath
  * from the dnode up to the `neighbor` list entry (used to read the

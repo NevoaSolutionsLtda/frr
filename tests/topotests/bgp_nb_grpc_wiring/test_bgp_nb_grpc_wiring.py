@@ -791,3 +791,65 @@ def test_unwired_write_rejected_grpc():
     assert "200" in out, (
         f"wired commit after the refusals must still apply; got: {out}"
     )
+
+
+PG_RA = "pg-ra"
+NBPG_RA = f"{CPP}/peer-groups/peer-group[peer-group-name='{PG_RA}']"
+PG_MEMBER = "10.0.0.9"
+
+
+def test_peer_group_remote_as_grpc():
+    """The peer-group remote-as pair is wired: a single programmatic
+    transaction creates the group and sets its AS (peer_group_remote_as
+    internals), the legacy CLI renders it, and a later gRPC AS change
+    propagates to a CLI-created member -- the peer-group semantic that
+    separates peer_group_remote_as from a bare peer_as_change on the
+    group conf."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Create the peer-group and its remote-as in one transaction")
+    # local-as rides along: the YANG makes it mandatory on the bgp
+    # container, so a fresh mgmtd datastore (no CPP entry yet -- the
+    # boot config went straight to bgpd) rejects the create without it.
+    # Re-asserting it when the entry already exists is a no-op diff.
+    run_grpc_client(
+        r1,
+        [
+            f"commit-result,ALL,"
+            f"{CPP}/global/local-as=65000,"
+            f"{NBPG_RA}/neighbor-remote-as/remote-as-type=as-specified,"
+            f"{NBPG_RA}/neighbor-remote-as/remote-as=65077",
+        ]
+    )
+
+    step("The legacy CLI shows the group and its remote-as")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert f"neighbor {PG_RA} peer-group" in output, (
+        f"peer-group missing on legacy CLI; got:\n{output}"
+    )
+    assert f"neighbor {PG_RA} remote-as 65077" in output, (
+        f"group remote-as missing on legacy CLI; got:\n{output}"
+    )
+
+    step("Add a member through the legacy CLI (binds to the group AS)")
+    r1.vtysh_cmd(
+        f"configure terminal\nrouter bgp 65000\n"
+        f"neighbor {PG_MEMBER} peer-group {PG_RA}\n"
+        f"end\n"
+    )
+
+    step("Change the group AS over gRPC; the member must follow")
+    run_grpc_client(
+        r1, f"commit-set,{NBPG_RA}/neighbor-remote-as/remote-as=65078"
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert f"neighbor {PG_RA} remote-as 65078" in output, (
+        f"group remote-as change missing; got:\n{output}"
+    )
+    summary = json.loads(r1.vtysh_cmd("show bgp summary json"))
+    peer = summary["ipv4Unicast"]["peers"][PG_MEMBER]
+    assert peer["remoteAs"] == 65078, (
+        f"group AS change did not propagate to the member; "
+        f"got: {peer['remoteAs']}"
+    )

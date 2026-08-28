@@ -5039,6 +5039,22 @@ const struct frr_yang_module_info frr_bgp_info = {
 				.cli_show = bgp_peer_group_cli_show,
 			},
 		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/neighbor-remote-as/remote-as-type",
+			.cbs = {
+				.modify = bgp_peer_group_remote_as_type_modify,
+				.destroy = bgp_peer_group_remote_as_type_destroy,
+				.cli_show = bgp_nb_handled_by_parent_cli_show,
+			},
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/neighbor-remote-as/remote-as",
+			.cbs = {
+				.modify = bgp_peer_group_remote_as_modify,
+				.destroy = bgp_peer_group_remote_as_destroy,
+				.cli_show = bgp_nb_handled_by_parent_cli_show,
+			},
+		},
 
 		/*
 		 * l2vpn-evpn per-neighbor fanout: the remaining core
