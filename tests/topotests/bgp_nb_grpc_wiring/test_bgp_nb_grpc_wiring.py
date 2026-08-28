@@ -567,11 +567,11 @@ def test_neighbor_timers_grpc():
 
     step("The peer internals carry the negotiated timers")
     j = json.loads(r1.vtysh_cmd("show bgp neighbors 10.0.0.2 json"))
-    assert _json_find_value(j, "keepalive", 3), (
-        f"keepalive 3 not found in neighbor json: {j}"
+    assert _json_find_value(j, "configuredkeepalive", 3000), (
+        f"configured keepalive 3s not found in neighbor json: {j}"
     )
-    assert _json_find_value(j, "hold", 9), (
-        f"hold-time 9 not found in neighbor json: {j}"
+    assert _json_find_value(j, "configuredhold", 9000), (
+        f"configured hold-time 9s not found in neighbor json: {j}"
     )
 
 
@@ -592,13 +592,16 @@ def test_neighbor_timers_single_leaf_grpc():
     )
     run_grpc_client(r1, f"commit-set,{NB}/timers/hold-time=15")
     output = r1.vtysh_cmd("show running-config bgpd")
-    assert "neighbor 10.0.0.2 timers 60 15" in output, (
-        f"hold-time alone must render with the keepalive default; "
+    # keepalive defaults to 60 in the datastore but the legacy
+    # internals clamp it to holdtime/3 (peer_timers_set), and the
+    # legacy render prints the internals
+    assert "neighbor 10.0.0.2 timers 5 15" in output, (
+        f"hold-time alone must render with the clamped keepalive; "
         f"got:\n{output}"
     )
     j = json.loads(r1.vtysh_cmd("show bgp neighbors 10.0.0.2 json"))
-    assert _json_find_value(j, "hold", 15), (
-        f"hold-time 15 not found in neighbor json: {j}"
+    assert _json_find_value(j, "configuredhold", 15000), (
+        f"configured hold-time 15s not found in neighbor json: {j}"
     )
 
     step("Setting keepalive afterwards keeps the sibling")
@@ -615,11 +618,12 @@ def test_neighbor_timers_destroy_grpc():
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
-    step("Destroy keepalive; hold-time survives with the default K")
+    step("Destroy keepalive; hold-time survives with the clamped default K")
     run_grpc_client(r1, f"commit-delete,{NB}/timers/keepalive")
     output = r1.vtysh_cmd("show running-config bgpd")
-    assert "neighbor 10.0.0.2 timers 60 15" in output, (
-        f"keepalive destroy must revert to default; got:\n{output}"
+    assert "neighbor 10.0.0.2 timers 5 15" in output, (
+        f"keepalive destroy must revert to the clamped default; "
+        f"got:\n{output}"
     )
 
     step("Destroy hold-time; the timers line is gone")
@@ -642,8 +646,8 @@ def test_peer_group_timers_grpc():
     run_grpc_client(
         r1,
         [
-            f"commit-set,{pg}/remote-as-type=as-specified",
-            f"commit-set,{pg}/remote-as=65001",
+            f"commit-set,{pg}/neighbor-remote-as/remote-as-type=as-specified",
+            f"commit-set,{pg}/neighbor-remote-as/remote-as=65001",
             f"commit-set,{pg}/timers/keepalive=7",
             f"commit-set,{pg}/timers/hold-time=21",
         ],
