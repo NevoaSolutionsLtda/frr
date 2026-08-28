@@ -529,3 +529,139 @@ def test_cli_write_keeps_authority_and_datastore_intact():
     assert "prefix-limit" in out or "direction-list" in out, (
         f"datastore view lost the prefix-limit subtree: {out}"
     )
+
+
+def _json_find_value(obj, key_sub, val):
+    """True when any json key containing key_sub holds val (recursive)."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if key_sub in k.lower() and str(v) == str(val):
+                return True
+            if _json_find_value(v, key_sub, val):
+                return True
+    elif isinstance(obj, list):
+        for it in obj:
+            if _json_find_value(it, key_sub, val):
+                return True
+    return False
+
+
+def test_neighbor_timers_grpc():
+    """S061: the session timers pair lands in the peer internals and
+    renders back on the legacy CLI (numbered context)."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Set keepalive=3 hold-time=9 in one transaction")
+    run_grpc_client(
+        r1,
+        [
+            f"commit-set,{NB}/timers/keepalive=3",
+            f"commit-set,{NB}/timers/hold-time=9",
+        ],
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor 10.0.0.2 timers 3 9" in output, (
+        f"expected timers on legacy CLI; got:\n{output}"
+    )
+
+    step("The peer internals carry the negotiated timers")
+    j = json.loads(r1.vtysh_cmd("show bgp neighbors 10.0.0.2 json"))
+    assert _json_find_value(j, "keepalive", 3), (
+        f"keepalive 3 not found in neighbor json: {j}"
+    )
+    assert _json_find_value(j, "hold", 9), (
+        f"hold-time 9 not found in neighbor json: {j}"
+    )
+
+
+def test_neighbor_timers_single_leaf_grpc():
+    """S061: a single leaf still applies (regression: the old
+    container apply_finish required BOTH leaves and silently
+    no-oped otherwise)."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Clear the pair, then set ONLY hold-time")
+    run_grpc_client(
+        r1,
+        [
+            f"commit-delete,{NB}/timers/keepalive",
+            f"commit-delete,{NB}/timers/hold-time",
+        ],
+    )
+    run_grpc_client(r1, f"commit-set,{NB}/timers/hold-time=15")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor 10.0.0.2 timers 60 15" in output, (
+        f"hold-time alone must render with the keepalive default; "
+        f"got:\n{output}"
+    )
+    j = json.loads(r1.vtysh_cmd("show bgp neighbors 10.0.0.2 json"))
+    assert _json_find_value(j, "hold", 15), (
+        f"hold-time 15 not found in neighbor json: {j}"
+    )
+
+    step("Setting keepalive afterwards keeps the sibling")
+    run_grpc_client(r1, f"commit-set,{NB}/timers/keepalive=5")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor 10.0.0.2 timers 5 15" in output, (
+        f"keepalive modify must keep hold-time; got:\n{output}"
+    )
+
+
+def test_neighbor_timers_destroy_grpc():
+    """S061: destroying one leaf reverts it to default; destroying the
+    last leaf removes the whole timers line."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Destroy keepalive; hold-time survives with the default K")
+    run_grpc_client(r1, f"commit-delete,{NB}/timers/keepalive")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor 10.0.0.2 timers 60 15" in output, (
+        f"keepalive destroy must revert to default; got:\n{output}"
+    )
+
+    step("Destroy hold-time; the timers line is gone")
+    run_grpc_client(r1, f"commit-delete,{NB}/timers/hold-time")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor 10.0.0.2 timers " not in output, (
+        f"timers line should be gone; got:\n{output}"
+    )
+
+
+def test_peer_group_timers_grpc():
+    """S061: the peer-group context shares the callbacks; the timers
+    render under the group name and fan out to members through the
+    legacy peer_timers_set internals."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Create the peer-group context with timers in one txn")
+    pg = f"{CPP}/peer-groups/peer-group[peer-group-name='s061pg']"
+    run_grpc_client(
+        r1,
+        [
+            f"commit-set,{pg}/remote-as-type=as-specified",
+            f"commit-set,{pg}/remote-as=65001",
+            f"commit-set,{pg}/timers/keepalive=7",
+            f"commit-set,{pg}/timers/hold-time=21",
+        ],
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor s061pg timers 7 21" in output, (
+        f"expected peer-group timers on legacy CLI; got:\n{output}"
+    )
+
+    step("Destroy the pair; the group timers line is gone")
+    run_grpc_client(
+        r1,
+        [
+            f"commit-delete,{pg}/timers/keepalive",
+            f"commit-delete,{pg}/timers/hold-time",
+        ],
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor s061pg timers " not in output, (
+        f"peer-group timers should be gone; got:\n{output}"
+    )
