@@ -392,6 +392,9 @@ def test_prefix_limit_multi_leaf_option_destroy():
     assert rc != 0 or "requires" in (stdout + stderr), (
         f"orphan tr-restart-timer should be refused; got: {stdout+stderr}"
     )
+
+
+def test_network_config_cli_authority():
     """G-NC CLI authority: a bare `network X` (no knobs) configures the
     internals, and a re-issue WITHOUT backdoor mirrors the legacy knob
     clear (review rounds 1-2, B2/A3). (The CLI dual mirrors into bgpd's own
