@@ -7541,44 +7541,36 @@ int bgp_neighbor_gr_disable_destroy(struct nb_cb_destroy_args *args)
 
 static struct peer *bgp_nb_timers_peer(const struct lyd_node *dnode)
 {
-	static const char *const ctx_schemas[] = {
-		"neighbor", "unnumbered-neighbor", "peer-group"
-	};
-	const struct lyd_node *ctx = NULL, *bgp_entry;
 	struct bgp *bgp;
 	union sockunion su;
 	struct peer_group *group;
 
-	for (size_t i = 0; i < array_size(ctx_schemas); i++) {
-		ctx = yang_dnode_get_parent(dnode, ctx_schemas[i]);
-		if (ctx)
-			break;
-	}
-	if (!ctx)
-		return NULL;
-
-	bgp_entry = yang_dnode_get_parent(ctx, "bgp");
-	if (!bgp_entry)
-		return NULL;
-	bgp = bgp_lookup_by_name(bgp_nb_vrf_to_name(
-		yang_dnode_get_string(bgp_entry, "vrf")));
+	/*
+	 * The timers leaves sit two levels under the context list entry
+	 * (leaf -> timers -> neighbor/unnumbered-neighbor/peer-group),
+	 * the same depth-below-entry as the afi-safi entries the per-AF
+	 * lookup probes, so the vrf hop count and the ../../ key probes
+	 * mirror bgp_nb_peer_ctx_lookup() exactly.
+	 */
+	bgp = bgp_nb_lookup_from_dnode(dnode, 5);
 	if (!bgp)
 		return NULL;
 
-	if (yang_dnode_exists(ctx, "remote-address")) {
-		if (str2sockunion(yang_dnode_get_string(ctx,
-						       "remote-address"),
-				  &su) < 0)
-			return NULL;
-		return peer_lookup(bgp, &su);
+	if (yang_dnode_exists(dnode, "../../remote-address")) {
+		const char *remote = yang_dnode_get_string(
+			dnode, "../../remote-address");
+
+		if (str2sockunion(remote, &su) == 0)
+			return peer_lookup(bgp, &su);
+		return NULL;
 	}
-	if (yang_dnode_exists(ctx, "interface"))
+	if (yang_dnode_exists(dnode, "../../interface"))
 		return peer_lookup_by_conf_if(
-			bgp, yang_dnode_get_string(ctx, "interface"));
-	if (yang_dnode_exists(ctx, "peer-group-name")) {
+			bgp, yang_dnode_get_string(dnode, "../../interface"));
+	if (yang_dnode_exists(dnode, "../../peer-group-name")) {
 		group = peer_group_lookup(
-			bgp, yang_dnode_get_string(ctx,
-						   "peer-group-name"));
+			bgp,
+			yang_dnode_get_string(dnode, "../../peer-group-name"));
 		return group ? group->conf : NULL;
 	}
 	return NULL;
@@ -7599,6 +7591,20 @@ static int bgp_nb_timers_apply(struct peer *peer, const struct lyd_node *dnode,
 		if (yang_dnode_exists(dnode, "../hold-time"))
 			holdtime = yang_dnode_get_uint16(dnode,
 							 "../hold-time");
+
+	/*
+	 * Deletes of defaulted leaves surface as modifies-to-default on
+	 * the mgmt_be path, and destroys see the framework materialize
+	 * the defaults, so both knobs on their default values mean the
+	 * family holds nothing explicit anymore: unset the whole knob
+	 * (an explicit "timers 60 180" renders nothing, matching).
+	 */
+	if (keepalive == BGP_NB_TIMERS_DEF_KEEPALIVE
+	    && holdtime == BGP_NB_TIMERS_DEF_HOLDTIME) {
+		peer_timers_unset(peer);
+		return NB_OK;
+	}
+
 	return bgp_nb_setter_result(
 		peer_timers_set(peer, keepalive, holdtime), errmsg,
 		errmsg_len);
@@ -7643,16 +7649,14 @@ static int bgp_nb_timers_leaf_destroy(struct nb_cb_destroy_args *args)
 	if (!peer)
 		return NB_OK;
 
+	/*
+	 * The dnode still shows the dying leaf; skip it and let the
+	 * sibling (or its default) decide between reapply and the
+	 * family-wide unset inside bgp_nb_timers_apply().
+	 */
 	dying = args->dnode->schema ? args->dnode->schema->name : NULL;
-	if (yang_dnode_exists(args->dnode,
-			      dying && !strcmp(dying, "keepalive")
-				      ? "../hold-time"
-				      : "../keepalive"))
-		return bgp_nb_timers_apply(peer, args->dnode, dying,
-					   args->errmsg, args->errmsg_len);
-
-	peer_timers_unset(peer);
-	return NB_OK;
+	return bgp_nb_timers_apply(peer, args->dnode, dying, args->errmsg,
+				   args->errmsg_len);
 }
 
 int bgp_neighbor_timers_keepalive_modify(struct nb_cb_modify_args *args)

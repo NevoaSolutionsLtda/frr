@@ -2430,21 +2430,21 @@ const struct frr_yang_module_info frr_bgp_info = {
 		 */
 #define BGP_NB_TIMERS_XPATH(_ctx, _leaf)                                      \
 	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/" \
-	"frr-bgp:bgp/" _ctx "/timers/" _leaf
+	"frr-bgp:bgp/" _ctx "/timers" _leaf
 
 		{ .xpath = BGP_NB_TIMERS_XPATH("neighbors/neighbor", ""),
 		  .cbs = {
 			  .cli_show = bgp_neighbor_timers_cli_show,
 		  } },
 		{ .xpath = BGP_NB_TIMERS_XPATH("neighbors/neighbor",
-					       "keepalive"),
+					       "/keepalive"),
 		  .cbs = {
 			  .modify  = bgp_neighbor_timers_keepalive_modify,
 			  .destroy = bgp_neighbor_timers_keepalive_destroy,
 			  .cli_show = bgp_nb_handled_by_parent_cli_show,
 		  } },
 		{ .xpath = BGP_NB_TIMERS_XPATH("neighbors/neighbor",
-					       "hold-time"),
+					       "/hold-time"),
 		  .cbs = {
 			  .modify  = bgp_neighbor_timers_holdtime_modify,
 			  .destroy = bgp_neighbor_timers_holdtime_destroy,
@@ -2457,7 +2457,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 		  } },
 		{ .xpath = BGP_NB_TIMERS_XPATH(
 				  "neighbors/unnumbered-neighbor",
-				  "keepalive"),
+				  "/keepalive"),
 		  .cbs = {
 			  .modify  = bgp_neighbor_timers_keepalive_modify,
 			  .destroy = bgp_neighbor_timers_keepalive_destroy,
@@ -2465,7 +2465,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 		  } },
 		{ .xpath = BGP_NB_TIMERS_XPATH(
 				  "neighbors/unnumbered-neighbor",
-				  "hold-time"),
+				  "/hold-time"),
 		  .cbs = {
 			  .modify  = bgp_neighbor_timers_holdtime_modify,
 			  .destroy = bgp_neighbor_timers_holdtime_destroy,
@@ -2476,14 +2476,14 @@ const struct frr_yang_module_info frr_bgp_info = {
 			  .cli_show = bgp_neighbor_timers_cli_show,
 		  } },
 		{ .xpath = BGP_NB_TIMERS_XPATH("peer-groups/peer-group",
-					       "keepalive"),
+					       "/keepalive"),
 		  .cbs = {
 			  .modify  = bgp_neighbor_timers_keepalive_modify,
 			  .destroy = bgp_neighbor_timers_keepalive_destroy,
 			  .cli_show = bgp_nb_handled_by_parent_cli_show,
 		  } },
 		{ .xpath = BGP_NB_TIMERS_XPATH("peer-groups/peer-group",
-					       "hold-time"),
+					       "/hold-time"),
 		  .cbs = {
 			  .modify  = bgp_neighbor_timers_holdtime_modify,
 			  .destroy = bgp_neighbor_timers_holdtime_destroy,
