@@ -19,6 +19,7 @@
 #include "bgpd/bgp_nb.h"
 #include "bgpd/bgp_addpath.h"
 #include "bgpd/bgp_bfd.h"
+#include "bgpd/bgp_nb_bmp.h"
 #include "bgpd/bgp_conditional_adv.h"
 #include "bgpd/bgp_fsm.h"
 #include "bgpd/bgp_ls.h"
@@ -29,6 +30,11 @@
 #include "bgpd/bgp_updgrp.h"
 #include "bgpd/bgp_vty.h"
 #include "bgpd/bgp_zebra.h"
+#include "bgpd/bgp_evpn.h"
+#include "bgpd/bgp_evpn_mh.h"
+#include "bgpd/bgp_evpn_private.h"
+#include "bgpd/bgp_evpn_vty.h"
+#include "lib/vxlan.h"
 
 /* ------------------------------------------------------------------------ */
 /* control-plane-protocol context (frr-bgp:bgp container)                    */
@@ -4944,28 +4950,33 @@ int bgp_neighbor_capabilities_negotiate_destroy(struct nb_cb_destroy_args *args)
 static int bgp_nb_af_id_to_afi_safi(const char *afi_safi_id, afi_t *afi_out,
 				    safi_t *safi_out);
 
+static struct peer *bgp_nb_peer_ctx_lookup(const struct lyd_node *af_entry);
+
 static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode, int ups,
 				 struct peer **peer_out, afi_t *afi_out,
 				 safi_t *safi_out)
 {
-	static const char *const af_rel[] = { NULL, "../", "../../",
-					      "../../../" };
-	static const char *const peer_rel[] = { NULL, "../../..",
-						"../../../..",
-						"../../../../.." };
+	const struct lyd_node *af_entry;
 	struct peer *peer;
 	const char *afi_safi_id;
-	char key_xpath[64];
 
 	assert(ups >= 1 && ups <= 3);
 
-	peer = bgp_nb_lookup_peer(dnode, peer_rel[ups], 5 + ups);
+	/*
+	 * afi-safi entries are instantiated under neighbors/neighbor,
+	 * neighbors/unnumbered-neighbor and peer-groups/peer-group;
+	 * resolve the peer by probing the context list key so the
+	 * per-AF callbacks serve all three contexts (PL pattern).
+	 */
+	af_entry = yang_dnode_get_parent(dnode, "afi-safi");
+	if (!af_entry)
+		return -1;
+
+	peer = bgp_nb_peer_ctx_lookup(af_entry);
 	if (!peer)
 		return -1;
 
-	snprintfrr(key_xpath, sizeof(key_xpath), "%safi-safi-name",
-		 af_rel[ups]);
-	afi_safi_id = yang_dnode_get_string(dnode, "%s", key_xpath);
+	afi_safi_id = yang_dnode_get_string(af_entry, "afi-safi-name");
 	if (!afi_safi_id)
 		return -1;
 
@@ -5154,6 +5165,7 @@ BGP_NEIGHBOR_AF_FLAG_MOD_CB(attr_unchanged_next_hop,
 			PEER_FLAG_NEXTHOP_UNCHANGED, 3)
 BGP_NEIGHBOR_AF_FLAG_MOD_CB(attr_unchanged_med,
 			PEER_FLAG_MED_UNCHANGED, 3)
+BGP_NEIGHBOR_AF_FLAG_MOD_CB(upa, PEER_FLAG_UPA, 2)
 
 /*
  * encapsulation/type is a leaf-list: each entry maps to one
@@ -5731,6 +5743,685 @@ int bgp_peer_af_prefix_limit_option_destroy(struct nb_cb_destroy_args *args)
 	return bgp_nb_pl_option_common(
 		args->dnode,
 		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+/*
+ * Per-AF neighbor fanout (S059): the l2vpn-evpn per-neighbor knobs
+ * under neighbors/neighbor, neighbors/unnumbered-neighbor and
+ * peer-groups/peer-group. The callbacks resolve the peer through the
+ * context-probing lookup above, so the same callbacks serve all three
+ * contexts, and every knob maps 1:1 onto the legacy setter the CLI
+ * DEFUNs call (peer_allowas_in_set, peer_distribute_set,
+ * peer_advertise_map_set, peer_unsuppress_map_set, the addpath and
+ * SoO paths). Multi-leaf knobs follow the Fase B datastore-truth
+ * pattern: each callback re-derives the full knob set from the
+ * sibling leaves and destroy skips the dying leaf (the dnode shows
+ * the OLD tree on destroy).
+ */
+
+/*
+ * addpath-rx-paths-limit: the flag table maps the limit flag to
+ * peer_change_none, so the capability announce is driven here exactly
+ * like the CLI DEFUN does (flag, then the send limit, then the
+ * dynamic capability update).
+ */
+static int bgp_nb_addpath_rx_limit_apply(const struct lyd_node *dnode,
+					 char *errmsg, size_t errmsg_len,
+					 bool set)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	int ret;
+
+	if (bgp_nb_peer_af_lookup(dnode, 3, &peer, &afi, &safi) < 0)
+		return set ? NB_ERR : NB_OK;
+	ret = set ? peer_af_flag_set(peer, afi, safi,
+				     PEER_FLAG_ADDPATH_RX_PATHS_LIMIT)
+		  : peer_af_flag_unset(peer, afi, safi,
+				       PEER_FLAG_ADDPATH_RX_PATHS_LIMIT);
+	peer->addpath_paths_limit[afi][safi].send =
+		set ? yang_dnode_get_uint16(dnode, NULL) : 0;
+	bgp_capability_send(peer->connection, afi, safi,
+			    CAPABILITY_CODE_PATHS_LIMIT,
+			    CAPABILITY_ACTION_SET);
+	return bgp_nb_setter_result(ret, errmsg, errmsg_len);
+}
+
+int bgp_neighbor_af_addpath_rx_limit_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_addpath_rx_limit_apply(args->dnode, args->errmsg,
+					     args->errmsg_len, true);
+}
+
+int bgp_neighbor_af_addpath_rx_limit_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_addpath_rx_limit_apply(args->dnode, args->errmsg,
+					     args->errmsg_len, false);
+}
+
+/*
+ * addpath-tx-best-selected: only instantiable when path-type is
+ * best-selected (schema when); destroy resets the count like the
+ * legacy "no" form.
+ */
+static int bgp_nb_addpath_best_selected_apply(
+	const struct lyd_node *dnode, bool set)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+
+	if (bgp_nb_peer_af_lookup(dnode, 3, &peer, &afi, &safi) < 0)
+		return set ? NB_ERR : NB_OK;
+	bgp_addpath_set_peer_type(peer, afi, safi,
+				  BGP_ADDPATH_BEST_SELECTED,
+				  set ? yang_dnode_get_uint8(dnode, NULL)
+				      : 0);
+	return NB_OK;
+}
+
+int bgp_neighbor_af_addpath_best_selected_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_addpath_best_selected_apply(args->dnode, true);
+}
+
+int bgp_neighbor_af_addpath_best_selected_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_addpath_best_selected_apply(args->dnode, false);
+}
+
+/*
+ * allowas-in: one legacy knob fed by three sibling leaves
+ * (allow-own-as, allow-own-origin-as, allowas-in-route-map). The
+ * datastore is the source of truth: every modify re-applies the
+ * setter with all surviving siblings and every destroy skips the
+ * dying leaf; nothing left standing maps onto peer_allowas_in_unset.
+ */
+static int bgp_nb_allowas_in_apply(const struct lyd_node *dnode,
+				   const char *skip_leaf, char *errmsg,
+				   size_t errmsg_len)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const struct lyd_node *aspo;
+	const char *rmap = NULL;
+	int num = BGP_ALLOWAS_IN_DEFAULT;
+	bool origin = false;
+	bool have_any = false;
+
+	/* destroy must not abort the transaction (house convention) */
+	if (bgp_nb_peer_af_lookup(dnode, 3, &peer, &afi, &safi) < 0)
+		return skip_leaf ? NB_OK : NB_ERR;
+
+	aspo = yang_dnode_get_parent(dnode, "as-path-options");
+	if (!aspo)
+		return NB_ERR;
+
+	if ((!skip_leaf || !strmatch(skip_leaf, "allow-own-as"))
+	    && yang_dnode_exists(aspo, "allow-own-as")) {
+		num = yang_dnode_get_uint8(aspo, "allow-own-as");
+		have_any = true;
+	}
+	if ((!skip_leaf || !strmatch(skip_leaf, "allow-own-origin-as"))
+	    && yang_dnode_exists(aspo, "allow-own-origin-as")
+	    && yang_dnode_get_bool(aspo, "allow-own-origin-as")) {
+		origin = true;
+		have_any = true;
+	}
+	if ((!skip_leaf || !strmatch(skip_leaf, "allowas-in-route-map"))
+	    && yang_dnode_exists(aspo, "allowas-in-route-map")) {
+		rmap = yang_dnode_get_string(aspo, "allowas-in-route-map");
+		have_any = true;
+	}
+
+	if (!have_any)
+		return bgp_nb_setter_result(
+			peer_allowas_in_unset(peer, afi, safi), errmsg,
+			errmsg_len);
+
+	if (origin)
+		num = 0;
+	return bgp_nb_setter_result(
+		peer_allowas_in_set(peer, afi, safi, num, origin, rmap),
+		errmsg, errmsg_len);
+}
+
+int bgp_neighbor_af_allow_own_as_modify(struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(args->dnode, NULL, args->errmsg,
+				       args->errmsg_len);
+}
+
+int bgp_neighbor_af_allow_own_as_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+int bgp_neighbor_af_allow_own_origin_as_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(args->dnode, NULL, args->errmsg,
+				       args->errmsg_len);
+}
+
+int bgp_neighbor_af_allow_own_origin_as_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+int bgp_neighbor_af_allowas_in_route_map_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(args->dnode, NULL, args->errmsg,
+				       args->errmsg_len);
+}
+
+int bgp_neighbor_af_allowas_in_route_map_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_allowas_in_apply(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+/*
+ * Conditional advertisement: the legacy knob needs the advertise-map
+ * AND the condition together, so a half-configured tree programs
+ * nothing; the knob arms once both halves exist. Destroy reads the
+ * OLD tree (the dying pair is still visible) and tears the pair down.
+ */
+static int bgp_nb_cond_adv_apply(const struct lyd_node *dnode, bool set,
+				 char *errmsg, size_t errmsg_len)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const struct lyd_node *ca;
+	const char *adv = NULL;
+	const char *cond = NULL;
+	bool condition = CONDITION_EXIST;
+
+	if (bgp_nb_peer_af_lookup(dnode, 3, &peer, &afi, &safi) < 0)
+		return set ? NB_ERR : NB_OK;
+
+	ca = yang_dnode_get_parent(dnode, "conditional-advertisement");
+	if (!ca)
+		return set ? NB_ERR : NB_OK;
+
+	if (yang_dnode_exists(ca, "advertise-map"))
+		adv = yang_dnode_get_string(ca, "advertise-map");
+	if (yang_dnode_exists(ca, "exist-map")) {
+		cond = yang_dnode_get_string(ca, "exist-map");
+		condition = CONDITION_EXIST;
+	} else if (yang_dnode_exists(ca, "non-exist-map")) {
+		cond = yang_dnode_get_string(ca, "non-exist-map");
+		condition = CONDITION_NON_EXIST;
+	}
+
+	if (set) {
+		if (!adv || !cond)
+			return NB_OK;
+		return bgp_nb_setter_result(
+			peer_advertise_map_set(
+				peer, afi, safi, adv,
+				route_map_lookup_by_name(adv), cond,
+				route_map_lookup_by_name(cond), condition),
+			errmsg, errmsg_len);
+	}
+
+	if (!adv && !cond)
+		return NB_OK;
+	return bgp_nb_setter_result(
+		peer_advertise_map_unset(
+			peer, afi, safi, adv, adv ? route_map_lookup_by_name(adv) : NULL,
+			cond, cond ? route_map_lookup_by_name(cond) : NULL,
+			condition),
+		errmsg, errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_advertise_map_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, true, args->errmsg,
+				     args->errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_advertise_map_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, false, args->errmsg,
+				     args->errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_exist_map_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, true, args->errmsg,
+				     args->errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_exist_map_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, false, args->errmsg,
+				     args->errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_non_exist_map_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, true, args->errmsg,
+				     args->errmsg_len);
+}
+
+int bgp_neighbor_af_cond_adv_non_exist_map_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_cond_adv_apply(args->dnode, false, args->errmsg,
+				     args->errmsg_len);
+}
+
+/*
+ * Per-AF name-based filters: distribute-list (access-list),
+ * filter-list (as-path access-list) and prefix-list. Same shape as
+ * the route-map filters above: bind by name, the referenced object
+ * does not have to exist yet.
+ */
+static int bgp_neighbor_af_name_filter_modify(
+	struct nb_cb_modify_args *args, int kind, int direct)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const char *name;
+	int ret = 0;
+
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_ERR;
+	name = yang_dnode_get_string(args->dnode, NULL);
+	switch (kind) {
+	case 0:
+		ret = peer_distribute_set(peer, afi, safi, direct, name);
+		break;
+	case 1:
+		ret = peer_aslist_set(peer, afi, safi, direct, name);
+		break;
+	case 2:
+		ret = peer_prefix_list_set(peer, afi, safi, direct, name);
+		break;
+	}
+	return bgp_nb_setter_result(ret, args->errmsg, args->errmsg_len);
+}
+
+static int bgp_neighbor_af_name_filter_destroy(
+	struct nb_cb_destroy_args *args, int kind, int direct)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	int ret = 0;
+
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_OK;
+	switch (kind) {
+	case 0:
+		ret = peer_distribute_unset(peer, afi, safi, direct);
+		break;
+	case 1:
+		ret = peer_aslist_unset(peer, afi, safi, direct);
+		break;
+	case 2:
+		ret = peer_prefix_list_unset(peer, afi, safi, direct);
+		break;
+	}
+	return bgp_nb_setter_result(ret, args->errmsg, args->errmsg_len);
+}
+
+#define BGP_NEIGHBOR_AF_NAME_FILTER_CB(_kind, _direct, _kindname, _dirname)    \
+	int bgp_neighbor_af_##_kindname##_##_dirname##_modify(                 \
+		struct nb_cb_modify_args *args)                               \
+	{                                                                      \
+		return bgp_neighbor_af_name_filter_modify(args, (_kind),     \
+							  (_direct));             \
+	}                                                                      \
+	int bgp_neighbor_af_##_kindname##_##_dirname##_destroy(                \
+		struct nb_cb_destroy_args *args)                              \
+	{                                                                      \
+		return bgp_neighbor_af_name_filter_destroy(args, (_kind),     \
+							   (_direct));            \
+	}
+
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(0, FILTER_IN, access_list, import)
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(0, FILTER_OUT, access_list, export)
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(1, FILTER_IN, as_path_filter, import)
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(1, FILTER_OUT, as_path_filter, export)
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(2, FILTER_IN, plist, import)
+BGP_NEIGHBOR_AF_NAME_FILTER_CB(2, FILTER_OUT, plist, export)
+
+/*
+ * unsuppress-map: one legacy knob (filter->usmap) exposed as import
+ * and export leaves. Whatever leaf survives wins; nothing left maps
+ * onto peer_unsuppress_map_unset.
+ */
+static int bgp_nb_usmap_apply(const struct lyd_node *dnode,
+			      const char *skip_leaf, char *errmsg,
+			      size_t errmsg_len)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const struct lyd_node *fc;
+	const char *name = NULL;
+
+	if (bgp_nb_peer_af_lookup(dnode, 3, &peer, &afi, &safi) < 0)
+		return skip_leaf ? NB_OK : NB_ERR;
+
+	fc = yang_dnode_get_parent(dnode, "filter-config");
+	if (!fc)
+		return NB_ERR;
+
+	if ((!skip_leaf || !strmatch(skip_leaf, "unsuppress-map-export"))
+	    && yang_dnode_exists(fc, "unsuppress-map-export"))
+		name = yang_dnode_get_string(fc, "unsuppress-map-export");
+	if (!name
+	    && (!skip_leaf || !strmatch(skip_leaf, "unsuppress-map-import"))
+	    && yang_dnode_exists(fc, "unsuppress-map-import"))
+		name = yang_dnode_get_string(fc, "unsuppress-map-import");
+
+	if (name)
+		return bgp_nb_setter_result(
+			peer_unsuppress_map_set(
+				peer, afi, safi, name,
+				route_map_lookup_by_name(name)),
+			errmsg, errmsg_len);
+	return bgp_nb_setter_result(
+		peer_unsuppress_map_unset(peer, afi, safi), errmsg,
+		errmsg_len);
+}
+
+int bgp_neighbor_af_unsuppress_map_export_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_usmap_apply(args->dnode, NULL, args->errmsg,
+				  args->errmsg_len);
+}
+
+int bgp_neighbor_af_unsuppress_map_export_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_usmap_apply(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+int bgp_neighbor_af_unsuppress_map_import_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_usmap_apply(args->dnode, NULL, args->errmsg,
+				  args->errmsg_len);
+}
+
+int bgp_neighbor_af_unsuppress_map_import_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_usmap_apply(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+/*
+ * Site-of-Origin: parse in VALIDATE so a malformed community fails
+ * the commit instead of poisoning the APPLY path (S058 lesson).
+ */
+int bgp_neighbor_af_soo_modify(struct nb_cb_modify_args *args)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	struct ecommunity *ecomm_soo;
+	const char *str;
+	int ret;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE: {
+		struct ecommunity *probe;
+
+		probe = ecommunity_str2com(
+			yang_dnode_get_string(args->dnode, NULL),
+			ECOMMUNITY_SITE_ORIGIN, 0);
+		if (!probe) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "Malformed SoO extended community");
+			return NB_ERR_VALIDATION;
+		}
+		ecommunity_free(&probe);
+		return NB_OK;
+	}
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_ERR;
+	str = yang_dnode_get_string(args->dnode, NULL);
+	ecomm_soo = ecommunity_str2com(str, ECOMMUNITY_SITE_ORIGIN, 0);
+	if (!ecomm_soo) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "Malformed SoO extended community");
+		return NB_ERR;
+	}
+	ecommunity_str(ecomm_soo);
+
+	if (!ecommunity_match(peer->soo[afi][safi], ecomm_soo)) {
+		ecommunity_free(&peer->soo[afi][safi]);
+		peer->soo[afi][safi] = ecomm_soo;
+		peer_af_flag_unset(peer, afi, safi, PEER_FLAG_SOO);
+	} else {
+		ecommunity_free(&ecomm_soo);
+	}
+
+	ret = peer_af_flag_set(peer, afi, safi, PEER_FLAG_SOO);
+	return bgp_nb_setter_result(ret, args->errmsg, args->errmsg_len);
+}
+
+int bgp_neighbor_af_soo_destroy(struct nb_cb_destroy_args *args)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_peer_af_lookup(args->dnode, 3, &peer, &afi, &safi) < 0)
+		return NB_OK;
+	ecommunity_free(&peer->soo[afi][safi]);
+	return bgp_nb_setter_result(
+		peer_af_flag_unset(peer, afi, safi, PEER_FLAG_SOO),
 		args->errmsg, args->errmsg_len);
 }
 
@@ -7373,58 +8064,57 @@ BGP_NEIGHBOR_BOOL_CLI_SHOW(peer_graceful_shutdown, "graceful-shutdown")
  * responsible for emitting the surrounding `address-family ... exit-
  * address-family` block in legacy code, so cli_show here only emits
  * the inner per-neighbor command. */
-#define BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(_name, _keyword, _peer_rel)              \
+#define BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(_name, _keyword)                         \
 	void bgp_neighbor_af_##_name##_cli_show(struct vty *vty,               \
 		const struct lyd_node *dnode, bool show_defaults)              \
 	{                                                                      \
-		const char *peer = yang_dnode_get_string(dnode, _peer_rel);    \
+		const char *peer = bgp_nb_af_peer_name(dnode);                 \
 		if (yang_dnode_get_bool(dnode, NULL))                          \
 			vty_out(vty, "  neighbor %s %s\n", peer, _keyword);    \
 	}
 
-/* _peer_rel: leaf -> neighbor entry. <AFI>/<leaf> nodes are 4 levels
- * deep, <AFI>/<group>/<leaf> nodes are 5. */
-#define BGP_NB_AF_PEER_REL4 "../../../../remote-address"
-#define BGP_NB_AF_PEER_REL5 "../../../../../remote-address"
+static const char *bgp_nb_af_ctx_key(const struct lyd_node *af_entry);
 
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(soft_reconfig_in, "soft-reconfiguration inbound",
-			      BGP_NB_AF_PEER_REL4)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(as_override, "as-override", BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rr_client, "route-reflector-client",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rs_client, "route-server-client",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self, "next-hop-self",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self_force, "next-hop-self force",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as, "remove-private-AS",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_all, "remove-private-AS all",
-			      BGP_NB_AF_PEER_REL5)
+/*
+ * Peer name for per-AF cli_show: probe the context list key so the
+ * same emitter serves numbered, unnumbered and peer-group rows.
+ */
+static const char *bgp_nb_af_peer_name(const struct lyd_node *dnode)
+{
+	const struct lyd_node *af_entry;
+
+	af_entry = yang_dnode_get_parent(dnode, "afi-safi");
+	if (!af_entry)
+		return NULL;
+	return bgp_nb_af_ctx_key(af_entry);
+}
+
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(soft_reconfig_in, "soft-reconfiguration inbound")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(as_override, "as-override")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rr_client, "route-reflector-client")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(rs_client, "route-server-client")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self, "next-hop-self")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_self_force, "next-hop-self force")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as, "remove-private-AS")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_all, "remove-private-AS all")
 BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_replace,
-			      "remove-private-AS replace-AS",
-			      BGP_NB_AF_PEER_REL5)
+			      "remove-private-AS replace-AS")
 BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(remove_private_as_all_replace,
-			      "remove-private-AS all replace-AS",
-			      BGP_NB_AF_PEER_REL5)
+			      "remove-private-AS all replace-AS")
 BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(nexthop_local_unchanged,
-			      "nexthop-local unchanged", BGP_NB_AF_PEER_REL4)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_community, "send-community",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_ext_community, "send-community extended",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_large_community, "send-community large",
-			      BGP_NB_AF_PEER_REL5)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(accept_own, "accept-own", BGP_NB_AF_PEER_REL4)
-BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(disable_addpath_rx, "disable-addpath-rx",
-			      BGP_NB_AF_PEER_REL5)
+			      "nexthop-local unchanged")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_community, "send-community")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_ext_community, "send-community extended")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(send_large_community, "send-community large")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(accept_own, "accept-own")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(disable_addpath_rx, "disable-addpath-rx")
+BGP_NEIGHBOR_AF_BOOL_CLI_SHOW(upa, "upa")
 
 /* add-paths/path-type enum: one emitter for both legacy keywords. */
 void bgp_neighbor_af_add_paths_path_type_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
-	const char *peer = yang_dnode_get_string(dnode, BGP_NB_AF_PEER_REL5);
+	const char *peer = bgp_nb_af_peer_name(dnode);
 	const char *val = yang_dnode_get_string(dnode, NULL);
 
 	if (strmatch(val, "all"))
@@ -7443,7 +8133,7 @@ static void bgp_neighbor_af_rmap_filter_cli_show(struct vty *vty,
 						 const struct lyd_node *dnode,
 						 const char *direct)
 {
-	const char *peer = yang_dnode_get_string(dnode, BGP_NB_AF_PEER_REL5);
+	const char *peer = bgp_nb_af_peer_name(dnode);
 
 	vty_out(vty, "  neighbor %s route-map %s %s\n", peer,
 		yang_dnode_get_string(dnode, NULL), direct);
@@ -7461,12 +8151,205 @@ void bgp_neighbor_af_rmap_export_cli_show(struct vty *vty,
 	bgp_neighbor_af_rmap_filter_cli_show(vty, dnode, "out");
 }
 
+/* addpath counters: one line per leaf, ctx-aware peer name. */
+void bgp_neighbor_af_addpath_rx_limit_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	vty_out(vty, "  neighbor %s addpath-rx-paths-limit %u\n",
+		bgp_nb_af_peer_name(dnode),
+		yang_dnode_get_uint16(dnode, NULL));
+}
+
+void bgp_neighbor_af_addpath_best_selected_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	vty_out(vty, "  neighbor %s addpath-tx-best-selected %u\n",
+		bgp_nb_af_peer_name(dnode),
+		yang_dnode_get_uint8(dnode, NULL));
+}
+
+/*
+ * allowas-in: the legacy writer emits ONE line from the three
+ * sibling leaves, so only the most significant present leaf renders
+ * (allow-own-as, then a true allow-own-origin-as, then the
+ * route-map) and the siblings stay silent.
+ */
+static void bgp_nb_allowas_in_cli_show_common(struct vty *vty,
+	const struct lyd_node *dnode, const char *self_leaf)
+{
+	const struct lyd_node *aspo;
+	const char *peer = bgp_nb_af_peer_name(dnode);
+	const char *rmap = NULL;
+	const char *designated;
+	bool origin = false;
+	int num = BGP_ALLOWAS_IN_DEFAULT;
+
+	aspo = yang_dnode_get_parent(dnode, "as-path-options");
+	if (!aspo)
+		return;
+
+	designated = yang_dnode_exists(aspo, "allow-own-as")
+			     ? "allow-own-as"
+			     : ((yang_dnode_exists(aspo,
+						   "allow-own-origin-as")
+				 && yang_dnode_get_bool(
+					 aspo, "allow-own-origin-as"))
+					? "allow-own-origin-as"
+					: (yang_dnode_exists(
+						   aspo,
+						   "allowas-in-route-map")
+					       ? "allowas-in-route-map"
+					       : NULL));
+	if (!designated || !strmatch(self_leaf, designated))
+		return;
+
+	if (yang_dnode_exists(aspo, "allow-own-as"))
+		num = yang_dnode_get_uint8(aspo, "allow-own-as");
+	if (yang_dnode_exists(aspo, "allow-own-origin-as"))
+		origin = yang_dnode_get_bool(aspo,
+					     "allow-own-origin-as");
+	if (yang_dnode_exists(aspo, "allowas-in-route-map"))
+		rmap = yang_dnode_get_string(aspo,
+					     "allowas-in-route-map");
+
+	vty_out(vty, "  neighbor %s allowas-in", peer);
+	if (rmap)
+		vty_out(vty, " route-map %s", rmap);
+	if (origin)
+		vty_out(vty, " origin\n");
+	else if (num != BGP_ALLOWAS_IN_DEFAULT)
+		vty_out(vty, " %d\n", num);
+	else
+		vty_out(vty, "\n");
+}
+
+void bgp_neighbor_af_allow_own_as_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_nb_allowas_in_cli_show_common(vty, dnode, "allow-own-as");
+}
+
+void bgp_neighbor_af_allow_own_origin_as_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_nb_allowas_in_cli_show_common(vty, dnode,
+					  "allow-own-origin-as");
+}
+
+void bgp_neighbor_af_allowas_in_route_map_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_nb_allowas_in_cli_show_common(vty, dnode,
+					  "allowas-in-route-map");
+}
+
+/*
+ * Conditional advertisement: only the advertise-map leaf renders,
+ * and only once the condition half exists (the knob arms as a pair).
+ */
+static void bgp_nb_cond_adv_cli_show_common(struct vty *vty,
+	const struct lyd_node *dnode)
+{
+	const struct lyd_node *ca;
+	const char *peer = bgp_nb_af_peer_name(dnode);
+
+	ca = yang_dnode_get_parent(dnode,
+				   "conditional-advertisement");
+	if (!ca || !yang_dnode_exists(ca, "advertise-map"))
+		return;
+	if (yang_dnode_exists(ca, "exist-map"))
+		vty_out(vty, "  neighbor %s advertise-map %s exist-map %s\n",
+			peer, yang_dnode_get_string(ca, "advertise-map"),
+			yang_dnode_get_string(ca, "exist-map"));
+	else if (yang_dnode_exists(ca, "non-exist-map"))
+		vty_out(vty,
+			"  neighbor %s advertise-map %s non-exist-map %s\n",
+			peer, yang_dnode_get_string(ca, "advertise-map"),
+			yang_dnode_get_string(ca, "non-exist-map"));
+}
+
+void bgp_neighbor_af_cond_adv_advertise_map_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	bgp_nb_cond_adv_cli_show_common(vty, dnode);
+}
+
+void bgp_neighbor_af_cond_adv_exist_map_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	/* rendered by the advertise-map leaf */
+}
+
+void bgp_neighbor_af_cond_adv_non_exist_map_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	/* rendered by the advertise-map leaf */
+}
+
+/*
+ * Name-based filters: "distribute-list|filter-list|prefix-list NAME
+ * in|out", one line per leaf.
+ */
+#define BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(_kindname, _dirname, _keyword, _direct) \
+	void bgp_neighbor_af_##_kindname##_##_dirname##_cli_show(           \
+		struct vty *vty, const struct lyd_node *dnode,              \
+		bool show_defaults)                                         \
+	{                                                                      \
+		vty_out(vty, "  neighbor %s " _keyword " %s " _direct "\n",    \
+			bgp_nb_af_peer_name(dnode),                          \
+			yang_dnode_get_string(dnode, NULL));                 \
+	}
+
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(access_list, import,
+				     "distribute-list", "in")
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(access_list, export,
+				     "distribute-list", "out")
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(as_path_filter, import,
+				     "filter-list", "in")
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(as_path_filter, export,
+				     "filter-list", "out")
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(plist, import, "prefix-list", "in")
+BGP_NEIGHBOR_AF_NAME_FILTER_CLI_SHOW(plist, export, "prefix-list", "out")
+
+/*
+ * unsuppress-map: one legacy knob, so the export leaf renders and
+ * the import leaf only renders when export is absent.
+ */
+void bgp_neighbor_af_unsuppress_map_export_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	vty_out(vty, "  neighbor %s unsuppress-map %s\n",
+		bgp_nb_af_peer_name(dnode),
+		yang_dnode_get_string(dnode, NULL));
+}
+
+void bgp_neighbor_af_unsuppress_map_import_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	const struct lyd_node *fc;
+
+	fc = yang_dnode_get_parent(dnode, "filter-config");
+	if (fc && yang_dnode_exists(fc, "unsuppress-map-export"))
+		return;
+	vty_out(vty, "  neighbor %s unsuppress-map %s\n",
+		bgp_nb_af_peer_name(dnode),
+		yang_dnode_get_string(dnode, NULL));
+}
+
+void bgp_neighbor_af_soo_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	vty_out(vty, "  neighbor %s soo %s\n",
+		bgp_nb_af_peer_name(dnode),
+		yang_dnode_get_string(dnode, NULL));
+}
+
 /*
  * Prefix-limit cli_show: rendered from the max-prefixes leaf so each
  * direction-list entry prints exactly one legacy line (matching
  * bgp_config_write_family byte for byte).
  */
-static const char *bgp_nb_pl_ctx_key(const struct lyd_node *af_entry)
+static const char *bgp_nb_af_ctx_key(const struct lyd_node *af_entry)
 {
 	if (yang_dnode_exists(af_entry, "../../remote-address"))
 		return yang_dnode_get_string(af_entry,
@@ -7485,7 +8368,7 @@ void bgp_peer_af_prefix_limit_max_cli_show(struct vty *vty,
 
 	dl = yang_dnode_get_parent(dnode, "direction-list");
 	af_entry = yang_dnode_get_parent(dl, "afi-safi");
-	key = bgp_nb_pl_ctx_key(af_entry);
+	key = bgp_nb_af_ctx_key(af_entry);
 	direction = yang_dnode_get_string(dl, "direction");
 
 	if (strmatch(direction, "out")) {
@@ -8146,4 +9029,1650 @@ void bgp_nb_handled_by_parent_cli_show(struct vty *vty,
 	(void)vty;
 	(void)dnode;
 	(void)show_defaults;
+}
+
+/*
+ * ==== EVPN global (l2vpn-evpn) — Fase C fatia 1 ====
+ *
+ * The global half of the EVPN AF subtree is wired to the same
+ * internals the CLI DEFUNs in bgp_evpn_vty.c call (evpn_* helpers),
+ * plus the prefix-limit fanout under l2vpn-evpn which reuses the
+ * shared callbacks from Fase B. Plumbing only: no new daemon
+ * behaviour. The CLI keeps legacy authority (show running-config
+ * renders from the internals through bgp_config_write_evpn_info).
+ *
+ * `depth` in bgp_nb_evpn_bgp() is the number of ../ hops from the
+ * callback dnode to the control-plane-protocol entry:
+ *   - leaf directly under l2vpn-evpn           -> 6
+ *   - leaf under one container (dad, mh, ...)  -> 7
+ *   - leaf under ip-vrf/ipvX-unicast           -> 8
+ *   - vni list entry                           -> 6
+ *   - leaf inside a vni entry                  -> 7
+ */
+static struct bgp *bgp_nb_evpn_bgp(const struct lyd_node *dnode,
+				   unsigned int depth, char *errmsg,
+				   size_t errmsg_len)
+{
+	struct bgp *bgp = bgp_nb_lookup_from_dnode(dnode, depth);
+
+	if (!bgp) {
+		snprintfrr(errmsg, errmsg_len,
+			   "l2vpn-evpn: bgp instance not found");
+		return NULL;
+	}
+	return bgp;
+}
+
+static vni_t bgp_nb_evpn_vni_key(const struct lyd_node *dnode)
+{
+	return yang_dnode_get_uint32(dnode, "vni");
+}
+
+/*
+ * Resolve the bgpevpn for a callback dnode: either the vni list
+ * entry itself (create/destroy) or a leaf inside it (rd, route
+ * targets). Leaf-level reads MUST go through the parent entry --
+ * the yang wrappers abort the daemon on a missing node.
+ */
+static struct bgpevpn *bgp_nb_evpn_vni_lookup(const struct lyd_node *dnode,
+					      struct bgp *bgp)
+{
+	const struct lyd_node *entry;
+
+	if (dnode->schema && !strcmp(dnode->schema->name, "vni"))
+		entry = dnode;
+	else {
+		entry = yang_dnode_get_parent(dnode, "vni");
+		if (!entry)
+			return NULL;
+	}
+	return bgp_evpn_lookup_vni(
+		bgp, yang_dnode_get_uint32(entry, "vni"));
+}
+
+
+/*
+ * Parse one route-target string into a configured RT. Handles the
+ * import-only wildcard '*:NN'/'*:MN' exactly like the CLI parser
+ * (the '*' is rewritten to '0' for ecommunity_str2com). Called in
+ * VALIDATE so malformed-yang-legal values fail the whole batch
+ * before anything is applied. Caller owns the result.
+ */
+static struct bgp_evpn_cfgd_rt *
+bgp_nb_evpn_cfgd_rt_from_str(const char *rt_str, bool wildcard_ok,
+			     char *errmsg, size_t errmsg_len)
+{
+	struct ecommunity *ecom;
+	struct bgp_evpn_cfgd_rt *cfgd_rt;
+	bool is_wildcard = false;
+	char buf[RT_ADDRSTRLEN];
+
+	if (rt_str[0] == '*') {
+		if (!wildcard_ok) {
+			snprintfrr(errmsg, errmsg_len,
+				   "%% Wildcard '*' only applicable for import: %s",
+				   rt_str);
+			return NULL;
+		}
+		strlcpy(buf, rt_str, sizeof(buf));
+		buf[0] = '0';
+		rt_str = buf;
+		is_wildcard = true;
+	}
+
+	ecom = ecommunity_str2com(rt_str, ECOMMUNITY_ROUTE_TARGET, 0);
+	if (!ecom) {
+		snprintfrr(errmsg, errmsg_len,
+			   "%% Malformed Route Target: %s", rt_str);
+		return NULL;
+	}
+	ecommunity_str(ecom);
+	cfgd_rt = bgp_evpn_cfgd_rt_from_ecom(ecom, is_wildcard);
+	ecommunity_free(&ecom);
+	if (!cfgd_rt)
+		snprintfrr(errmsg, errmsg_len,
+			   "%% Malformed Route Target: %s", rt_str);
+	return cfgd_rt;
+}
+
+/*
+ * Dispatch the import/export direction from the leaf-list schema name
+ * (import-route-target / export-route-target, plain and -auto).
+ */
+static enum bgp_evpn_rt_direction bgp_nb_evpn_rt_direction(
+	const struct lyd_node *dnode)
+{
+	if (!strncmp(dnode->schema->name, "import", strlen("import")))
+		return RT_TYPE_IMPORT;
+	return RT_TYPE_EXPORT;
+}
+
+/* ---- advertise-all-vni / advertise-default-gateway / advertise-svi-ip */
+
+int bgp_global_evpn_advertise_all_vni_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+				      args->errmsg_len);
+		if (!bgp)
+			return NB_ERR_VALIDATION;
+		if (yang_dnode_get_bool(args->dnode, NULL)) {
+			struct bgp *bgp_evpn = bgp_get_evpn();
+
+			if (bgp_evpn && bgp_evpn != bgp) {
+				snprintfrr(args->errmsg, args->errmsg_len,
+					   "%% Please unconfigure EVPN in %s",
+					   bgp_evpn->name_pretty);
+				return NB_ERR_VALIDATION;
+			}
+		}
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	if (yang_dnode_get_bool(args->dnode, NULL))
+		evpn_set_advertise_all_vni(bgp);
+	else
+		evpn_unset_advertise_all_vni(bgp);
+	return NB_OK;
+}
+
+static int bgp_nb_evpn_af_enabled_validate(struct nb_cb_modify_args *args,
+					   unsigned int depth)
+{
+	struct bgp *bgp;
+
+	if (!yang_dnode_get_bool(args->dnode, NULL))
+		return NB_OK;
+	bgp = bgp_nb_evpn_bgp(args->dnode, depth, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR_VALIDATION;
+	if (!EVPN_ENABLED(bgp)) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "This command is only supported under the EVPN VRF");
+		return NB_ERR_VALIDATION;
+	}
+	return NB_OK;
+}
+
+int bgp_global_evpn_advertise_default_gw_modify(
+	struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		return bgp_nb_evpn_af_enabled_validate(args, 6);
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	if (yang_dnode_get_bool(args->dnode, NULL))
+		evpn_set_advertise_default_gw(bgp, NULL);
+	else
+		evpn_unset_advertise_default_gw(bgp, NULL);
+	return NB_OK;
+}
+
+int bgp_global_evpn_advertise_svi_ip_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		return bgp_nb_evpn_af_enabled_validate(args, 6);
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	evpn_set_advertise_svi_macip(
+		bgp, NULL, yang_dnode_get_bool(args->dnode, NULL));
+	return NB_OK;
+}
+
+int bgp_global_evpn_autort_rfc8365_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	if (yang_dnode_get_bool(args->dnode, NULL))
+		evpn_set_autort_rfc8365(bgp, true, true);
+	else
+		evpn_unset_autort_rfc8365(bgp, true, true);
+	return NB_OK;
+}
+
+int bgp_global_evpn_default_originate_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	afi_t afi;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	afi = strmatch(args->dnode->schema->name, "ipv4") ? AFI_IP
+							  : AFI_IP6;
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	evpn_process_default_originate_cmd(
+		bgp, afi, yang_dnode_get_bool(args->dnode, NULL));
+	return NB_OK;
+}
+
+int bgp_global_evpn_resolve_overlay_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+				      args->errmsg_len);
+		if (!bgp)
+			return NB_ERR_VALIDATION;
+		if (bgp != bgp_get_evpn()) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "This command is only supported under EVPN VRF");
+			return NB_ERR_VALIDATION;
+		}
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	bgp_evpn_set_unset_resolve_overlay_index(
+		bgp, yang_dnode_get_bool(args->dnode, NULL));
+	return NB_OK;
+}
+
+int bgp_global_evpn_flooding_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	const char *mode;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	mode = yang_dnode_get_string(args->dnode, NULL);
+	bgp->vxlan_flood_ctrl = strmatch(mode, "disable")
+					? VXLAN_FLOOD_DISABLED
+					: VXLAN_FLOOD_HEAD_END_REPL;
+	bgp_evpn_flood_control_change(bgp);
+	return NB_OK;
+}
+
+int bgp_global_evpn_soo_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp, *bgp_evpn;
+	struct ecommunity *ecomm_soo;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+				      args->errmsg_len);
+		if (!bgp)
+			return NB_ERR_VALIDATION;
+		bgp_evpn = bgp_get_evpn();
+		if (!bgp_evpn || !bgp_evpn->evpn_info || bgp != bgp_evpn) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "%% Please configure MAC-VRF SoO in the EVPN underlay");
+			return NB_ERR_VALIDATION;
+		}
+		ecomm_soo = ecommunity_str2com(
+			yang_dnode_get_string(args->dnode, NULL),
+			ECOMMUNITY_SITE_ORIGIN, 0);
+		if (!ecomm_soo) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "%% Malformed SoO extended community");
+			return NB_ERR_VALIDATION;
+		}
+		ecommunity_free(&ecomm_soo);
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	ecomm_soo = ecommunity_str2com(
+		yang_dnode_get_string(args->dnode, NULL),
+		ECOMMUNITY_SITE_ORIGIN, 0);
+	if (!ecomm_soo) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "%% Malformed SoO extended community");
+		return NB_ERR;
+	}
+	ecommunity_str(ecomm_soo);
+	bgp_evpn_handle_global_macvrf_soo_change(bgp, ecomm_soo);
+	return NB_OK;
+}
+
+int bgp_global_evpn_soo_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp, *bgp_evpn;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	bgp_evpn = bgp_get_evpn();
+	if (bgp_evpn && bgp_evpn->evpn_info)
+		bgp_evpn_handle_global_macvrf_soo_change(bgp_evpn,
+							 NULL);
+	return NB_OK;
+}
+
+/*
+ * dup-addr-detection: combined reapply from the datastore (the DS is
+ * the source of truth), mirroring the Fase B prefix-limit reapply.
+ * skip_leaf is the schema name of a leaf being destroyed so the OLD
+ * tree read does not resurrect the dying value.
+ */
+static int bgp_nb_evpn_dad_apply(struct bgp *bgp, const struct lyd_node *dnode,
+				 const char *skip_leaf)
+{
+	const struct lyd_node *dad;
+	bool enable = true;
+	bool freeze = false;
+	uint16_t max_moves = EVPN_DAD_DEFAULT_MAX_MOVES;
+	uint16_t time = EVPN_DAD_DEFAULT_TIME;
+	uint32_t freeze_time = 0;
+
+	dad = yang_dnode_get_parent(dnode, "duplicate-address-detection");
+	if (!dad)
+		return NB_ERR;
+
+	if ((!skip_leaf || strcmp(skip_leaf, "enable"))
+	    && yang_dnode_exists(dad, "enable"))
+		enable = yang_dnode_get_bool(dad, "enable");
+	if ((!skip_leaf || strcmp(skip_leaf, "max-moves"))
+	    && yang_dnode_exists(dad, "max-moves"))
+		max_moves = yang_dnode_get_uint16(dad, "max-moves");
+	if ((!skip_leaf || strcmp(skip_leaf, "time"))
+	    && yang_dnode_exists(dad, "time"))
+		time = yang_dnode_get_uint16(dad, "time");
+	if ((!skip_leaf || strcmp(skip_leaf, "freeze-time"))
+	    && yang_dnode_exists(dad, "freeze-time")) {
+		freeze = true;
+		freeze_time = yang_dnode_get_uint16(dad, "freeze-time");
+	}
+	if ((!skip_leaf || strcmp(skip_leaf, "freeze-permanent"))
+	    && yang_dnode_exists(dad, "freeze-permanent"))
+		freeze = true;
+
+	bgp->evpn_info->dup_addr_detect = enable;
+	bgp->evpn_info->dad_max_moves = max_moves;
+	bgp->evpn_info->dad_time = time;
+	bgp->evpn_info->dad_freeze = freeze;
+	bgp->evpn_info->dad_freeze_time = freeze_time;
+	bgp_zebra_dup_addr_detection(bgp);
+	return NB_OK;
+}
+
+static int bgp_nb_evpn_dad_common(struct nb_cb_modify_args *args,
+				  unsigned int depth)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		bgp = bgp_nb_evpn_bgp(args->dnode, depth, args->errmsg,
+				      args->errmsg_len);
+		if (!bgp)
+			return NB_ERR_VALIDATION;
+		if (!EVPN_ENABLED(bgp)) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "This command is only supported under the EVPN VRF");
+			return NB_ERR_VALIDATION;
+		}
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, depth, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	return bgp_nb_evpn_dad_apply(bgp, args->dnode, NULL);
+}
+
+int bgp_global_evpn_dad_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_evpn_dad_common(args, 7);
+}
+
+int bgp_global_evpn_dad_freeze_time_modify(
+	struct nb_cb_modify_args *args)
+{
+	return bgp_nb_evpn_dad_common(args, 7);
+}
+
+int bgp_global_evpn_dad_freeze_time_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	return bgp_nb_evpn_dad_apply(bgp, args->dnode, "freeze-time");
+}
+
+int bgp_global_evpn_dad_freeze_permanent_create(
+	struct nb_cb_create_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	return bgp_nb_evpn_dad_apply(bgp, args->dnode, NULL);
+}
+
+int bgp_global_evpn_dad_freeze_permanent_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	return bgp_nb_evpn_dad_apply(bgp, args->dnode, "freeze-permanent");
+}
+
+/* ---- multihoming global knobs (bgp_mh_info) ---- */
+
+int bgp_global_evpn_use_es_l3nhg_modify(struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp_mh_info->host_routes_use_l3nhg =
+		yang_dnode_get_bool(args->dnode, NULL);
+	return NB_OK;
+}
+
+int bgp_global_evpn_ead_evi_rx_modify(struct nb_cb_modify_args *args)
+{
+	bool old_ead_evi_rx;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	/*
+	 * The leaf is the DISABLE knob: disable-ead-evi-rx true means
+	 * the EAD-EVI rx activation is turned off.
+	 */
+	old_ead_evi_rx = !yang_dnode_get_bool(args->dnode, NULL);
+	if (old_ead_evi_rx != bgp_mh_info->enable_ead_evi_rx) {
+		bgp_mh_info->enable_ead_evi_rx = old_ead_evi_rx;
+		bgp_evpn_switch_ead_evi_rx();
+	}
+	return NB_OK;
+}
+
+int bgp_global_evpn_ead_evi_tx_modify(struct nb_cb_modify_args *args)
+{
+	bool old_ead_evi_tx;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	old_ead_evi_tx = !yang_dnode_get_bool(args->dnode, NULL);
+	if (old_ead_evi_tx != bgp_mh_info->enable_ead_evi_tx) {
+		bgp_mh_info->enable_ead_evi_tx = old_ead_evi_tx;
+		bgp_evpn_switch_ead_evi_tx();
+	}
+	return NB_OK;
+}
+
+int bgp_global_evpn_ead_es_frag_limit_modify(
+	struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp_mh_info->evi_per_es_frag =
+		yang_dnode_get_uint16(args->dnode, NULL);
+	return NB_OK;
+}
+
+int bgp_global_evpn_ead_es_frag_limit_destroy(
+	struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp_mh_info->evi_per_es_frag = BGP_EVPN_MAX_EVI_PER_ES_FRAG;
+	return NB_OK;
+}
+
+/*
+ * On add the helper takes ownership of ecom; on remove the caller
+ * keeps it (mirrors the CLI DEFUNs).
+ */
+static int bgp_nb_evpn_ead_es_rt_apply(enum nb_event event,
+				       const struct lyd_node *dnode,
+				       bool is_add, char *errmsg,
+				       size_t errmsg_len)
+{
+	struct bgp *bgp;
+	struct ecommunity *ecom;
+	const char *rt_str;
+
+	rt_str = yang_dnode_get_string(dnode, NULL);
+
+	if (event == NB_EV_VALIDATE) {
+		ecom = ecommunity_str2com(rt_str,
+					  ECOMMUNITY_ROUTE_TARGET, 0);
+		if (!ecom) {
+			snprintfrr(errmsg, errmsg_len,
+				   "%% Malformed Route Target list");
+			return NB_ERR_VALIDATION;
+		}
+		ecommunity_free(&ecom);
+		return NB_OK;
+	}
+	if (event != NB_EV_APPLY)
+		return NB_OK;
+
+	ecom = ecommunity_str2com(rt_str, ECOMMUNITY_ROUTE_TARGET, 0);
+	if (!ecom) {
+		snprintfrr(errmsg, errmsg_len,
+			   "%% Malformed Route Target list");
+		return NB_ERR;
+	}
+	ecommunity_str(ecom);
+
+	bgp = bgp_nb_evpn_bgp(dnode, 7, errmsg, errmsg_len);
+	if (!bgp) {
+		ecommunity_free(&ecom);
+		return NB_ERR;
+	}
+	if (!is_add
+	    && !bgp_evpn_rt_matches_existing(bgp_mh_info->ead_es_export_rtl,
+					     ecom)) {
+		snprintfrr(errmsg, errmsg_len,
+			   "%% RT specified does not match EAD-ES RT configuration");
+		ecommunity_free(&ecom);
+		return NB_ERR;
+	}
+	if (is_add
+	    && bgp_evpn_rt_matches_existing(bgp_mh_info->ead_es_export_rtl,
+					    ecom)) {
+		ecommunity_free(&ecom);
+		return NB_OK;
+	}
+	bgp_evpn_mh_config_ead_export_rt(bgp, ecom, !is_add);
+	if (!is_add)
+		ecommunity_free(&ecom);
+	return NB_OK;
+}
+
+int bgp_global_evpn_ead_es_rt_create(struct nb_cb_create_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE: {
+		struct bgp *bgp;
+
+		bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+				      args->errmsg_len);
+		if (!bgp)
+			return NB_ERR_VALIDATION;
+		if (!EVPN_ENABLED(bgp)) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "This command is only supported under EVPN VRF");
+			return NB_ERR_VALIDATION;
+		}
+		break;
+	}
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_evpn_ead_es_rt_apply(args->event, args->dnode, true,
+					   args->errmsg, args->errmsg_len);
+}
+
+int bgp_global_evpn_ead_es_rt_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_evpn_ead_es_rt_apply(args->event, args->dnode, false,
+					   args->errmsg, args->errmsg_len);
+}
+
+/* ---- advertise-pip (L3VNI VRF only) ---- */
+
+static int bgp_nb_evpn_pip_vrf_validate(struct nb_cb_modify_args *args,
+					unsigned int depth)
+{
+	struct bgp *bgp = bgp_nb_evpn_bgp(args->dnode, depth, args->errmsg,
+					  args->errmsg_len);
+
+	if (!bgp)
+		return NB_ERR_VALIDATION;
+	if (EVPN_ENABLED(bgp)) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "This command is supported under L3VNI BGP EVPN VRF");
+		return NB_ERR_VALIDATION;
+	}
+	return NB_OK;
+}
+
+int bgp_global_evpn_pip_enable_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		return bgp_nb_evpn_pip_vrf_validate(args, 7);
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	bgp_evpn_pip_enable_set(bgp, yang_dnode_get_bool(args->dnode, NULL));
+	return NB_OK;
+}
+
+int bgp_global_evpn_pip_ip_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	struct in_addr ip;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		return bgp_nb_evpn_pip_vrf_validate(args, 7);
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	yang_dnode_get_ipv4(&ip, args->dnode, NULL);
+	bgp_evpn_pip_ip_set(bgp, ip);
+	return NB_OK;
+}
+
+int bgp_global_evpn_pip_ip_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	bgp_evpn_pip_ip_unset(bgp);
+	return NB_OK;
+}
+
+int bgp_global_evpn_pip_mac_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	struct ethaddr mac;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		return bgp_nb_evpn_pip_vrf_validate(args, 7);
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	yang_dnode_get_mac(&mac, args->dnode, NULL);
+	bgp_evpn_pip_mac_set(bgp, &mac);
+	return NB_OK;
+}
+
+int bgp_global_evpn_pip_mac_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	bgp_evpn_pip_mac_unset(bgp);
+	return NB_OK;
+}
+
+/* ---- ip-vrf (L3VNI VRF) ---- */
+
+int bgp_global_evpn_vrf_rd_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	struct prefix_rd prd;
+	const char *rd_str;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+				      args->errmsg_len);
+		if (!bgp)
+			return NB_ERR_VALIDATION;
+		if (!str2prefix_rd(yang_dnode_get_string(args->dnode, NULL),
+				   &prd)) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "%% Malformed Route Distinguisher");
+			return NB_ERR_VALIDATION;
+		}
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	rd_str = yang_dnode_get_string(args->dnode, NULL);
+	str2prefix_rd(rd_str, &prd);
+	if (!bgp_evpn_vrf_rd_matches_existing(bgp, &prd))
+		evpn_configure_vrf_rd(bgp, &prd, rd_str);
+	return NB_OK;
+}
+
+int bgp_global_evpn_vrf_rd_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	if (!is_vrf_rd_configured(bgp))
+		return NB_OK;
+	evpn_unconfigure_vrf_rd(bgp);
+	return NB_OK;
+}
+
+static int bgp_nb_evpn_vrf_rt_apply(enum nb_event event,
+				    const struct lyd_node *dnode, bool is_add,
+				    char *errmsg, size_t errmsg_len)
+{
+	struct bgp *bgp;
+	struct bgp_evpn_cfgd_rt *cfgd_rt;
+	enum bgp_evpn_rt_direction direction;
+	const char *rt_str;
+
+	rt_str = yang_dnode_get_string(dnode, NULL);
+	direction = bgp_nb_evpn_rt_direction(dnode);
+
+	if (event == NB_EV_VALIDATE) {
+		cfgd_rt = bgp_nb_evpn_cfgd_rt_from_str(
+			rt_str, direction == RT_TYPE_IMPORT, errmsg,
+			errmsg_len);
+		if (!cfgd_rt)
+			return NB_ERR_VALIDATION;
+		bgp_evpn_cfgd_rt_free(cfgd_rt);
+		return NB_OK;
+	}
+	if (event != NB_EV_APPLY)
+		return NB_OK;
+
+	cfgd_rt = bgp_nb_evpn_cfgd_rt_from_str(
+		rt_str, direction == RT_TYPE_IMPORT, errmsg, errmsg_len);
+	if (!cfgd_rt)
+		return NB_ERR;
+
+	bgp = bgp_nb_evpn_bgp(dnode, 7, errmsg, errmsg_len);
+	if (!bgp) {
+		bgp_evpn_cfgd_rt_free(cfgd_rt);
+		return NB_ERR;
+	}
+	if (is_add) {
+		if (vrf_rt_add(bgp, cfgd_rt, direction) != 0) {
+			/*
+			 * Idempotent re-create (CLI-converged state):
+			 * mirror the EAD-ES behaviour and accept it.
+			 */
+			bgp_evpn_cfgd_rt_free(cfgd_rt);
+			return NB_OK;
+		}
+	} else {
+		if (vrf_rt_del(bgp, cfgd_rt, direction) != 0) {
+			snprintfrr(errmsg, errmsg_len,
+				   "%% RT specified does not match configuration for this VRF: %s",
+				   rt_str);
+		}
+		bgp_evpn_cfgd_rt_free(cfgd_rt);
+	}
+	return NB_OK;
+}
+
+int bgp_global_evpn_vrf_rt_create(struct nb_cb_create_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		break;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_evpn_vrf_rt_apply(args->event, args->dnode, true,
+					args->errmsg, args->errmsg_len);
+}
+
+int bgp_global_evpn_vrf_rt_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_evpn_vrf_rt_apply(args->event, args->dnode, false,
+					args->errmsg, args->errmsg_len);
+}
+
+int bgp_global_evpn_vrf_rt_auto_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	bool enable;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	enable = yang_dnode_get_bool(args->dnode, NULL);
+	if (bgp_nb_evpn_rt_direction(args->dnode) == RT_TYPE_IMPORT) {
+		if (enable)
+			bgp_evpn_configure_import_auto_rt_for_vrf(
+				bgp, BGP_EVPN_AUTORT_ADD_ALWAYS);
+		else
+			bgp_evpn_unconfigure_import_auto_rt_for_vrf(bgp);
+	} else {
+		if (enable)
+			bgp_evpn_configure_export_auto_rt_for_vrf(
+				bgp, BGP_EVPN_AUTORT_ADD_ALWAYS);
+		else
+			bgp_evpn_unconfigure_export_auto_rt_for_vrf(bgp);
+	}
+	return NB_OK;
+}
+
+/*
+ * type-5 advertise: combined reapply from the ipvX-unicast container
+ * (the DS is the source of truth). disable clears flags, rmap and
+ * withdraws, mirroring the CLI no-form.
+ */
+static int bgp_nb_evpn_t5_apply(struct bgp *bgp, const struct lyd_node *t5c,
+				const char *skip_leaf)
+{
+	afi_t afi;
+	bool enable = false, gw = false;
+	const char *rmap = NULL;
+
+	afi = strmatch(t5c->schema->name, "ipv4-unicast") ? AFI_IP
+							  : AFI_IP6;
+	if (yang_dnode_exists(t5c, "enable"))
+		enable = yang_dnode_get_bool(t5c, "enable");
+	/*
+	 * DESTROY callbacks see the OLD tree: skip the dying leaf so the
+	 * reapply keeps the default instead of resurrecting its value.
+	 */
+	if ((!skip_leaf || strcmp(skip_leaf, "gateway-ip"))
+	    && yang_dnode_exists(t5c, "gateway-ip"))
+		gw = yang_dnode_get_bool(t5c, "gateway-ip");
+	if ((!skip_leaf || strcmp(skip_leaf, "route-map"))
+	    && yang_dnode_exists(t5c, "route-map"))
+		rmap = yang_dnode_get_string(t5c, "route-map");
+
+	if (!enable) {
+		bgp_evpn_advertise_type5_unset(bgp, afi);
+		return NB_OK;
+	}
+	/*
+	 * Return code 1 is "already configured" -- an idempotent
+	 * no-op for a programmatic re-commit of the same state.
+	 */
+	(void)bgp_evpn_advertise_type5_set(bgp, afi, gw, rmap);
+	return NB_OK;
+}
+
+static const struct lyd_node *bgp_nb_evpn_t5_container(
+	const struct lyd_node *dnode)
+{
+	const struct lyd_node *t5c;
+
+	t5c = yang_dnode_get_parent(dnode, "ipv4-unicast");
+	if (!t5c)
+		t5c = yang_dnode_get_parent(dnode, "ipv6-unicast");
+	return t5c;
+}
+
+static int bgp_nb_evpn_t5_common(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	const struct lyd_node *t5c;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 8, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	t5c = bgp_nb_evpn_t5_container(args->dnode);
+	if (!t5c) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "%% Only ipv4 unicast or ipv6 unicast are supported");
+		return NB_ERR;
+	}
+	return bgp_nb_evpn_t5_apply(bgp, t5c, NULL);
+}
+
+int bgp_global_evpn_t5_enable_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_evpn_t5_common(args);
+}
+
+int bgp_global_evpn_t5_gateway_ip_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_evpn_t5_common(args);
+}
+
+int bgp_global_evpn_t5_gateway_ip_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+	const struct lyd_node *t5c;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 8, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	t5c = bgp_nb_evpn_t5_container(args->dnode);
+	if (!t5c)
+		return NB_ERR;
+	return bgp_nb_evpn_t5_apply(
+		bgp, t5c,
+		args->dnode->schema ? args->dnode->schema->name : NULL);
+}
+
+int bgp_global_evpn_t5_rmap_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_evpn_t5_common(args);
+}
+
+int bgp_global_evpn_t5_rmap_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+	const struct lyd_node *t5c;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 8, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	t5c = bgp_nb_evpn_t5_container(args->dnode);
+	if (!t5c)
+		return NB_ERR;
+	return bgp_nb_evpn_t5_apply(
+		bgp, t5c,
+		args->dnode->schema ? args->dnode->schema->name : NULL);
+}
+
+/* ---- vni (L2VNI) list ---- */
+
+int bgp_global_evpn_vni_create(struct nb_cb_create_args *args)
+{
+	struct bgp *bgp;
+	struct bgpevpn *vpn;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	vpn = evpn_create_update_vni(bgp, bgp_nb_evpn_vni_key(args->dnode));
+	if (!vpn) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "%% Failed to create VNI");
+		return NB_ERR;
+	}
+	return NB_OK;
+}
+
+int bgp_global_evpn_vni_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+	struct bgpevpn *vpn;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 6, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	vpn = bgp_nb_evpn_vni_lookup(args->dnode, bgp);
+	if (!vpn || !is_vni_configured(vpn))
+		return NB_OK;
+	evpn_delete_vni(bgp, vpn);
+	return NB_OK;
+}
+
+static struct bgpevpn *bgp_nb_evpn_vni_from_leaf(
+	const struct lyd_node *dnode, unsigned int depth, struct bgp **bgp_out,
+	char *errmsg, size_t errmsg_len)
+{
+	struct bgp *bgp = bgp_nb_evpn_bgp(dnode, depth, errmsg, errmsg_len);
+
+	if (!bgp)
+		return NULL;
+	*bgp_out = bgp;
+	return bgp_evpn_lookup_vni(bgp, yang_dnode_get_uint32(dnode, "../vni"));
+}
+
+static int bgp_nb_evpn_vni_validate(const struct lyd_node *dnode,
+				    unsigned int depth, char *errmsg,
+				    size_t errmsg_len)
+{
+	struct bgp *bgp = bgp_nb_evpn_bgp(dnode, depth, errmsg, errmsg_len);
+
+	if (!bgp)
+		return NB_ERR_VALIDATION;
+	if (!EVPN_ENABLED(bgp)) {
+		snprintfrr(errmsg, errmsg_len,
+			   "This command is only supported under EVPN VRF");
+		return NB_ERR_VALIDATION;
+	}
+	return NB_OK;
+}
+
+int bgp_global_evpn_vni_rd_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	struct bgpevpn *vpn;
+	struct prefix_rd prd;
+	const char *rd_str;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		if (bgp_nb_evpn_vni_validate(args->dnode, 7, args->errmsg,
+					     args->errmsg_len)
+		    != NB_OK)
+			return NB_ERR_VALIDATION;
+		if (!str2prefix_rd(yang_dnode_get_string(args->dnode, NULL),
+				   &prd)) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "%% Malformed Route Distinguisher");
+			return NB_ERR_VALIDATION;
+		}
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	vpn = bgp_nb_evpn_vni_lookup(args->dnode, bgp);
+	if (!vpn) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "%% Specified VNI does not exist");
+		return NB_ERR;
+	}
+	rd_str = yang_dnode_get_string(args->dnode, NULL);
+	str2prefix_rd(rd_str, &prd);
+	if (!bgp_evpn_rd_matches_existing(vpn, &prd))
+		evpn_configure_rd(bgp, vpn, &prd, rd_str);
+	return NB_OK;
+}
+
+int bgp_global_evpn_vni_rd_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+	struct bgpevpn *vpn;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	bgp = bgp_nb_evpn_bgp(args->dnode, 7, args->errmsg,
+			      args->errmsg_len);
+	if (!bgp)
+		return NB_ERR;
+	vpn = bgp_nb_evpn_vni_lookup(args->dnode, bgp);
+	if (!vpn) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "%% Specified VNI does not exist");
+		return NB_ERR;
+	}
+	if (!is_rd_configured(vpn))
+		return NB_OK;
+	evpn_unconfigure_rd(bgp, vpn);
+	return NB_OK;
+}
+
+static int bgp_nb_evpn_vni_rt_apply(enum nb_event event,
+				    const struct lyd_node *dnode, bool is_add,
+				    char *errmsg, size_t errmsg_len)
+{
+	struct bgp *bgp;
+	struct bgpevpn *vpn;
+	struct bgp_evpn_cfgd_rt *cfgd_rt;
+	enum bgp_evpn_rt_direction direction;
+	const char *rt_str;
+
+	rt_str = yang_dnode_get_string(dnode, NULL);
+	direction = bgp_nb_evpn_rt_direction(dnode);
+
+	if (event == NB_EV_VALIDATE) {
+		if (bgp_nb_evpn_vni_validate(dnode, 7, errmsg, errmsg_len)
+		    != NB_OK)
+			return NB_ERR_VALIDATION;
+		cfgd_rt = bgp_nb_evpn_cfgd_rt_from_str(
+			rt_str, direction == RT_TYPE_IMPORT, errmsg,
+			errmsg_len);
+		if (!cfgd_rt)
+			return NB_ERR_VALIDATION;
+		bgp_evpn_cfgd_rt_free(cfgd_rt);
+		return NB_OK;
+	}
+	if (event != NB_EV_APPLY)
+		return NB_OK;
+
+	cfgd_rt = bgp_nb_evpn_cfgd_rt_from_str(
+		rt_str, direction == RT_TYPE_IMPORT, errmsg, errmsg_len);
+	if (!cfgd_rt)
+		return NB_ERR;
+
+	bgp = bgp_nb_evpn_bgp(dnode, 7, errmsg, errmsg_len);
+	if (!bgp) {
+		bgp_evpn_cfgd_rt_free(cfgd_rt);
+		return NB_ERR;
+	}
+	vpn = bgp_nb_evpn_vni_lookup(dnode, bgp);
+	if (!vpn) {
+		bgp_evpn_cfgd_rt_free(cfgd_rt);
+		snprintfrr(errmsg, errmsg_len,
+			   "%% Specified VNI does not exist");
+		return NB_ERR;
+	}
+	if (is_add) {
+		if (l2vni_rt_add(bgp, vpn, cfgd_rt, direction) != 0) {
+			/*
+			 * Idempotent re-create (CLI-converged state):
+			 * mirror the EAD-ES behaviour and accept it.
+			 */
+			bgp_evpn_cfgd_rt_free(cfgd_rt);
+			return NB_OK;
+		}
+	} else {
+		if (l2vni_rt_del(bgp, vpn, cfgd_rt, direction) != 0) {
+			snprintfrr(errmsg, errmsg_len,
+				   "%% RT specified does not match configuration for this VNI: %s",
+				   rt_str);
+		}
+		bgp_evpn_cfgd_rt_free(cfgd_rt);
+	}
+	return NB_OK;
+}
+
+int bgp_global_evpn_vni_rt_create(struct nb_cb_create_args *args)
+{
+	return bgp_nb_evpn_vni_rt_apply(args->event, args->dnode, true,
+					args->errmsg, args->errmsg_len);
+}
+
+int bgp_global_evpn_vni_rt_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_evpn_vni_rt_apply(args->event, args->dnode, false,
+					args->errmsg, args->errmsg_len);
+}
+
+int bgp_global_evpn_vni_adv_gw_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	struct bgpevpn *vpn;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	vpn = bgp_nb_evpn_vni_from_leaf(args->dnode, 7, &bgp, args->errmsg,
+					args->errmsg_len);
+	if (!vpn)
+		return NB_ERR;
+	if (yang_dnode_get_bool(args->dnode, NULL))
+		evpn_set_advertise_default_gw(bgp, vpn);
+	else
+		evpn_unset_advertise_default_gw(bgp, vpn);
+	return NB_OK;
+}
+
+int bgp_global_evpn_vni_adv_svi_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	struct bgpevpn *vpn;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	vpn = bgp_nb_evpn_vni_from_leaf(args->dnode, 7, &bgp, args->errmsg,
+					args->errmsg_len);
+	if (!vpn)
+		return NB_ERR;
+	evpn_set_advertise_svi_macip(
+		bgp, vpn, yang_dnode_get_bool(args->dnode, NULL));
+	return NB_OK;
+}
+
+int bgp_global_evpn_vni_adv_subnet_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	struct bgpevpn *vpn;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	vpn = bgp_nb_evpn_vni_from_leaf(args->dnode, 7, &bgp, args->errmsg,
+					args->errmsg_len);
+	if (!vpn)
+		return NB_ERR;
+	if (yang_dnode_get_bool(args->dnode, NULL))
+		evpn_set_advertise_subnet(bgp, vpn);
+	else
+		evpn_unset_advertise_subnet(bgp, vpn);
+	return NB_OK;
+}
+
+int bgp_global_evpn_vni_flooding_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	struct bgpevpn *vpn;
+	const char *mode;
+	enum vxlan_flood_control flood_ctrl = VXLAN_FLOOD_INHERIT_GLOBAL;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	vpn = bgp_nb_evpn_vni_from_leaf(args->dnode, 7, &bgp, args->errmsg,
+					args->errmsg_len);
+	if (!vpn)
+		return NB_ERR;
+	mode = yang_dnode_get_string(args->dnode, NULL);
+	if (strmatch(mode, "disable"))
+		flood_ctrl = VXLAN_FLOOD_DISABLED;
+	else if (strmatch(mode, "head-end-replication"))
+		flood_ctrl = VXLAN_FLOOD_HEAD_END_REPL;
+	if (vpn->vxlan_flood_ctrl == flood_ctrl)
+		return NB_OK;
+	vpn->vxlan_flood_ctrl = flood_ctrl;
+	bgp_evpn_flood_control_change(bgp);
+	return NB_OK;
+}
+
+/*
+ * ---- bmp monitor -------------------------------------------------------
+ * global/bmp-config/target-list/afi-safis/afi-safi/l2vpn-evpn/
+ * common-config/{pre,post-policy,loc-rib}: mirror the "bmp monitor
+ * <afi> <safi> <policy>" CLI onto bmp_monitor_apply(), the shared
+ * internal the DEFUN calls, so the datastore and the bgpd internals
+ * cannot drift apart.
+ *
+ * bgp_bmp.c is a dlopen module: it cannot be linked from here, so it
+ * publishes its internals through bgp_nb_bmp_ops at load time. While
+ * the module is not loaded the commit fails with an explicit error.
+ * The bmp target group must also already exist in bgpd (created with
+ * the legacy CLI -- NB_CLIENT_CLI seeding rationale, same as
+ * unnumbered neighbors): a commit against a missing group fails with
+ * an explicit error instead of a silent no-op.
+ */
+struct bgp_nb_bmp_ops bgp_nb_bmp_ops;
+
+/*
+ * Resolve the bmp target group and afi/safi for one monitor leaf.
+ * Read-only, so it runs at VALIDATE -- rejecting bad commits before
+ * any partial APPLY of a multi-change commit -- and again at APPLY.
+ * Returns 0 with *bt_out/*afi_out/*safi_out filled, -1 with errmsg.
+ */
+static int bgp_nb_bmp_afimon_resolve(struct nb_cb_modify_args *args,
+				     afi_t *afi_out, safi_t *safi_out,
+				     struct bmp_targets **bt_out)
+{
+	const struct lyd_node *af_entry, *target_entry;
+	const char *afi_safi_id, *name;
+	struct bmp_targets *bt;
+	struct bgp *bgp;
+	afi_t afi;
+	safi_t safi;
+
+	if (!bgp_nb_bmp_ops.find_target || !bgp_nb_bmp_ops.monitor_apply) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bmp monitor: the bgpd_bmp module is not loaded");
+		return -1;
+	}
+
+	/* afi-safi list entry -> target-name key of the enclosing bmp
+	 * target-list; the control-plane-protocol entry carrying the
+	 * vrf key sits 9 hops up from the leaf.
+	 */
+	af_entry = yang_dnode_get_parent(args->dnode, "afi-safi");
+	target_entry = af_entry ?
+		yang_dnode_get_parent(af_entry, "target-list") : NULL;
+	if (!target_entry) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bmp monitor: missing bmp target-list");
+		return -1;
+	}
+
+	name = yang_dnode_get_string(target_entry, "target-name");
+	afi_safi_id = yang_dnode_get_string(af_entry, "afi-safi-name");
+	if (bgp_nb_af_id_to_afi_safi(afi_safi_id, &afi, &safi) < 0) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bmp monitor: unknown afi-safi %s", afi_safi_id);
+		return -1;
+	}
+
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 9);
+	if (!bgp) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bmp monitor: bgp instance not found");
+		return -1;
+	}
+
+	bt = bgp_nb_bmp_ops.find_target(bgp, name);
+	if (!bt) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "bmp targets %s not found (create it with the CLI first)",
+			   name);
+		return -1;
+	}
+
+	*bt_out = bt;
+	*afi_out = afi;
+	*safi_out = safi;
+	return 0;
+}
+
+static int bgp_nb_bmp_afimon_modify(struct nb_cb_modify_args *args,
+				    uint8_t flag)
+{
+	struct bmp_targets *bt = NULL;
+	afi_t afi = 0;
+	safi_t safi = 0;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		if (bgp_nb_bmp_afimon_resolve(args, &afi, &safi, &bt) < 0)
+			return NB_ERR_VALIDATION;
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+
+	if (bgp_nb_bmp_afimon_resolve(args, &afi, &safi, &bt) < 0)
+		return NB_ERR;
+
+	bgp_nb_bmp_ops.monitor_apply(bt, afi, safi, flag,
+				     yang_dnode_get_bool(args->dnode, NULL));
+	return NB_OK;
+}
+
+int bgp_bmp_monitor_pre_policy_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_bmp_afimon_modify(args, BMP_MON_PREPOLICY);
+}
+
+int bgp_bmp_monitor_post_policy_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_bmp_afimon_modify(args, BMP_MON_POSTPOLICY);
+}
+
+int bgp_bmp_monitor_loc_rib_modify(struct nb_cb_modify_args *args)
+{
+	return bgp_nb_bmp_afimon_modify(args, BMP_MON_LOC_RIB);
 }

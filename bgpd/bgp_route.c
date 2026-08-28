@@ -9198,7 +9198,7 @@ static void bgp_nb_network_dual(struct vty *vty, bool negate,
 	const char *cont;
 
 	af_name = bgp_nb_af_yang_name(afi, safi);
-	if (!af_name || safi == SAFI_EVPN)
+	if (!af_name)
 		return;
 	cont = strchr(af_name, ':');
 	if (!cont)

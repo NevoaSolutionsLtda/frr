@@ -34,6 +34,7 @@
 #include "bgpd/bgp_errors.h"
 #include "bgpd/bgp_packet.h"
 #include "bgpd/bgp_bmp.h"
+#include "bgpd/bgp_nb_bmp.h"
 #include "bgpd/bgp_fsm.h"
 #include "bgpd/bgp_updgrp.h"
 #include "bgpd/bgp_vty.h"
@@ -2459,7 +2460,12 @@ static struct bmp_bgp_peer *bmp_bgp_peer_get(struct peer *peer)
 	return bbpeer;
 }
 
-static struct bmp_targets *bmp_targets_find1(struct bgp *bgp, const char *name)
+/*
+ * Find a bmp target group by name within the given BGP instance;
+ * also published to the northbound core through bgp_nb_bmp_ops.
+ */
+static struct bmp_targets *bmp_targets_find_by_name(struct bgp *bgp,
+						     const char *name)
 {
 	struct bmp_bgp *bmpbgp = bmp_bgp_find(bgp);
 	struct bmp_targets dummy;
@@ -2476,7 +2482,7 @@ static struct bmp_targets *bmp_targets_get(struct bgp *bgp, const char *name)
 	afi_t afi;
 	safi_t safi;
 
-	bt = bmp_targets_find1(bgp, name);
+	bt = bmp_targets_find_by_name(bgp, name);
 	if (bt)
 		return bt;
 
@@ -3000,7 +3006,7 @@ DEFPY_YANG(no_bmp_targets_main,
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	struct bmp_targets *bt;
 
-	bt = bmp_targets_find1(bgp, bmptargets);
+	bt = bmp_targets_find_by_name(bgp, bmptargets);
 	if (!bt) {
 		vty_out(vty, "%% BMP target group not found\n");
 		return CMD_WARNING;
@@ -3246,6 +3252,45 @@ DEFPY_YANG(bmp_stats_send_experimental,
 #define BMP_POLICY_IS_LOCRIB(str) ((str)[0] == 'l') /* __l__oc-rib */
 #define BMP_POLICY_IS_PRE(str) ((str)[1] == 'r')    /* p__r__e-policy */
 
+/*
+ * Apply one "bmp monitor <afi> <safi> <policy>" knob to a target
+ * group: update the afimon flags, maintain the Adj-RIB-In hold for
+ * pre-policy monitoring and kick the sessions so the requested table
+ * sync starts immediately. Shared by the bmp_monitor_cfg CLI and the
+ * northbound callbacks (bgp_nb_config.c, through bgp_nb_bmp_ops) so
+ * the datastore and the bgpd internals cannot drift apart.
+ * Idempotent: re-applying the current state is a no-op.
+ */
+static void bmp_monitor_apply(struct bmp_targets *bt, afi_t afi,
+			       safi_t safi, uint8_t flag, bool enable)
+{
+	struct bmp *bmp;
+	uint8_t prev = bt->afimon[afi][safi];
+
+	if (enable)
+		SET_FLAG(bt->afimon[afi][safi], flag);
+	else
+		UNSET_FLAG(bt->afimon[afi][safi], flag);
+
+	if (prev == bt->afimon[afi][safi])
+		return;
+
+	if (flag == BMP_MON_PREPOLICY) {
+		if (enable)
+			bmp_adj_in_ensure(bt, afi, safi);
+		else
+			bmp_adj_in_release(bt, afi, safi);
+	}
+
+	frr_each (bmp_session, &bt->sessions, bmp) {
+		bmp_update_syncro(bmp, afi, safi, NULL);
+		/* wake the session's write loop, otherwise the requested
+		 * table sync only starts when unrelated traffic does it
+		 */
+		pullwr_bump(bmp->pullwr);
+	}
+}
+
 DEFPY_YANG(bmp_monitor_cfg, bmp_monitor_cmd,
       "[no] bmp monitor <ipv4|ipv6|l2vpn> <unicast|multicast|evpn|vpn> <pre-policy|post-policy|loc-rib>$policy",
       NO_STR BMP_STR
@@ -3256,12 +3301,11 @@ DEFPY_YANG(bmp_monitor_cfg, bmp_monitor_cmd,
       "Send state after decision process is applied\n")
 {
 	int index = 0;
-	uint8_t flag, prev;
+	uint8_t flag;
 	afi_t afi;
 	safi_t safi;
 
 	VTY_DECLVAR_CONTEXT_SUB(bmp_targets, bt);
-	struct bmp *bmp;
 
 	argv_find_and_parse_afi(argv, argc, &index, &afi);
 	argv_find_and_parse_safi(argv, argc, &index, &safi);
@@ -3273,29 +3317,7 @@ DEFPY_YANG(bmp_monitor_cfg, bmp_monitor_cmd,
 	else
 		flag = BMP_MON_POSTPOLICY;
 
-	prev = bt->afimon[afi][safi];
-	if (no)
-		UNSET_FLAG(bt->afimon[afi][safi], flag);
-	else
-		SET_FLAG(bt->afimon[afi][safi], flag);
-
-	if (prev == bt->afimon[afi][safi])
-		return CMD_SUCCESS;
-
-	if (flag == BMP_MON_PREPOLICY) {
-		if (no)
-			bmp_adj_in_release(bt, afi, safi);
-		else
-			bmp_adj_in_ensure(bt, afi, safi);
-	}
-
-	frr_each (bmp_session, &bt->sessions, bmp) {
-		bmp_update_syncro(bmp, afi, safi, NULL);
-		/* wake the session's write loop, otherwise the requested
-		 * table sync only starts when unrelated traffic does it
-		 */
-		pullwr_bump(bmp->pullwr);
-	}
+	bmp_monitor_apply(bt, afi, safi, flag, !no);
 
 	return CMD_SUCCESS;
 }
@@ -3884,6 +3906,12 @@ static int bgp_bmp_module_init(void)
 	hook_register(bgp_vrf_status_changed, bmp_vrf_itf_state_changed);
 	hook_register(bgp_routerid_update, bmp_routerid_update);
 	hook_register(bgp_route_distinguisher_update, bmp_route_distinguisher_update);
+
+	/* Publish the internals behind the northbound bmp monitor
+	 * callbacks registered by the bgpd core (bgp_nb_config.c).
+	 */
+	bgp_nb_bmp_ops.find_target = bmp_targets_find_by_name;
+	bgp_nb_bmp_ops.monitor_apply = bmp_monitor_apply;
 	return 0;
 }
 
