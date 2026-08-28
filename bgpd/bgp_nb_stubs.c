@@ -3,16 +3,21 @@
  * Northbound callbacks used to satisfy nb_validate_callbacks() for
  * YANG nodes in the frr-bgp tree that have not yet been wired to real
  * bgpd implementations. Two classes exist (see the class column in
- * bgp_nb_stubs_table.inc, assigned by tools/gen-bgp-nb-stubs.py):
+ * bgp_nb_stubs_table.inc, assigned by tools/gen-bgp-nb-stubs.py under
+ * the wired-or-reject policy of issue #39 Phase D):
  *
- * - warn (default): NB_OK no-op. Programmatic (non-CLI) writes are
- *   counted and reported through an aggregated log warning so that
- *   "commit OK without effect" is visible without flooding the log.
+ * - reject-strict (default): programmatic writes fail commit
+ *   validation with an explicit error, so a management client never
+ *   receives a false commit-OK on an unwired knob. Wiring a real
+ *   callback (or recording a documented allowlist entry in the
+ *   generator) is the only way out.
  *
- * - reject-strict (MGC core: EVPN, prefix-limit, redistribution-list,
- *   network-config): programmatic writes fail commit validation with
- *   an explicit error, so a management client never receives a false
- *   commit-OK on those subtrees.
+ * - warn (documented exceptions): NB_OK no-op. Programmatic
+ *   (non-CLI) writes are counted and reported through an aggregated
+ *   log warning so that "commit OK without effect" is visible without
+ *   flooding the log. Membership is structural ancestors of wired
+ *   nodes (their create fires implicitly when a wired descendant is
+ *   written) plus the documented ALLOWLIST in tools/gen-bgp-nb-stubs.py.
  *
  * Writes originating from the CLI dual-write path (NB_CLIENT_CLI) are
  * exempt from both the warning and the rejection: the legacy DEFUN has
