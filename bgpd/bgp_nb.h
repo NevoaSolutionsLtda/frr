@@ -54,6 +54,7 @@ int bgp_router_create(struct nb_cb_create_args *args);
 int bgp_router_destroy(struct nb_cb_destroy_args *args);
 
 /* global leaves */
+int bgp_global_local_as_modify(struct nb_cb_modify_args *args);
 int bgp_global_router_id_modify(struct nb_cb_modify_args *args);
 int bgp_global_router_id_destroy(struct nb_cb_destroy_args *args);
 int bgp_global_default_shutdown_modify(struct nb_cb_modify_args *args);

@@ -975,3 +975,43 @@ def test_fanout_af_enabled_grpc():
         f"member not activated by the group; got: "
         f"{summary['l2VpnEvpn']['peers'].keys()}"
     )
+
+
+def test_local_as_modify_grpc():
+    """The instance AS leaf is wired. Creation transactions exercise
+    the idempotent pass-through (bgp_router_create builds the instance
+    with the leaf, then the modify fires with the same value); the
+    gate here is the other edge: changing the AS of a running instance
+    over gRPC is refused with the legacy CLI's instance-mismatch
+    wording instead of landing as a datastore-only no-op."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Prime the mgmtd datastore with the instance leaf"
+         " (best-effort; a no-diff abort is fine)")
+    run_grpc_client_status(r1, f"commit-set,{CPP}/global/local-as=65000")
+
+    step("An AS change on the running instance is refused (mismatch)")
+    rc, stdout, stderr = run_grpc_client_status(
+        r1, f"commit-set,{CPP}/global/local-as=65999"
+    )
+    assert "AS number mismatch" in (stdout + stderr), (
+        f"AS change must fail with the instance-mismatch wording; "
+        f"got: {stdout + stderr}"
+    )
+
+    step("The refusal leaves the instance untouched")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "router bgp 65000" in output, (
+        f"instance AS must stay 65000; got:\n{output}"
+    )
+    assert "router bgp 65999" not in output, (
+        f"the refused AS must not land; got:\n{output}"
+    )
+
+    step("A wired commit still applies afterwards")
+    run_grpc_client(r1, f"commit-set,{CPP}/global/local-pref=220")
+    out = run_grpc_client(r1, f"get-config,{CPP}/global/local-pref")
+    assert "220" in out, (
+        f"wired commit after the refusal must still apply; got: {out}"
+    )

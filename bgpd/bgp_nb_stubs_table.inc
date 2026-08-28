@@ -13,7 +13,7 @@
  * warn = NB_OK no-op; structural ancestors of wired
  * nodes, children of wired apply_finish containers,
  * and the documented ALLOWLIST in the generator.
- * Current population: 1588 reject, 7 warn-structural, 23 warn-finisher-child, 1 warn-allowlist.
+ * Current population: 1588 reject, 7 warn-structural, 23 warn-finisher-child, 0 warn-allowlist.
  *
  * Real handlers for any of these xpaths should be
  * added to bgp_nb.c (above the #include of this file)
@@ -603,8 +603,6 @@
   .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: reject */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/instance-type-view",
   .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: reject */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/local-as",
-  .cbs = { .modify = bgp_nb_stub_modify, } }, /* class: warn (allowlist: BGP-instance leaf: legacy boot mirrors only the default instance; programmatic instance creation (e.g. a VRF) needs it in the same transaction (issue #39)) */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/med-config/enable-med-admin",
   .cbs = { .modify = bgp_nb_stub_modify, } }, /* class: warn (child of a wired apply_finish container) */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/med-config/max-med-admin",

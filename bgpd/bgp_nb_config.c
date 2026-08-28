@@ -249,6 +249,78 @@ int bgp_router_destroy(struct nb_cb_destroy_args *args)
 
 /*
  * XPath:
+ *   .../frr-bgp:bgp/global/local-as
+ *
+ * The instance AS number. Fresh-creation transactions are owned by
+ * bgp_router_create(), which reads this leaf from the datastore and
+ * validates its presence; the modify only reaches this callback when
+ * the container already has a running entry (same-transaction create
+ * included -- by apply time the instance exists and the AS matches, so
+ * the modify is an idempotent pass-through).
+ *
+ * Changing the AS of an existing instance mirrors the legacy `router
+ * bgp <new>` semantics of bgp_lookup_by_as_name_type(): auto-created
+ * VRF instances adopt the configured AS (and their peers' local_as
+ * follow); every other instance rejects the change at validation with
+ * the same instance-mismatch wording the vty prints.
+ */
+int bgp_global_local_as_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	as_t as;
+	const char *vrf_key, *bgp_name;
+	enum bgp_instance_type inst_type;
+	int ret;
+
+	as = (as_t)yang_dnode_get_uint32(args->dnode, NULL);
+	vrf_key = yang_dnode_get_string(args->dnode, "../../../vrf");
+	bgp_name = bgp_nb_vrf_to_name(vrf_key);
+	inst_type = bgp_nb_inst_type(vrf_key);
+
+	switch (args->event) {
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_VALIDATE:
+		bgp = bgp_lookup_by_name(bgp_name);
+		if (!bgp || bgp->as == as)
+			return NB_OK;
+		if (IS_BGP_INSTANCE_HIDDEN(bgp)
+		    || CHECK_FLAG(bgp->vrf_flags, BGP_VRF_AUTO))
+			return NB_OK;
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "BGP instance name and AS number mismatch; "
+			   "BGP instance is already running; AS is %s",
+			   bgp->as_pretty ? bgp->as_pretty : "unknown");
+		return NB_ERR_VALIDATION;
+	case NB_EV_APPLY:
+		break;
+	}
+
+	bgp = bgp_lookup_by_name(bgp_name);
+	if (!bgp)
+		/*
+		 * Should not happen: the container create runs first in
+		 * any transaction that writes this leaf. Treat as an
+		 * internal error rather than a silent no-op.
+		 */
+		return NB_ERR;
+	if (bgp->as == as)
+		return NB_OK;
+
+	ret = bgp_lookup_by_as_name_type(&bgp, &as, NULL,
+					 ASNOTATION_UNDEFINED, bgp_name,
+					 inst_type, true);
+	if (ret == BGP_INSTANCE_EXISTS)
+		return NB_OK;
+
+	snprintfrr(args->errmsg, args->errmsg_len,
+		   "local-as change rejected (ret %d)", ret);
+	return NB_ERR;
+}
+
+/*
+ * XPath:
  *   /frr-routing:routing/control-plane-protocols/control-plane-protocol/
  *     frr-bgp:bgp/global/router-id
  *

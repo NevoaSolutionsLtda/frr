@@ -33,6 +33,13 @@ const struct frr_yang_module_info frr_bgp_info = {
 
 		/* global */
 		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/local-as",
+			.cbs = {
+				.modify   = bgp_global_local_as_modify,
+				.cli_show = bgp_nb_handled_by_parent_cli_show,
+			},
+		},
+		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/router-id",
 			.cbs = {
 				.modify   = bgp_global_router_id_modify,
