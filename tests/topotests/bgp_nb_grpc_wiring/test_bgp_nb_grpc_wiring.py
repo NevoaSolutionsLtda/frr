@@ -10,8 +10,8 @@ reject-strict stubs and fail. GREEN on the s057 head: the commits apply
 and the legacy CLI surface (show running-config) renders the exact knob
 lines, proving the datastore and the bgpd internals agree.
 
-The l2vpn-evpn prefix-limit subtree keeps the reject-strict class until
-Fase C; the boundary test guards that.
+Fase C fatia 1 wired the l2vpn-evpn prefix-limit fanout (shared
+callbacks); the flipped test guards that the commit now applies.
 """
 import glob
 import json
@@ -462,22 +462,39 @@ def test_prefix_limit_multi_leaf_option_destroy():
     assert "198.18.77.0/24" not in output, "destroy left the network"
 
 
-def test_evpn_prefix_limit_still_rejected():
-    """Fase C boundary: l2vpn-evpn prefix-limit keeps the reject-strict
-    stub class, so the gRPC commit must fail with an explicit error."""
+def test_evpn_prefix_limit_wired():
+    """Fase C fatia 1 flipped the l2vpn-evpn prefix-limit from the
+    reject-strict stub class to the shared wired callbacks from
+    Fase B: the gRPC commit now applies and renders on the legacy
+    CLI."""
     tgen = get_topogen()
     r1 = tgen.gears["r1"]
 
-    step("l2vpn-evpn prefix-limit commit must be rejected")
-    rc, stdout, stderr = run_grpc_client_status(
+    step("l2vpn-evpn prefix-limit commit must apply")
+    run_grpc_client(
         r1,
-        f"commit-set,{EVPN_AF}/prefix-limit/direction-list"
-        "[direction='in']/max-prefixes=2",
+        [
+            f"commit-set,{NB}/afi-safis/afi-safi"
+            "[afi-safi-name='frr-routing:l2vpn-evpn']/enabled=true",
+            f"commit-set,{EVPN_AF}/prefix-limit/direction-list"
+            "[direction='in']/max-prefixes=2",
+        ],
     )
-    output = stdout + stderr
-    assert rc != 0, (
-        "commit on l2vpn-evpn prefix-limit must fail until Fase C; "
-        f"got rc=0 output={output}"
+
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "neighbor 10.0.0.2 maximum-prefix 2" in output, (
+        f"expected EVPN maximum-prefix on legacy CLI; got:\n{output}"
+    )
+
+    step("Destroying the direction-list withdraws it")
+    run_grpc_client(
+        r1,
+        f"commit-delete,{EVPN_AF}/prefix-limit/direction-list"
+        "[direction='in']",
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "maximum-prefix 2\n" not in output, (
+        f"EVPN maximum-prefix must be gone; got:\n{output}"
     )
 
 
