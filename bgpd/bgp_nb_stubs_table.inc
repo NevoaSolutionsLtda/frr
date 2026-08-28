@@ -13,7 +13,7 @@
  * warn = NB_OK no-op; structural ancestors of wired
  * nodes, children of wired apply_finish containers,
  * and the documented ALLOWLIST in the generator.
- * Current population: 1588 reject, 7 warn-structural, 23 warn-finisher-child, 5 warn-allowlist.
+ * Current population: 1588 reject, 7 warn-structural, 23 warn-finisher-child, 3 warn-allowlist.
  *
  * Real handlers for any of these xpaths should be
  * added to bgp_nb.c (above the #include of this file)
@@ -2165,10 +2165,6 @@
   .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: reject */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/local-role/strict-mode",
   .cbs = { .destroy = bgp_nb_stub_reject_destroy, .modify = bgp_nb_stub_reject_modify, } }, /* class: reject */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/neighbor-remote-as/remote-as",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn (allowlist: mandatory context-creation pair, unwired fanout (issue #39)) */
-{ .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/neighbor-remote-as/remote-as-type",
-  .cbs = { .destroy = bgp_nb_stub_destroy, .modify = bgp_nb_stub_modify, } }, /* class: warn (allowlist: mandatory context-creation pair, unwired fanout (issue #39)) */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/oad",
   .cbs = { .modify = bgp_nb_stub_reject_modify, } }, /* class: reject */
 { .xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/passive-mode",

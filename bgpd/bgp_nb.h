@@ -263,6 +263,12 @@ int bgp_peer_group_remote_as_type_modify(struct nb_cb_modify_args *args);
 int bgp_peer_group_remote_as_modify(struct nb_cb_modify_args *args);
 int bgp_peer_group_remote_as_destroy(struct nb_cb_destroy_args *args);
 int bgp_peer_group_remote_as_type_destroy(struct nb_cb_destroy_args *args);
+
+/* unnumbered-neighbor context-creation pair (Phase D allowlist drain) */
+int bgp_unnumbered_remote_as_modify(struct nb_cb_modify_args *args);
+int bgp_unnumbered_remote_as_type_modify(struct nb_cb_modify_args *args);
+int bgp_unnumbered_remote_as_destroy(struct nb_cb_destroy_args *args);
+int bgp_unnumbered_remote_as_type_destroy(struct nb_cb_destroy_args *args);
 int bgp_neighbor_password_modify(struct nb_cb_modify_args *args);
 int bgp_neighbor_password_destroy(struct nb_cb_destroy_args *args);
 int bgp_neighbor_description_modify(struct nb_cb_modify_args *args);

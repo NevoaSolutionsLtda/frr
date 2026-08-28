@@ -4075,6 +4075,168 @@ int bgp_peer_group_remote_as_type_destroy(struct nb_cb_destroy_args *args)
 }
 
 /*
+ * XPath:
+ *   .../neighbors/unnumbered-neighbor[interface]/neighbor-remote-as/
+ *     {remote-as,remote-as-type}
+ *
+ * The unnumbered context-creation pair (Phase D allowlist, issue #39).
+ * Unlike the numbered context the unnumbered-neighbor list entry has
+ * no create callback of its own, so the remote-as modify owns the
+ * whole create-or-update: an existing peer (CLI-seeded, or a prior
+ * transaction) goes through peer_remote_as(), a missing one is created
+ * exactly the way the `neighbor <if> remote-as` vty path does --
+ * peer_create() + RA request + the extended-nexthop capability every
+ * unnumbered peer carries + a listening pass.
+ *
+ * Ordering contract: this callback (or the remote-as-type twin) is
+ * what materializes the peer in bgpd. Other callbacks that resolve
+ * the unnumbered context -- notably afi-safi/enabled through
+ * bgp_nb_peer_af_lookup -- rely on the NB schema walk delivering the
+ * remote-as leaves first when a transaction creates the neighbor; a
+ * same-commit AF activation hard-fails otherwise. bgp_nb_grpc_wiring
+ * test_fanout_af_enabled_grpc pins this order.
+ */
+static int bgp_nb_unnumbered_remote_as_apply(struct bgp *bgp,
+					     const char *ifname, as_t as,
+					     enum peer_asn_type as_type,
+					     const char *as_str,
+					     char *errmsg, size_t errmsg_len)
+{
+	struct peer *peer;
+	int ret;
+
+	peer = peer_lookup_by_conf_if(bgp, ifname);
+	if (peer) {
+		ret = peer_remote_as(bgp, NULL, ifname, &as, as_type, as_str);
+		if (ret < 0) {
+			snprintfrr(errmsg, errmsg_len,
+				   "remote-as change rejected for %s (ret %d)",
+				   ifname, ret);
+			return NB_ERR;
+		}
+		return NB_OK;
+	}
+
+	peer = peer_create(NULL, ifname, bgp, bgp->as, as, as_type, NULL,
+			   true, as_str, CONNECTION_OUTGOING);
+	if (!peer) {
+		snprintfrr(errmsg, errmsg_len,
+			   "failed to create unnumbered neighbor %s", ifname);
+		return NB_ERR;
+	}
+
+	/* Ask zebra to announce us on the interface (vty parity). */
+	if (peer->ifp)
+		bgp_zebra_initiate_radv(bgp, peer);
+
+	/* Every unnumbered peer negotiates extended-nexthop (vty parity). */
+	if (!CHECK_FLAG(peer->flags_invert, PEER_FLAG_CAPABILITY_ENHE)) {
+		SET_FLAG(peer->flags, PEER_FLAG_CAPABILITY_ENHE);
+		SET_FLAG(peer->flags_invert, PEER_FLAG_CAPABILITY_ENHE);
+		SET_FLAG(peer->flags_override, PEER_FLAG_CAPABILITY_ENHE);
+	}
+
+	bgp_need_listening(bgp, NULL);
+	return NB_OK;
+}
+
+int bgp_unnumbered_remote_as_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	const char *ifname;
+	as_t as;
+	char as_buf[16];
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 5);
+	if (!bgp)
+		return NB_ERR;
+
+	ifname = yang_dnode_get_string(args->dnode, "../../interface");
+	as = (as_t)yang_dnode_get_uint32(args->dnode, NULL);
+	snprintfrr(as_buf, sizeof(as_buf), "%u", as);
+
+	return bgp_nb_unnumbered_remote_as_apply(bgp, ifname, as,
+						 AS_SPECIFIED, as_buf,
+						 args->errmsg,
+						 args->errmsg_len);
+}
+
+int bgp_unnumbered_remote_as_type_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	const char *ifname;
+	enum peer_asn_type new_type;
+	as_t as = 0;
+	const char *as_str = NULL;
+	char as_buf[16];
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+
+	bgp = bgp_nb_lookup_from_dnode(args->dnode, 5);
+	if (!bgp)
+		return NB_ERR;
+
+	ifname = yang_dnode_get_string(args->dnode, "../../interface");
+
+	new_type = bgp_nb_yang_as_type(yang_dnode_get_string(args->dnode, NULL));
+	if (new_type == AS_SPECIFIED &&
+	    yang_dnode_exists(args->dnode, "../remote-as")) {
+		as = (as_t)yang_dnode_get_uint32(args->dnode, "../remote-as");
+		snprintfrr(as_buf, sizeof(as_buf), "%u", as);
+		as_str = as_buf;
+	}
+
+	return bgp_nb_unnumbered_remote_as_apply(bgp, ifname, as, new_type,
+						 as_str, args->errmsg,
+						 args->errmsg_len);
+}
+
+int bgp_unnumbered_remote_as_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+	case NB_EV_APPLY:
+		break;
+	}
+	/*
+	 * Same when-clause rationale as the numbered twin: the
+	 * remote-as-type modify owns the side effect.
+	 */
+	return NB_OK;
+}
+
+int bgp_unnumbered_remote_as_type_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+	case NB_EV_APPLY:
+		break;
+	}
+	/* Destroying the container removes the neighbor itself. */
+	return NB_OK;
+}
+
+/*
  * Lookup the peer owning the dnode at `depth_to_cpp` hops above the
  * control-plane-protocol entry. `neighbor_rel_xpath` is the relative xpath
  * from the dnode up to the `neighbor` list entry (used to read the

@@ -853,3 +853,51 @@ def test_peer_group_remote_as_grpc():
         f"group AS change did not propagate to the member; "
         f"got: {peer['remoteAs']}"
     )
+
+
+IF_RA = "r1-eth0"
+NBIF_RA = f"{CPP}/neighbors/unnumbered-neighbor[interface='{IF_RA}']"
+
+
+def test_unnumbered_remote_as_grpc():
+    """The unnumbered-neighbor remote-as pair is wired: a single
+    programmatic transaction creates the unnumbered peer (peer_create
+    + ENHE + RA request, vty parity) without any CLI seeding, and a
+    later gRPC AS change on the CLI-seeded-free peer reaches the
+    internals (peer_remote_as path)."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Create the unnumbered neighbor over gRPC, no CLI seeding")
+    run_grpc_client(
+        r1,
+        [
+            f"commit-result,ALL,"
+            f"{CPP}/global/local-as=65000,"
+            f"{NBIF_RA}/neighbor-remote-as/remote-as-type=as-specified,"
+            f"{NBIF_RA}/neighbor-remote-as/remote-as=65100",
+        ]
+    )
+
+    step("The legacy CLI shows the interface neighbor")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert f"neighbor {IF_RA} interface remote-as 65100" in output, (
+        f"unnumbered remote-as missing on legacy CLI; got:\n{output}"
+    )
+
+    step("The peer carries the AS in the summary")
+    summary = json.loads(r1.vtysh_cmd("show bgp summary json"))
+    peer = summary["ipv4Unicast"]["peers"][IF_RA]
+    assert peer["remoteAs"] == 65100, (
+        f"unnumbered peer remoteAs wrong; got: {peer['remoteAs']}"
+    )
+
+    step("A gRPC AS change on the existing peer applies")
+    run_grpc_client(
+        r1, f"commit-set,{NBIF_RA}/neighbor-remote-as/remote-as=65101"
+    )
+    summary = json.loads(r1.vtysh_cmd("show bgp summary json"))
+    peer = summary["ipv4Unicast"]["peers"][IF_RA]
+    assert peer["remoteAs"] == 65101, (
+        f"unnumbered AS change did not apply; got: {peer['remoteAs']}"
+    )

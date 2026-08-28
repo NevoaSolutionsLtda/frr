@@ -107,8 +107,6 @@ REJECT_OP_TO_CB = {
 _BGP = ("/frr-routing:routing/control-plane-protocols/"
         "control-plane-protocol/frr-bgp:bgp")
 ALLOWLIST = [
-    (_BGP + "/neighbors/unnumbered-neighbor/neighbor-remote-as",
-     "mandatory context-creation pair, unwired fanout (issue #39)"),
     (_BGP + "/peer-groups/peer-group/afi-safis/afi-safi/enabled",
      "AF-activation leaf of the unwired fanout contexts (issue #39)"),
     (_BGP + "/neighbors/unnumbered-neighbor/afi-safis/afi-safi/enabled",
