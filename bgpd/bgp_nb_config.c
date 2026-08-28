@@ -25,6 +25,7 @@
 #include "bgpd/bgp_open.h"
 #include "bgpd/bgp_packet.h"
 #include "bgpd/bgp_route.h"
+#include "bgpd/bgp_label.h"
 #include "bgpd/bgp_updgrp.h"
 #include "bgpd/bgp_vty.h"
 #include "bgpd/bgp_zebra.h"
@@ -4940,6 +4941,9 @@ int bgp_neighbor_capabilities_negotiate_destroy(struct nb_cb_destroy_args *args)
  *
  * AFI/SAFI extracted from the afi-safi-name key.
  */
+static int bgp_nb_af_id_to_afi_safi(const char *afi_safi_id, afi_t *afi_out,
+				    safi_t *safi_out);
+
 static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode, int ups,
 				 struct peer **peer_out, afi_t *afi_out,
 				 safi_t *safi_out)
@@ -4965,12 +4969,50 @@ static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode, int ups,
 	if (!afi_safi_id)
 		return -1;
 
-	/*
-	 * afi_safi_id is a prefixed identity, e.g.
-	 * "frr-routing:ipv4-unicast" — match the more specific ids
-	 * first: "l3vpn-ipv4-unicast" contains "ipv4-unicast" as a
-	 * substring, so the plain-unicast checks must come last.
-	 */
+	if (bgp_nb_af_id_to_afi_safi(afi_safi_id, afi_out, safi_out) < 0)
+		return -1;
+	*peer_out = peer;
+	return 0;
+}
+
+/*
+ * Shared afi-safi identity resolver (prefixed identity, e.g.
+ * "frr-routing:ipv4-unicast"). More specific ids match first:
+ * "l3vpn-ipv4-unicast" contains "ipv4-unicast" as a substring, so
+ * the plain-unicast checks must come last.
+ */
+const char *bgp_nb_af_yang_name(afi_t afi, safi_t safi)
+{
+	if (afi == AFI_IP && safi == SAFI_UNICAST)
+		return "frr-routing:ipv4-unicast";
+	if (afi == AFI_IP6 && safi == SAFI_UNICAST)
+		return "frr-routing:ipv6-unicast";
+	if (afi == AFI_IP && safi == SAFI_LABELED_UNICAST)
+		return "frr-routing:ipv4-labeled-unicast";
+	if (afi == AFI_IP6 && safi == SAFI_LABELED_UNICAST)
+		return "frr-routing:ipv6-labeled-unicast";
+	if (afi == AFI_IP && safi == SAFI_MPLS_VPN)
+		return "frr-routing:l3vpn-ipv4-unicast";
+	if (afi == AFI_IP6 && safi == SAFI_MPLS_VPN)
+		return "frr-routing:l3vpn-ipv6-unicast";
+	if (afi == AFI_IP && safi == SAFI_MULTICAST)
+		return "frr-routing:ipv4-multicast";
+	if (afi == AFI_IP6 && safi == SAFI_MULTICAST)
+		return "frr-routing:ipv6-multicast";
+	if (afi == AFI_IP && safi == SAFI_UNREACH)
+		return "frr-routing:ipv4-unreachability";
+	if (afi == AFI_IP6 && safi == SAFI_UNREACH)
+		return "frr-routing:ipv6-unreachability";
+	if (afi == AFI_L2VPN && safi == SAFI_EVPN)
+		return "frr-routing:l2vpn-evpn";
+	if (afi == AFI_L2VPN && safi == SAFI_UNICAST)
+		return "frr-routing:l2vpn-vpls";
+	return NULL;
+}
+
+static int bgp_nb_af_id_to_afi_safi(const char *afi_safi_id, afi_t *afi_out,
+				    safi_t *safi_out)
+{
 	if (strstr(afi_safi_id, "l3vpn-ipv4-unicast")) {
 		*afi_out = AFI_IP;  *safi_out = SAFI_MPLS_VPN;
 	} else if (strstr(afi_safi_id, "l3vpn-ipv6-unicast")) {
@@ -4995,10 +5037,13 @@ static int bgp_nb_peer_af_lookup(const struct lyd_node *dnode, int ups,
 		*afi_out = AFI_L2VPN; *safi_out = SAFI_EVPN;
 	} else if (strstr(afi_safi_id, "l2vpn-vpls")) {
 		*afi_out = AFI_L2VPN; *safi_out = SAFI_UNICAST;
+	} else if (strstr(afi_safi_id, "ipv4-unreachability")) {
+		*afi_out = AFI_IP;  *safi_out = SAFI_UNREACH;
+	} else if (strstr(afi_safi_id, "ipv6-unreachability")) {
+		*afi_out = AFI_IP6; *safi_out = SAFI_UNREACH;
 	} else {
 		return -1;
 	}
-	*peer_out = peer;
 	return 0;
 }
 
@@ -5341,6 +5386,1109 @@ int bgp_neighbor_af_rmap_export_modify(struct nb_cb_modify_args *args)
 int bgp_neighbor_af_rmap_export_destroy(struct nb_cb_destroy_args *args)
 {
 	return bgp_neighbor_af_rmap_filter_destroy(args, RMAP_OUT);
+}
+
+/*
+ * Prefix limits (G-PL): the structure-neighbor-prefix-limit grouping
+ * is instantiated under neighbors/neighbor, neighbors/unnumbered-
+ * neighbor and peer-groups/peer-group, once per AFI-SAFI container;
+ * the three contexts share these callbacks. The peer is resolved by
+ * probing the context list key: remote-address (numbered), interface
+ * (unnumbered) or peer-group-name (peer-group; the legacy setters fan
+ * the config out to the group members themselves).
+ *
+ * direction "in" maps onto peer_maximum_prefix_set()/unset() (the
+ * pmax/threshold/restart/warning/force knob family); direction "out"
+ * maps onto peer_maximum_prefix_out_set()/unset() (pmax_out, which
+ * takes no options in the legacy internals). The legacy setter
+ * consumes all inbound knobs at once, so every leaf (re)applies it
+ * with the current values of its siblings -- the datastore is the
+ * source of truth and each callback re-derives the full knob set.
+ */
+static const struct lyd_node *bgp_nb_pl_dlist(const struct lyd_node *dnode)
+{
+	if (dnode->schema && !strcmp(dnode->schema->name, "direction-list"))
+		return dnode;
+	return yang_dnode_get_parent(dnode, "direction-list");
+}
+
+static struct peer *bgp_nb_peer_ctx_lookup(const struct lyd_node *af_entry)
+{
+	struct bgp *bgp;
+	union sockunion su;
+	struct peer_group *group;
+
+	bgp = bgp_nb_lookup_from_dnode(af_entry, 5);
+	if (!bgp)
+		return NULL;
+
+	if (yang_dnode_exists(af_entry, "../../remote-address")) {
+		const char *remote = yang_dnode_get_string(
+			af_entry, "../../remote-address");
+
+		if (str2sockunion(remote, &su) == 0)
+			return peer_lookup(bgp, &su);
+		return NULL;
+	}
+	if (yang_dnode_exists(af_entry, "../../interface"))
+		return peer_lookup_by_conf_if(
+			bgp, yang_dnode_get_string(af_entry,
+						   "../../interface"));
+	if (yang_dnode_exists(af_entry, "../../peer-group-name")) {
+		group = peer_group_lookup(
+			bgp, yang_dnode_get_string(af_entry,
+						   "../../peer-group-name"));
+		return group ? group->conf : NULL;
+	}
+	return NULL;
+}
+
+static int bgp_nb_pl_lookup(const struct lyd_node *dnode,
+			    struct peer **peer_out, afi_t *afi_out,
+			    safi_t *safi_out, const char **direction_out,
+			    char *errmsg, size_t errmsg_len)
+{
+	const struct lyd_node *af_entry, *dl;
+	const char *afi_safi_id;
+
+	dl = bgp_nb_pl_dlist(dnode);
+	if (!dl) {
+		snprintfrr(errmsg, errmsg_len,
+			   "prefix-limit: no direction-list ancestor");
+		return -1;
+	}
+	af_entry = yang_dnode_get_parent(dl, "afi-safi");
+	if (!af_entry) {
+		snprintfrr(errmsg, errmsg_len,
+			   "prefix-limit: no afi-safi ancestor");
+		return -1;
+	}
+	afi_safi_id = yang_dnode_get_string(af_entry, "afi-safi-name");
+	if (!afi_safi_id ||
+	    bgp_nb_af_id_to_afi_safi(afi_safi_id, afi_out, safi_out) < 0) {
+		snprintfrr(errmsg, errmsg_len,
+			   "prefix-limit: unsupported afi-safi '%s'",
+			   afi_safi_id ? afi_safi_id : "(null)");
+		return -1;
+	}
+	*peer_out = bgp_nb_peer_ctx_lookup(af_entry);
+	if (!*peer_out) {
+		snprintfrr(errmsg, errmsg_len, "prefix-limit: peer not found");
+		return -1;
+	}
+	*direction_out = yang_dnode_get_string(dl, "direction");
+	if (!*direction_out) {
+		snprintfrr(errmsg, errmsg_len,
+			   "prefix-limit: missing direction key");
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * skip_leaf: on a DESTROY callback the dnode still shows the OLD
+ * tree, so the dying leaf would be re-read and its value RE-APPLIED.
+ * Callers pass the schema name of the leaf being destroyed; every
+ * option read ignores that leaf so the knob keeps its default.
+ */
+static int bgp_nb_pl_apply_inbound(struct peer *peer, afi_t afi, safi_t safi,
+				   const struct lyd_node *dl,
+				   const char *skip_leaf, char *errmsg,
+				   size_t errmsg_len)
+{
+	uint32_t max;
+	uint8_t threshold = MAXIMUM_PREFIX_THRESHOLD_DEFAULT;
+	uint16_t restart = 0;
+	bool warning = false;
+	bool force = false;
+
+	max = yang_dnode_get_uint32(dl, "max-prefixes");
+	if (yang_dnode_exists(dl, "force-check"))
+		force = yang_dnode_get_bool(dl, "force-check");
+
+	/*
+	 * YANG choice: at most one option case is instantiated, but a
+	 * multi-leaf case (tr/tw) can have ONE leaf destroyed while the
+	 * sibling stays. Read each leaf individually and honour skip_leaf
+	 * per leaf, so destroying the threshold of tr/tw resets only the
+	 * threshold and keeps the timer/warning of the surviving case.
+	 */
+	if ((!skip_leaf || strcmp(skip_leaf, "warning-only"))
+	    && yang_dnode_exists(dl, "options/warning-only"))
+		warning = yang_dnode_get_bool(dl, "options/warning-only");
+	if ((!skip_leaf || strcmp(skip_leaf, "restart-timer"))
+	    && yang_dnode_exists(dl, "options/restart-timer"))
+		restart = yang_dnode_get_uint16(dl,
+						"options/restart-timer");
+	if ((!skip_leaf || strcmp(skip_leaf, "shutdown-threshold-pct"))
+	    && yang_dnode_exists(dl, "options/shutdown-threshold-pct"))
+		threshold = yang_dnode_get_uint8(
+			dl, "options/shutdown-threshold-pct");
+	if ((!skip_leaf || strcmp(skip_leaf, "tr-shutdown-threshold-pct"))
+	    && yang_dnode_exists(dl, "options/tr-shutdown-threshold-pct"))
+		threshold = yang_dnode_get_uint8(
+			dl, "options/tr-shutdown-threshold-pct");
+	if ((!skip_leaf || strcmp(skip_leaf, "tr-restart-timer"))
+	    && yang_dnode_exists(dl, "options/tr-restart-timer"))
+		restart = yang_dnode_get_uint16(dl,
+						"options/tr-restart-timer");
+	if ((!skip_leaf || strcmp(skip_leaf, "tw-shutdown-threshold-pct"))
+	    && yang_dnode_exists(dl, "options/tw-shutdown-threshold-pct"))
+		threshold = yang_dnode_get_uint8(
+			dl, "options/tw-shutdown-threshold-pct");
+	if ((!skip_leaf || strcmp(skip_leaf, "tw-warning-only"))
+	    && yang_dnode_exists(dl, "options/tw-warning-only"))
+		warning = yang_dnode_get_bool(dl, "options/tw-warning-only");
+
+	return bgp_nb_setter_result(
+		peer_maximum_prefix_set(peer, afi, safi, max, threshold,
+					warning, restart, force),
+		errmsg, errmsg_len);
+}
+
+int bgp_peer_af_prefix_limit_create(struct nb_cb_create_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	/*
+	 * Nothing to apply on bare entry creation: max-prefixes is
+	 * mandatory and its modify callback drives the legacy setters
+	 * with the full knob set once the sibling leaves land.
+	 */
+	return NB_OK;
+}
+
+int bgp_peer_af_prefix_limit_destroy(struct nb_cb_destroy_args *args)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const char *direction;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_pl_lookup(args->dnode, &peer, &afi, &safi, &direction,
+			     args->errmsg, args->errmsg_len) < 0)
+		return NB_OK;
+	if (strmatch(direction, "out"))
+		return bgp_nb_setter_result(
+			peer_maximum_prefix_out_unset(peer, afi, safi),
+			args->errmsg, args->errmsg_len);
+	return bgp_nb_setter_result(
+		peer_maximum_prefix_unset(peer, afi, safi),
+		args->errmsg, args->errmsg_len);
+}
+
+int bgp_peer_af_prefix_limit_max_modify(struct nb_cb_modify_args *args)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const char *direction;
+	const struct lyd_node *dl;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_pl_lookup(args->dnode, &peer, &afi, &safi, &direction,
+			     args->errmsg, args->errmsg_len) < 0)
+		return NB_ERR;
+	dl = bgp_nb_pl_dlist(args->dnode);
+	if (strmatch(direction, "out"))
+		return bgp_nb_setter_result(
+			peer_maximum_prefix_out_set(
+				peer, afi, safi,
+				yang_dnode_get_uint32(args->dnode, NULL)),
+			args->errmsg, args->errmsg_len);
+	return bgp_nb_pl_apply_inbound(peer, afi, safi, dl, NULL,
+				       args->errmsg, args->errmsg_len);
+}
+
+int bgp_peer_af_prefix_limit_force_modify(struct nb_cb_modify_args *args)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const char *direction;
+	const struct lyd_node *dl;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		if (!yang_dnode_get_bool(args->dnode, NULL))
+			return NB_OK;
+		dl = bgp_nb_pl_dlist(args->dnode);
+		direction = dl ? yang_dnode_get_string(dl, "direction")
+			       : NULL;
+		if (!direction || strmatch(direction, "out")) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "force-check is only valid for the inbound direction");
+			return NB_ERR_VALIDATION;
+		}
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_pl_lookup(args->dnode, &peer, &afi, &safi, &direction,
+			     args->errmsg, args->errmsg_len) < 0)
+		return NB_ERR;
+	dl = bgp_nb_pl_dlist(args->dnode);
+	return bgp_nb_pl_apply_inbound(peer, afi, safi, dl, NULL,
+				       args->errmsg, args->errmsg_len);
+}
+
+static int bgp_nb_pl_option_common(const struct lyd_node *dnode,
+				   const char *skip_leaf, char *errmsg,
+				   size_t errmsg_len)
+{
+	struct peer *peer;
+	afi_t afi;
+	safi_t safi;
+	const char *direction;
+	const struct lyd_node *dl;
+
+	if (bgp_nb_pl_lookup(dnode, &peer, &afi, &safi, &direction, errmsg,
+			     errmsg_len) < 0)
+		return NB_ERR;
+	/* option leaves only exist for direction=in (schema when). */
+	dl = bgp_nb_pl_dlist(dnode);
+	return bgp_nb_pl_apply_inbound(peer, afi, safi, dl, skip_leaf,
+				       errmsg, errmsg_len);
+}
+
+int bgp_peer_af_prefix_limit_option_modify(struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		/*
+		 * The tr/tw cases are two-leaf shapes: a timer (or
+		 * warning) without its own threshold leaf would be
+		 * accepted by the schema but silently ignored by the
+		 * reapply (which reads the threshold as default), so
+		 * reject the half-case up front.
+		 */
+		if (args->dnode->schema
+		    && !strcmp(args->dnode->schema->name, "tr-restart-timer")
+		    && !yang_dnode_exists(
+			       args->dnode, "../tr-shutdown-threshold-pct")) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "tr-restart-timer requires tr-shutdown-threshold-pct");
+			return NB_ERR_VALIDATION;
+		}
+		if (args->dnode->schema
+		    && !strcmp(args->dnode->schema->name, "tw-warning-only")
+		    && !yang_dnode_exists(
+			       args->dnode, "../tw-shutdown-threshold-pct")) {
+			snprintfrr(args->errmsg, args->errmsg_len,
+				   "tw-warning-only requires tw-shutdown-threshold-pct");
+			return NB_ERR_VALIDATION;
+		}
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_pl_option_common(args->dnode, NULL, args->errmsg,
+				       args->errmsg_len);
+}
+
+int bgp_peer_af_prefix_limit_option_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	/*
+	 * The dnode shows the OLD tree: skip the dying leaf so the
+	 * reapply keeps the default instead of resurrecting the value
+	 * being destroyed.
+	 */
+	return bgp_nb_pl_option_common(
+		args->dnode,
+		args->dnode->schema ? args->dnode->schema->name : NULL,
+		args->errmsg, args->errmsg_len);
+}
+
+/*
+ * Network configuration (G-NC): the per-AFI-SAFI "network <prefix>"
+ * static routes. Plain AFs keep a flat network-config[prefix] list;
+ * the two l3vpn AFs nest a prefix-list[prefix] list under
+ * network-config[rd] (label-index mandatory there, mirroring the
+ * legacy `network X rd R label N` knob). These callbacks reuse the
+ * same primitives as the legacy bgp_static_set() path in
+ * bgp_route.c so the resulting struct bgp_static and BGP RIB state
+ * are identical, and the CLI keeps legacy authority through the
+ * dual-write funnel in bgp_static_set() itself.
+ */
+static int bgp_nb_af_network_vpn_create(struct nb_cb_create_args *args,
+					struct bgp *bgp, afi_t afi,
+					safi_t safi);
+static int bgp_nb_af_network_vpn_destroy(struct nb_cb_destroy_args *args,
+					 struct bgp *bgp, afi_t afi,
+					 safi_t safi);
+
+static int bgp_nb_network_af_lookup(const struct lyd_node *dnode,
+				    int ups_to_af, struct bgp **bgp_out,
+				    afi_t *afi_out, safi_t *safi_out)
+{
+	static const char *const af_rel[] = {NULL, "../", "../../",
+					      "../../../", "../../../../"};
+	const char *afi_safi_id;
+	char rel_xpath[64];
+	struct bgp *bgp;
+
+	assert(ups_to_af >= 1 && ups_to_af <= 4);
+
+	bgp = bgp_nb_lookup_from_dnode(dnode, ups_to_af + 4);
+	if (!bgp)
+		return -1;
+
+	snprintfrr(rel_xpath, sizeof(rel_xpath), "%safi-safi-name",
+		   af_rel[ups_to_af]);
+	afi_safi_id = yang_dnode_get_string(dnode, "%s", rel_xpath);
+	if (!afi_safi_id)
+		return -1;
+	if (bgp_nb_af_id_to_afi_safi(afi_safi_id, afi_out, safi_out) < 0)
+		return -1;
+	*bgp_out = bgp;
+	return 0;
+}
+
+static int bgp_nb_network_prefix_parse(const char *prefix_str, afi_t afi,
+				       struct prefix *p, char *errmsg,
+				       size_t errmsg_len)
+{
+	if (!str2prefix(prefix_str, p)) {
+		snprintfrr(errmsg, errmsg_len, "malformed prefix '%s'",
+			   prefix_str);
+		return -1;
+	}
+	apply_mask(p);
+	if (afi == AFI_IP6 && IN6_IS_ADDR_LINKLOCAL(&p->u.prefix6)) {
+		snprintfrr(errmsg, errmsg_len,
+			   "malformed prefix (link-local address)");
+		return -1;
+	}
+	return 0;
+}
+
+static int bgp_nb_network_rd_parse(const char *rd_str, struct prefix_rd *prd,
+				   char *errmsg, size_t errmsg_len)
+{
+	if (!str2prefix_rd(rd_str, prd)) {
+		snprintfrr(errmsg, errmsg_len, "malformed rd '%s'", rd_str);
+		return -1;
+	}
+	return 0;
+}
+
+static void bgp_nb_network_rmap_bind(struct bgp_static *bgp_static,
+				     const char *name)
+{
+	XFREE(MTYPE_ROUTE_MAP_NAME, bgp_static->rmap.name);
+	route_map_counter_decrement(bgp_static->rmap.map);
+	if (name) {
+		bgp_static->rmap.name =
+			XSTRDUP(MTYPE_ROUTE_MAP_NAME, name);
+		bgp_static->rmap.map = route_map_lookup_by_name(name);
+		route_map_counter_increment(bgp_static->rmap.map);
+	} else {
+		bgp_static->rmap.map = NULL;
+	}
+}
+
+static void bgp_nb_network_apply(struct bgp *bgp, const struct prefix *p,
+				 struct bgp_static *bgp_static, afi_t afi,
+				 safi_t safi)
+{
+	bgp_static->valid = 1;
+	if (!bgp_static->backdoor)
+		bgp_static_update(bgp, p, bgp_static, afi, safi);
+}
+
+static struct bgp_dest *bgp_nb_network_vpn_table(struct bgp *bgp, afi_t afi,
+						 safi_t safi,
+						 const char *rd_str,
+						 struct prefix_rd *prd,
+						 bool create, char *errmsg,
+						 size_t errmsg_len)
+{
+	struct bgp_dest *pdest;
+
+	if (bgp_nb_network_rd_parse(rd_str, prd, errmsg, errmsg_len) < 0)
+		return NULL;
+	pdest = bgp_node_lookup(bgp->static_routes[afi][safi],
+				(struct prefix *)prd);
+	if (!pdest) {
+		if (!create) {
+			snprintfrr(errmsg, errmsg_len,
+				   "no static route rd %s", rd_str);
+			return NULL;
+		}
+		pdest = bgp_node_get(bgp->static_routes[afi][safi],
+				     (struct prefix *)prd);
+		if (!bgp_dest_has_bgp_path_info_data(pdest))
+			bgp_dest_set_bgp_table_info(
+				pdest, bgp_table_init(bgp, afi, safi));
+	}
+	return pdest;
+}
+
+int bgp_global_af_network_config_create(struct nb_cb_create_args *args)
+{
+	struct bgp *bgp;
+	afi_t afi;
+	safi_t safi;
+	struct prefix p;
+	struct bgp_dest *dest;
+	struct bgp_static *bgp_static;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		if (bgp_nb_network_af_lookup(
+			    args->dnode, 2, &bgp, &afi, &safi) == 0 &&
+		    safi != SAFI_MPLS_VPN &&
+		    yang_dnode_exists(args->dnode, "prefix") &&
+		    bgp_nb_network_prefix_parse(
+			    yang_dnode_get_string(args->dnode, "prefix"), afi,
+			    &p, args->errmsg, args->errmsg_len) < 0)
+			return NB_ERR_VALIDATION;
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_network_af_lookup(args->dnode, 2, &bgp, &afi, &safi) < 0)
+		return NB_ERR;
+	/*
+	 * The l3vpn entry is keyed by rd (no prefix leaf): route to the
+	 * vpn helpers BEFORE any prefix read -- the yang wrappers abort
+	 * the daemon on a missing node.
+	 */
+	if (safi == SAFI_MPLS_VPN)
+		return bgp_nb_af_network_vpn_create(args, bgp, afi, safi);
+	if (bgp_nb_network_prefix_parse(
+		    yang_dnode_get_string(args->dnode, "prefix"), afi, &p,
+		    args->errmsg, args->errmsg_len) < 0)
+		return NB_ERR;
+
+	dest = bgp_node_get(bgp->static_routes[afi][safi], &p);
+	if (bgp_dest_get_bgp_static_info(dest)) {
+		/* idempotent re-create: keep the existing static */
+		bgp_dest_unlock_node(dest);
+		return NB_OK;
+	}
+	bgp_static = bgp_static_new();
+	bgp_static->backdoor =
+		yang_dnode_exists(args->dnode, "backdoor")
+			&& yang_dnode_get_bool(args->dnode, "backdoor");
+	bgp_static->valid = 0;
+	bgp_static->igpmetric = 0;
+	bgp_static->igpnexthop.s_addr = INADDR_ANY;
+	bgp_static->label_index =
+		yang_dnode_exists(args->dnode, "label-index")
+			? yang_dnode_get_uint32(args->dnode, "label-index")
+			: BGP_INVALID_LABEL_INDEX;
+	if (yang_dnode_exists(args->dnode, "rmap-policy-export"))
+		bgp_nb_network_rmap_bind(
+			bgp_static,
+			yang_dnode_get_string(args->dnode,
+					      "rmap-policy-export"));
+	bgp_dest_set_bgp_static_info(dest, bgp_static);
+	bgp_nb_network_apply(bgp, &p, bgp_static, afi, safi);
+	return NB_OK;
+}
+
+int bgp_global_af_network_config_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+	afi_t afi;
+	safi_t safi;
+	struct prefix p;
+	struct bgp_dest *dest;
+	struct bgp_static *bgp_static;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_network_af_lookup(args->dnode, 2, &bgp, &afi, &safi) < 0)
+		return NB_OK;
+	/* l3vpn entry: keyed by rd; no prefix leaf to parse. */
+	if (safi == SAFI_MPLS_VPN)
+		return bgp_nb_af_network_vpn_destroy(args, bgp, afi, safi);
+	if (bgp_nb_network_prefix_parse(
+		    yang_dnode_get_string(args->dnode, "prefix"), afi, &p,
+		    NULL, 0) < 0)
+		return NB_OK;
+
+	dest = bgp_node_lookup(bgp->static_routes[afi][safi], &p);
+	if (!dest)
+		return NB_OK;
+	bgp_static = bgp_dest_get_bgp_static_info(dest);
+	if (bgp_static) {
+		if (!bgp_static->backdoor)
+			bgp_static_withdraw(bgp, &p, afi, safi, NULL);
+		bgp_static_free(bgp_static);
+	}
+	bgp_dest_set_bgp_static_info(dest, NULL);
+	dest = bgp_dest_unlock_node(dest);
+	assert(dest);
+	bgp_dest_unlock_node(dest);
+	return NB_OK;
+}
+
+static struct bgp_static *bgp_nb_network_static_lookup(
+	struct bgp *bgp, afi_t afi, safi_t safi, const struct prefix *p,
+	struct bgp_dest **dest_out, char *errmsg, size_t errmsg_len)
+{
+	struct bgp_dest *dest;
+	struct bgp_static *bgp_static;
+
+	dest = bgp_node_lookup(bgp->static_routes[afi][safi], p);
+	if (!dest) {
+		snprintfrr(errmsg, errmsg_len,
+			   "can't find static route specified");
+		return NULL;
+	}
+	bgp_static = bgp_dest_get_bgp_static_info(dest);
+	if (!bgp_static) {
+		bgp_dest_unlock_node(dest);
+		snprintfrr(errmsg, errmsg_len,
+			   "can't find static route specified");
+		return NULL;
+	}
+	*dest_out = dest;
+	return bgp_static;
+}
+
+static int bgp_nb_network_backdoor_common(const struct lyd_node *dnode,
+					  bool backdoor, char *errmsg,
+					  size_t errmsg_len)
+{
+	struct bgp *bgp;
+	afi_t afi;
+	safi_t safi;
+	struct prefix p;
+	struct bgp_dest *dest = NULL;
+	struct bgp_static *bgp_static;
+	bool need_update;
+
+	if (bgp_nb_network_af_lookup(dnode, 3, &bgp, &afi, &safi) < 0)
+		return NB_ERR;
+	if (bgp_nb_network_prefix_parse(
+		    yang_dnode_get_string(dnode, "../prefix"), afi, &p, errmsg,
+		    errmsg_len) < 0)
+		return NB_ERR;
+	bgp_static = bgp_nb_network_static_lookup(bgp, afi, safi, &p, &dest,
+						  errmsg, errmsg_len);
+	if (!bgp_static)
+		return NB_ERR;
+	need_update = bgp_static->valid
+		      && bgp_static->backdoor != backdoor;
+	bgp_static->backdoor = backdoor;
+	if (need_update)
+		bgp_static_withdraw(bgp, &p, afi, safi, NULL);
+	bgp_dest_unlock_node(dest);
+	bgp_nb_network_apply(bgp, &p, bgp_static, afi, safi);
+	return NB_OK;
+}
+
+int bgp_global_af_network_backdoor_modify(struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_network_backdoor_common(
+		args->dnode, yang_dnode_get_bool(args->dnode, NULL),
+		args->errmsg, args->errmsg_len);
+}
+
+static int bgp_nb_network_label_common(const struct lyd_node *dnode,
+				       bool removed, char *errmsg,
+				       size_t errmsg_len)
+{
+	struct bgp *bgp;
+	afi_t afi;
+	safi_t safi;
+	struct prefix p;
+	struct bgp_dest *dest = NULL;
+	struct bgp_static *bgp_static;
+	uint32_t label_index;
+
+	if (bgp_nb_network_af_lookup(dnode, 3, &bgp, &afi, &safi) < 0)
+		return NB_ERR;
+	if (bgp_nb_network_prefix_parse(
+		    yang_dnode_get_string(dnode, "../prefix"), afi, &p, errmsg,
+		    errmsg_len) < 0)
+		return NB_ERR;
+	bgp_static = bgp_nb_network_static_lookup(bgp, afi, safi, &p, &dest,
+						  errmsg, errmsg_len);
+	if (!bgp_static)
+		return NB_ERR;
+	label_index = removed ? BGP_INVALID_LABEL_INDEX
+			      : yang_dnode_get_uint32(dnode, NULL);
+	if (bgp_static->label_index != BGP_INVALID_LABEL_INDEX &&
+	    bgp_static->label_index != label_index) {
+		bgp_dest_unlock_node(dest);
+		snprintfrr(errmsg, errmsg_len, "cannot change label-index");
+		return NB_ERR;
+	}
+	if (bgp_static->label_index != label_index) {
+		bgp_static->label_index = label_index;
+		encode_label(label_index, &bgp_static->label);
+	}
+	bgp_dest_unlock_node(dest);
+	return NB_OK;
+}
+
+int bgp_global_af_network_label_modify(struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_network_label_common(args->dnode, false,
+					   args->errmsg, args->errmsg_len);
+}
+
+int bgp_global_af_network_label_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_network_label_common(args->dnode, true,
+					   args->errmsg, args->errmsg_len);
+}
+
+static int bgp_nb_network_rmap_common(const struct lyd_node *dnode,
+				      const char *name, char *errmsg,
+				      size_t errmsg_len)
+{
+	struct bgp *bgp;
+	afi_t afi;
+	safi_t safi;
+	struct prefix p;
+	struct bgp_dest *dest = NULL;
+	struct bgp_static *bgp_static;
+
+	if (bgp_nb_network_af_lookup(dnode, 3, &bgp, &afi, &safi) < 0)
+		return NB_ERR;
+	if (bgp_nb_network_prefix_parse(
+		    yang_dnode_get_string(dnode, "../prefix"), afi, &p, errmsg,
+		    errmsg_len) < 0)
+		return NB_ERR;
+	bgp_static = bgp_nb_network_static_lookup(bgp, afi, safi, &p, &dest,
+						  errmsg, errmsg_len);
+	if (!bgp_static)
+		return NB_ERR;
+	bgp_nb_network_rmap_bind(bgp_static, name);
+	bgp_dest_unlock_node(dest);
+	/*
+	 * Re-originate so attribute changes take effect, mirroring the
+	 * end state of the legacy `network X route-map NAME` re-issue.
+	 */
+	bgp_static->valid = 0;
+	bgp_nb_network_apply(bgp, &p, bgp_static, afi, safi);
+	return NB_OK;
+}
+
+int bgp_global_af_network_rmap_modify(struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_network_rmap_common(
+		args->dnode, yang_dnode_get_string(args->dnode, NULL),
+		args->errmsg, args->errmsg_len);
+}
+
+int bgp_global_af_network_rmap_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_network_rmap_common(args->dnode, NULL, args->errmsg,
+					  args->errmsg_len);
+}
+
+/* l3vpn: network-config[rd] creates/destroys the per-RD static table. */
+static int bgp_nb_af_network_vpn_create(struct nb_cb_create_args *args,
+					struct bgp *bgp, afi_t afi,
+					safi_t safi)
+{
+	struct prefix_rd prd;
+	struct bgp_dest *pdest;
+
+	pdest = bgp_nb_network_vpn_table(
+		bgp, afi, safi, yang_dnode_get_string(args->dnode, "rd"),
+		&prd, true, args->errmsg, args->errmsg_len);
+	if (!pdest)
+		return NB_ERR;
+	return NB_OK;
+}
+
+static int bgp_nb_af_network_vpn_destroy(struct nb_cb_destroy_args *args,
+					 struct bgp *bgp, afi_t afi,
+					 safi_t safi)
+{
+	struct prefix_rd prd;
+	struct bgp_dest *pdest, *dest;
+	struct bgp_table *table;
+	struct bgp_static *bgp_static;
+	struct prefix p;
+
+	if (bgp_nb_network_rd_parse(yang_dnode_get_string(args->dnode, "rd"),
+				    &prd, NULL, 0) < 0)
+		return NB_OK;
+	pdest = bgp_node_lookup(bgp->static_routes[afi][safi],
+				(struct prefix *)&prd);
+	if (!pdest)
+		return NB_OK;
+	/*
+	 * Withdraw and free every prefix under the RD. The empty RD
+	 * node itself is kept, matching the legacy lifecycle where
+	 * RD-level nodes persist for the instance lifetime.
+	 */
+	table = bgp_dest_get_bgp_table_info(pdest);
+	if (table) {
+		for (dest = bgp_table_top(table); dest;
+		     dest = bgp_route_next(dest)) {
+			bgp_static = bgp_dest_get_bgp_static_info(dest);
+			if (!bgp_static)
+				continue;
+			p = *bgp_dest_get_prefix(dest);
+			bgp_static_withdraw(bgp, &p, afi, safi, &prd);
+			bgp_static_free(bgp_static);
+			bgp_dest_set_bgp_static_info(dest, NULL);
+		}
+	}
+	return NB_OK;
+}
+
+/* l3vpn: prefix-list[prefix] entries inside network-config[rd]. */
+/*
+ * The caller may hand the prefix-list ENTRY or one of its LEAVES
+ * (libyang creates the ancestors implicitly on a leaf update, so a
+ * "create" often arrives as a leaf modify). Normalize to the entry
+ * first: every relative read below ("prefix", "../rd") and the hop
+ * count to the afi-safi entry (3) are only valid from the entry
+ * itself. The yang wrappers abort the daemon on a missed node, so
+ * the schema-name walk replaces fragile depth counting.
+ */
+static int bgp_nb_network_pl_lookup(const struct lyd_node *dnode,
+				    struct bgp **bgp_out, afi_t *afi_out,
+				    safi_t *safi_out, struct prefix *p,
+				    struct prefix_rd *prd, char *errmsg,
+				    size_t errmsg_len)
+{
+	if (dnode->schema && strcmp(dnode->schema->name, "prefix-list"))
+		dnode = yang_dnode_get_parent(dnode, "prefix-list");
+	if (!dnode)
+		return -1;
+	if (bgp_nb_network_af_lookup(dnode, 3, bgp_out, afi_out, safi_out)
+	    < 0)
+		return -1;
+	if (bgp_nb_network_prefix_parse(
+		    yang_dnode_get_string(dnode, "prefix"), *afi_out, p,
+		    errmsg, errmsg_len) < 0)
+		return -1;
+	if (!bgp_nb_network_vpn_table(*bgp_out, *afi_out, *safi_out,
+				      yang_dnode_get_string(dnode, "../rd"),
+				      prd, false, errmsg, errmsg_len))
+		return -1;
+	return 0;
+}
+
+int bgp_global_af_network_pl_create(struct nb_cb_create_args *args)
+{
+	struct bgp *bgp;
+	afi_t afi;
+	safi_t safi;
+	struct prefix p;
+	struct prefix_rd prd;
+	struct bgp_dest *pdest, *dest;
+	struct bgp_table *table;
+	struct bgp_static *bgp_static;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		if (bgp_nb_network_af_lookup(
+			    args->dnode, 3, &bgp, &afi, &safi) == 0 &&
+		    bgp_nb_network_prefix_parse(
+			    yang_dnode_get_string(args->dnode, "prefix"), afi,
+			    &p, args->errmsg, args->errmsg_len) < 0)
+			return NB_ERR_VALIDATION;
+		return NB_OK;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_network_pl_lookup(args->dnode, &bgp, &afi, &safi, &p,
+				     &prd, args->errmsg, args->errmsg_len)
+	    < 0)
+		return NB_ERR;
+	pdest = bgp_node_lookup(bgp->static_routes[afi][safi],
+				(struct prefix *)&prd);
+	if (!pdest)
+		return NB_ERR;
+	table = bgp_dest_get_bgp_table_info(pdest);
+	dest = bgp_node_get(table, &p);
+	if (bgp_dest_get_bgp_static_info(dest)) {
+		bgp_dest_unlock_node(dest);
+		return NB_OK;
+	}
+	bgp_static = bgp_static_new();
+	bgp_static->valid = 0;
+	bgp_static->igpmetric = 0;
+	bgp_static->igpnexthop.s_addr = INADDR_ANY;
+	bgp_static->label_index =
+		yang_dnode_get_uint32(args->dnode, "label-index");
+	encode_label(bgp_static->label_index, &bgp_static->label);
+	bgp_static->prd = prd;
+	bgp_static->prd_pretty = XSTRDUP(
+		MTYPE_BGP_NAME,
+		yang_dnode_get_string(args->dnode, "../rd"));
+	if (yang_dnode_exists(args->dnode, "rmap-policy-export"))
+		bgp_nb_network_rmap_bind(
+			bgp_static,
+			yang_dnode_get_string(args->dnode,
+					      "rmap-policy-export"));
+	bgp_dest_set_bgp_static_info(dest, bgp_static);
+	bgp_nb_network_apply(bgp, &p, bgp_static, afi, safi);
+	return NB_OK;
+}
+
+int bgp_global_af_network_pl_destroy(struct nb_cb_destroy_args *args)
+{
+	struct bgp *bgp;
+	afi_t afi;
+	safi_t safi;
+	struct prefix p;
+	struct prefix_rd prd;
+	struct bgp_dest *pdest, *dest;
+	struct bgp_table *table;
+	struct bgp_static *bgp_static;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_network_pl_lookup(args->dnode, &bgp, &afi, &safi, &p,
+				     &prd, NULL, 0) < 0)
+		return NB_OK;
+	pdest = bgp_node_lookup(bgp->static_routes[afi][safi],
+				(struct prefix *)&prd);
+	if (!pdest)
+		return NB_OK;
+	table = bgp_dest_get_bgp_table_info(pdest);
+	dest = bgp_node_lookup(table, &p);
+	if (!dest)
+		return NB_OK;
+	bgp_static = bgp_dest_get_bgp_static_info(dest);
+	if (bgp_static) {
+		bgp_static_withdraw(bgp, &p, afi, safi, &prd);
+		bgp_static_free(bgp_static);
+	}
+	bgp_dest_set_bgp_static_info(dest, NULL);
+	dest = bgp_dest_unlock_node(dest);
+	assert(dest);
+	bgp_dest_unlock_node(dest);
+	return NB_OK;
+}
+
+int bgp_global_af_network_pl_label_modify(struct nb_cb_modify_args *args)
+{
+	struct bgp *bgp;
+	afi_t afi;
+	safi_t safi;
+	struct prefix p;
+	struct prefix_rd prd;
+	struct bgp_dest *pdest, *dest = NULL;
+	struct bgp_table *table;
+	struct bgp_static *bgp_static;
+	uint32_t label_index;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	if (bgp_nb_network_pl_lookup(args->dnode, &bgp, &afi, &safi, &p,
+				     &prd, args->errmsg, args->errmsg_len)
+	    < 0)
+		return NB_ERR;
+	pdest = bgp_node_lookup(bgp->static_routes[afi][safi],
+				(struct prefix *)&prd);
+	if (!pdest)
+		return NB_ERR;
+	table = bgp_dest_get_bgp_table_info(pdest);
+	dest = bgp_node_lookup(table, &p);
+	if (!dest) {
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "can't find static route specified");
+		return NB_ERR;
+	}
+	bgp_static = bgp_dest_get_bgp_static_info(dest);
+	if (!bgp_static) {
+		bgp_dest_unlock_node(dest);
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "can't find static route specified");
+		return NB_ERR;
+	}
+	label_index = yang_dnode_get_uint32(args->dnode, NULL);
+	if (bgp_static->label_index != BGP_INVALID_LABEL_INDEX &&
+	    bgp_static->label_index != label_index) {
+		bgp_dest_unlock_node(dest);
+		snprintfrr(args->errmsg, args->errmsg_len,
+			   "cannot change label-index");
+		return NB_ERR;
+	}
+	if (bgp_static->label_index != label_index) {
+		bgp_static->label_index = label_index;
+		encode_label(label_index, &bgp_static->label);
+		if (bgp_static->valid && !bgp_static->backdoor) {
+			bgp_static_withdraw(bgp, &p, afi, safi, &prd);
+			bgp_static_update(bgp, &p, bgp_static, afi, safi);
+		}
+	}
+	bgp_dest_unlock_node(dest);
+	return NB_OK;
+}
+
+static int bgp_nb_network_pl_rmap_common(const struct lyd_node *dnode,
+					 const char *name, char *errmsg,
+					 size_t errmsg_len)
+{
+	struct bgp *bgp;
+	afi_t afi;
+	safi_t safi;
+	struct prefix p;
+	struct prefix_rd prd;
+	struct bgp_dest *pdest, *dest = NULL;
+	struct bgp_table *table;
+	struct bgp_static *bgp_static;
+
+	if (bgp_nb_network_pl_lookup(dnode, &bgp, &afi, &safi, &p, &prd,
+				     errmsg, errmsg_len) < 0)
+		return NB_ERR;
+	pdest = bgp_node_lookup(bgp->static_routes[afi][safi],
+				(struct prefix *)&prd);
+	if (!pdest)
+		return NB_ERR;
+	table = bgp_dest_get_bgp_table_info(pdest);
+	dest = bgp_node_lookup(table, &p);
+	if (!dest) {
+		snprintfrr(errmsg, errmsg_len,
+			   "can't find static route specified");
+		return NB_ERR;
+	}
+	bgp_static = bgp_dest_get_bgp_static_info(dest);
+	if (!bgp_static) {
+		bgp_dest_unlock_node(dest);
+		snprintfrr(errmsg, errmsg_len,
+			   "can't find static route specified");
+		return NB_ERR;
+	}
+	bgp_nb_network_rmap_bind(bgp_static, name);
+	bgp_dest_unlock_node(dest);
+	bgp_static->valid = 0;
+	bgp_nb_network_apply(bgp, &p, bgp_static, afi, safi);
+	return NB_OK;
+}
+
+int bgp_global_af_network_pl_rmap_modify(struct nb_cb_modify_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_network_pl_rmap_common(
+		args->dnode, yang_dnode_get_string(args->dnode, NULL),
+		args->errmsg, args->errmsg_len);
+}
+
+int bgp_global_af_network_pl_rmap_destroy(struct nb_cb_destroy_args *args)
+{
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+		return NB_OK;
+	case NB_EV_APPLY:
+		break;
+	}
+	return bgp_nb_network_pl_rmap_common(args->dnode, NULL,
+					     args->errmsg,
+					     args->errmsg_len);
 }
 
 BGP_NEIGHBOR_FLAG_MOD_CB(aigp, PEER_FLAG_AIGP)
@@ -6311,6 +7459,105 @@ void bgp_neighbor_af_rmap_export_cli_show(struct vty *vty,
 	const struct lyd_node *dnode, bool show_defaults)
 {
 	bgp_neighbor_af_rmap_filter_cli_show(vty, dnode, "out");
+}
+
+/*
+ * Prefix-limit cli_show: rendered from the max-prefixes leaf so each
+ * direction-list entry prints exactly one legacy line (matching
+ * bgp_config_write_family byte for byte).
+ */
+static const char *bgp_nb_pl_ctx_key(const struct lyd_node *af_entry)
+{
+	if (yang_dnode_exists(af_entry, "../../remote-address"))
+		return yang_dnode_get_string(af_entry,
+					     "../../remote-address");
+	if (yang_dnode_exists(af_entry, "../../interface"))
+		return yang_dnode_get_string(af_entry, "../../interface");
+	return yang_dnode_get_string(af_entry,
+				     "../../peer-group-name");
+}
+
+void bgp_peer_af_prefix_limit_max_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	const struct lyd_node *dl, *af_entry;
+	const char *key, *direction;
+
+	dl = yang_dnode_get_parent(dnode, "direction-list");
+	af_entry = yang_dnode_get_parent(dl, "afi-safi");
+	key = bgp_nb_pl_ctx_key(af_entry);
+	direction = yang_dnode_get_string(dl, "direction");
+
+	if (strmatch(direction, "out")) {
+		vty_out(vty, "  neighbor %s maximum-prefix-out %s\n", key,
+			yang_dnode_get_string(dnode, NULL));
+		return;
+	}
+	vty_out(vty, "  neighbor %s maximum-prefix %s", key,
+		yang_dnode_get_string(dnode, NULL));
+	if (yang_dnode_exists(dl, "options/shutdown-threshold-pct"))
+		vty_out(vty, " %s",
+			yang_dnode_get_string(dl,
+					      "options/shutdown-threshold-pct"));
+	if (yang_dnode_exists(dl, "options/tr-shutdown-threshold-pct"))
+		vty_out(vty, " %s",
+			yang_dnode_get_string(
+				dl, "options/tr-shutdown-threshold-pct"));
+	if (yang_dnode_exists(dl, "options/tw-shutdown-threshold-pct"))
+		vty_out(vty, " %s",
+			yang_dnode_get_string(
+				dl, "options/tw-shutdown-threshold-pct"));
+	if ((yang_dnode_exists(dl, "options/warning-only")
+	     && yang_dnode_get_bool(dl, "options/warning-only"))
+	    || (yang_dnode_exists(dl, "options/tw-warning-only")
+		&& yang_dnode_get_bool(dl, "options/tw-warning-only")))
+		vty_out(vty, " warning-only");
+	if (yang_dnode_exists(dl, "options/restart-timer"))
+		vty_out(vty, " restart %s",
+			yang_dnode_get_string(dl,
+					      "options/restart-timer"));
+	if (yang_dnode_exists(dl, "options/tr-restart-timer"))
+		vty_out(vty, " restart %s",
+			yang_dnode_get_string(
+				dl, "options/tr-restart-timer"));
+	if (yang_dnode_exists(dl, "force-check")
+	    && yang_dnode_get_bool(dl, "force-check"))
+		vty_out(vty, " force");
+	vty_out(vty, "\n");
+}
+
+/*
+ * Network-config cli_show: rendered from the list entry (plain AFs)
+ * and from the prefix-list entry (l3vpn), matching the legacy
+ * `network` lines byte for byte.
+ */
+void bgp_global_af_network_config_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	vty_out(vty, "  network %s", yang_dnode_get_string(dnode, "prefix"));
+	if (yang_dnode_exists(dnode, "label-index"))
+		vty_out(vty, " label-index %s",
+			yang_dnode_get_string(dnode, "label-index"));
+	if (yang_dnode_exists(dnode, "rmap-policy-export"))
+		vty_out(vty, " route-map %s",
+			yang_dnode_get_string(dnode, "rmap-policy-export"));
+	if (yang_dnode_exists(dnode, "backdoor")
+	    && yang_dnode_get_bool(dnode, "backdoor"))
+		vty_out(vty, " backdoor");
+	vty_out(vty, "\n");
+}
+
+void bgp_global_af_network_pl_cli_show(struct vty *vty,
+	const struct lyd_node *dnode, bool show_defaults)
+{
+	vty_out(vty, "  network %s rd %s label %s",
+		yang_dnode_get_string(dnode, "prefix"),
+		yang_dnode_get_string(dnode, "../rd"),
+		yang_dnode_get_string(dnode, "label-index"));
+	if (yang_dnode_exists(dnode, "rmap-policy-export"))
+		vty_out(vty, " route-map %s",
+			yang_dnode_get_string(dnode, "rmap-policy-export"));
+	vty_out(vty, "\n");
 }
 
 /* value-style cli_show emitters. */

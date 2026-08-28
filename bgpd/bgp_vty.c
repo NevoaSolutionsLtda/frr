@@ -1720,26 +1720,6 @@ static void bgp_nb_peer_value_dual(struct vty *vty, const char *peer_arg,
  * against the per-AF leaf. AFI/SAFI come from the current vty mode
  * (bgp_node_afi/safi). xpath_rel is relative to the afi-safi list entry.
  */
-static const char *bgp_nb_af_yang_name(afi_t afi, safi_t safi)
-{
-	if (afi == AFI_IP && safi == SAFI_UNICAST)
-		return "frr-routing:ipv4-unicast";
-	if (afi == AFI_IP6 && safi == SAFI_UNICAST)
-		return "frr-routing:ipv6-unicast";
-	if (afi == AFI_IP && safi == SAFI_LABELED_UNICAST)
-		return "frr-routing:ipv4-labeled-unicast";
-	if (afi == AFI_IP6 && safi == SAFI_LABELED_UNICAST)
-		return "frr-routing:ipv6-labeled-unicast";
-	if (afi == AFI_IP && safi == SAFI_MPLS_VPN)
-		return "frr-routing:l3vpn-ipv4-unicast";
-	if (afi == AFI_IP6 && safi == SAFI_MPLS_VPN)
-		return "frr-routing:l3vpn-ipv6-unicast";
-	if (afi == AFI_L2VPN && safi == SAFI_EVPN)
-		return "frr-routing:l2vpn-evpn";
-	if (afi == AFI_L2VPN && safi == SAFI_UNICAST)
-		return "frr-routing:l2vpn-vpls";
-	return NULL;
-}
 
 /*
  * Per-AF config nodes live inside a per-AFI container named after the
@@ -10399,6 +10379,127 @@ ALIAS_HIDDEN(no_neighbor_unsuppress_map, no_neighbor_unsuppress_map_hidden_cmd,
 	     "Route-map to selectively unsuppress suppressed routes\n"
 	     "Name of route map\n")
 
+
+/*
+ * Prefix-limit dual write: mirrors a successful legacy
+ * peer_maximum_prefix_{set,unset}() into the YANG datastore. Works
+ * across the three neighbor contexts (numbered, unnumbered,
+ * peer-group) by picking the datastore base from the resolved peer.
+ * set=false enqueues the direction-list DESTROY.
+ */
+static void bgp_nb_peer_maximum_prefix_dual(struct vty *vty,
+					    const char *peer_arg,
+					    afi_t afi, safi_t safi, bool set,
+					    bool out, const char *num,
+					    const char *threshold,
+					    int warning, const char *restart,
+					    const char *force)
+{
+	struct bgp *bgp;
+	struct peer *peer;
+	const char *af_name, *cont;
+	const char *dir;
+	char entry[192];
+	char leaf[256];
+
+	af_name = bgp_nb_af_yang_name(afi, safi);
+	/* l2vpn-evpn keeps the reject-strict class until Fase C */
+	if (!af_name || safi == SAFI_EVPN)
+		return;
+	cont = strchr(af_name, ':');
+	if (!cont || strmatch(cont + 1, "l2vpn-vpls"))
+		return;
+	cont++;
+	bgp = VTY_GET_CONTEXT(bgp);
+	if (!bgp)
+		return;
+	peer = peer_and_group_lookup_vty(vty, peer_arg);
+	if (!peer)
+		return;
+
+	dir = out ? "out" : "in";
+	snprintfrr(entry, sizeof(entry),
+		   "./afi-safis/afi-safi[afi-safi-name='%s']/%s",
+		   af_name, cont);
+	strlcat(entry, "/prefix-limit/direction-list[direction='",
+		sizeof(entry));
+	strlcat(entry, dir, sizeof(entry));
+	strlcat(entry, "']", sizeof(entry));
+
+	/*
+	 * NB: no explicit NB_OP_CREATE for the direction-list -- a leaf
+	 * MODIFY creates the ancestors implicitly and a CREATE on an
+	 * already-present entry would abort the whole apply batch.
+	 */
+	if (set && !out) {
+		snprintfrr(leaf, sizeof(leaf), "%s/max-prefixes", entry);
+		nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY, num);
+		if (threshold && warning) {
+			snprintfrr(leaf, sizeof(leaf),
+				 "%s/options/tw-shutdown-threshold-pct",
+				 entry);
+			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+					      threshold);
+			snprintfrr(leaf, sizeof(leaf),
+				 "%s/options/tw-warning-only", entry);
+			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+					      "true");
+		} else if (warning) {
+			snprintfrr(leaf, sizeof(leaf),
+				 "%s/options/warning-only", entry);
+			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+					      "true");
+		} else if (threshold && restart) {
+			snprintfrr(leaf, sizeof(leaf),
+				 "%s/options/tr-shutdown-threshold-pct",
+				 entry);
+			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+					      threshold);
+			snprintfrr(leaf, sizeof(leaf),
+				 "%s/options/tr-restart-timer", entry);
+			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+					      restart);
+		} else if (threshold) {
+			snprintfrr(leaf, sizeof(leaf),
+				 "%s/options/shutdown-threshold-pct",
+				 entry);
+			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+					      threshold);
+		} else if (restart) {
+			snprintfrr(leaf, sizeof(leaf),
+				 "%s/options/restart-timer", entry);
+			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+					      restart);
+		}
+		if (force) {
+			snprintfrr(leaf, sizeof(leaf), "%s/force-check",
+				   entry);
+			nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY,
+					      "true");
+		}
+	} else if (set && out) {
+		snprintfrr(leaf, sizeof(leaf), "%s/max-prefixes", entry);
+		nb_cli_enqueue_change(vty, leaf, NB_OP_MODIFY, num);
+	} else {
+		nb_cli_enqueue_change(vty, entry, NB_OP_DESTROY, NULL);
+	}
+
+	if (CHECK_FLAG(peer->sflags, PEER_STATUS_GROUP))
+		(void)nb_cli_apply_changes(vty, BGP_PEER_GROUP_XPATH,
+					   "frr-bgp:bgp",
+					   bgp_nb_cpp_name(bgp),
+					   bgp_nb_vrf_key(bgp), peer_arg);
+	else if (peer->conf_if)
+		(void)nb_cli_apply_changes(
+			vty, BGP_UNNUMBERED_NEIGHBOR_XPATH, "frr-bgp:bgp",
+			bgp_nb_cpp_name(bgp), bgp_nb_vrf_key(bgp), peer_arg);
+	else
+		(void)nb_cli_apply_changes(vty, BGP_NEIGHBOR_XPATH,
+					   "frr-bgp:bgp",
+					   bgp_nb_cpp_name(bgp),
+					   bgp_nb_vrf_key(bgp), peer_arg);
+}
+
 static int peer_maximum_prefix_set_vty(struct vty *vty, const char *ip_str,
 				       afi_t afi, safi_t safi,
 				       const char *num_str,
@@ -10429,6 +10530,10 @@ static int peer_maximum_prefix_set_vty(struct vty *vty, const char *ip_str,
 
 	ret = peer_maximum_prefix_set(peer, afi, safi, max, threshold, warning,
 				      restart, force_str ? true : false);
+	if (ret == 0)
+		bgp_nb_peer_maximum_prefix_dual(
+			vty, ip_str, afi, safi, true, false, num_str,
+			threshold_str, warning, restart_str, force_str);
 
 	return bgp_vty_return(vty, ret);
 }
@@ -10444,6 +10549,10 @@ static int peer_maximum_prefix_unset_vty(struct vty *vty, const char *ip_str,
 		return CMD_WARNING_CONFIG_FAILED;
 
 	ret = peer_maximum_prefix_unset(peer, afi, safi);
+	if (ret == 0)
+		bgp_nb_peer_maximum_prefix_dual(vty, ip_str, afi, safi,
+						false, false, NULL, NULL, 0,
+						NULL, NULL);
 
 	return bgp_vty_return(vty, ret);
 }
@@ -10472,6 +10581,10 @@ DEFPY_YANG(neighbor_maximum_prefix_out,
 	max = strtoul(argv[idx_number]->arg, NULL, 10);
 
 	ret = peer_maximum_prefix_out_set(peer, afi, safi, max);
+	if (ret == 0)
+		bgp_nb_peer_maximum_prefix_dual(
+			vty, argv[idx_peer]->arg, afi, safi, true, true,
+			argv[idx_number]->arg, NULL, 0, NULL, NULL);
 
 	return bgp_vty_return(vty, ret);
 }
@@ -10496,6 +10609,10 @@ DEFPY_YANG(no_neighbor_maximum_prefix_out,
 		return CMD_WARNING_CONFIG_FAILED;
 
 	ret = peer_maximum_prefix_out_unset(peer, afi, safi);
+	if (ret == 0)
+		bgp_nb_peer_maximum_prefix_dual(
+			vty, argv[idx_peer]->arg, afi, safi, false, true,
+			NULL, NULL, 0, NULL, NULL);
 
 	return bgp_vty_return(vty, ret);
 }
