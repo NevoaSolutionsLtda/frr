@@ -1121,12 +1121,6 @@ const struct frr_yang_module_info frr_bgp_info = {
 			},
 		},
 		{
-			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/timers",
-			.cbs = {
-				.cli_show = bgp_neighbor_timers_cli_show,
-			},
-		},
-		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/oad",
 			.cbs = {
 				.modify  = bgp_neighbor_oad_modify,

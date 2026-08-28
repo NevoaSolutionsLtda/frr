@@ -561,8 +561,8 @@ def test_neighbor_timers_grpc():
         ],
     )
     output = r1.vtysh_cmd("show running-config bgpd")
-    assert "neighbor 10.0.0.2 timers 3 9" in output, (
-        f"expected timers on legacy CLI; got:\n{output}"
+    assert output.count("neighbor 10.0.0.2 timers 3 9") == 1, (
+        f"expected exactly one timers line on legacy CLI; got:\n{output}"
     )
 
     step("The peer internals carry the negotiated timers")
@@ -595,8 +595,8 @@ def test_neighbor_timers_single_leaf_grpc():
     # keepalive defaults to 60 in the datastore but the legacy
     # internals clamp it to holdtime/3 (peer_timers_set), and the
     # legacy render prints the internals
-    assert "neighbor 10.0.0.2 timers 5 15" in output, (
-        f"hold-time alone must render with the clamped keepalive; "
+    assert output.count("neighbor 10.0.0.2 timers 5 15") == 1, (
+        f"hold-time alone must render once with the clamped keepalive; "
         f"got:\n{output}"
     )
     j = json.loads(r1.vtysh_cmd("show bgp neighbors 10.0.0.2 json"))
@@ -607,8 +607,8 @@ def test_neighbor_timers_single_leaf_grpc():
     step("Setting keepalive afterwards keeps the sibling")
     run_grpc_client(r1, f"commit-set,{NB}/timers/keepalive=5")
     output = r1.vtysh_cmd("show running-config bgpd")
-    assert "neighbor 10.0.0.2 timers 5 15" in output, (
-        f"keepalive modify must keep hold-time; got:\n{output}"
+    assert output.count("neighbor 10.0.0.2 timers 5 15") == 1, (
+        f"keepalive modify must keep hold-time exactly once; got:\n{output}"
     )
 
 
@@ -621,8 +621,8 @@ def test_neighbor_timers_destroy_grpc():
     step("Destroy keepalive; hold-time survives with the clamped default K")
     run_grpc_client(r1, f"commit-delete,{NB}/timers/keepalive")
     output = r1.vtysh_cmd("show running-config bgpd")
-    assert "neighbor 10.0.0.2 timers 5 15" in output, (
-        f"keepalive destroy must revert to the clamped default; "
+    assert output.count("neighbor 10.0.0.2 timers 5 15") == 1, (
+        f"keepalive destroy must revert to the clamped default once; "
         f"got:\n{output}"
     )
 
@@ -653,8 +653,8 @@ def test_peer_group_timers_grpc():
         ],
     )
     output = r1.vtysh_cmd("show running-config bgpd")
-    assert "neighbor s061pg timers 7 21" in output, (
-        f"expected peer-group timers on legacy CLI; got:\n{output}"
+    assert output.count("neighbor s061pg timers 7 21") == 1, (
+        f"expected exactly one peer-group timers line; got:\n{output}"
     )
 
     step("Destroy the pair; the group timers line is gone")
