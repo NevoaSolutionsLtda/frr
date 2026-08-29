@@ -95,30 +95,13 @@ REJECT_OP_TO_CB = {
 # a policy decision is recorded here -- see the module docstring for
 # the bar an entry must clear.
 #
-# Context- and instance-creation leaves whose fanouts are not wired
-# yet: the numbered-neighbor twin of each is wired, but a programmatic
-# commit must carry these leaves in the same transaction that creates
-# the peer-group / unnumbered-neighbor / AF / BGP instance, so
-# reject-strict would veto the whole context creation (the S061
-# peer-group gate, the EVPN unnumbered fanout and VRF gates, and the
-# mgmt set-config round-trip alike). Warn keeps the aggregated
-# warning for the datastore-only no-op; wiring the fanouts stays
-# tracked as the Phase D follow-up of issue #39.
+# The list is EMPTY since the s063 series drained it: the
+# context-creation fanouts (peer-group and unnumbered-neighbor
+# remote-as pairs, AF activation of both contexts, global/local-as)
+# are wired in bgp_nb.c and their TSV entries are gone.
 _BGP = ("/frr-routing:routing/control-plane-protocols/"
         "control-plane-protocol/frr-bgp:bgp")
 ALLOWLIST = [
-    (_BGP + "/peer-groups/peer-group/neighbor-remote-as",
-     "mandatory context-creation pair, unwired fanout (issue #39)"),
-    (_BGP + "/neighbors/unnumbered-neighbor/neighbor-remote-as",
-     "mandatory context-creation pair, unwired fanout (issue #39)"),
-    (_BGP + "/peer-groups/peer-group/afi-safis/afi-safi/enabled",
-     "AF-activation leaf of the unwired fanout contexts (issue #39)"),
-    (_BGP + "/neighbors/unnumbered-neighbor/afi-safis/afi-safi/enabled",
-     "AF-activation leaf of the unwired fanout contexts (issue #39)"),
-    (_BGP + "/global/local-as",
-     "BGP-instance leaf: legacy boot mirrors only the default "
-     "instance; programmatic instance creation (e.g. a VRF) needs it "
-     "in the same transaction (issue #39)"),
 ]
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

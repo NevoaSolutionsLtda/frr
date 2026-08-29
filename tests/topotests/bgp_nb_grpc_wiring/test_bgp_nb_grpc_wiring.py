@@ -107,6 +107,10 @@ def build_topo(tgen):
     tgen.add_router("r1")
     switch = tgen.add_switch("s1")
     switch.add_link(tgen.gears["r1"])
+    # second, idle link: r1-eth1 is reserved for the AF-activation gate
+    # so it never contends with the r1-eth0 state of the other tests
+    switch2 = tgen.add_switch("s2")
+    switch2.add_link(tgen.gears["r1"])
 
 
 def setup_module(mod):
@@ -676,6 +680,58 @@ def test_peer_group_timers_grpc():
 
 
 UNWIRED_KNOB = CPP + "/global/graceful-restart/disable-eor"
+DAEMON_KNOB = "/frr-bgp:bgp-daemon/session-dscp"
+
+
+def test_daemon_subtree_rejected_grpc():
+    """Fase D follow-up: the daemon-wide /frr-bgp:bgp-daemon subtree is
+    now in bgpd_config_xpaths, so the reject-strict class can actually
+    fire there. Before the subscription a programmatic write on the
+    subtree never reached bgpd: mgmtd committed it datastore-only and
+    the client saw a false commit-OK (silent no-op)."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Ensure the router base exists so a refusal cannot hide behind"
+         " the mandatory local-as check")
+    run_grpc_client_status(r1, f"commit-set,{CPP}/global/local-as=65000")
+
+    step("A gRPC write on the bgp-daemon subtree is refused"
+         " (reject-strict)")
+    rc, stdout, stderr = run_grpc_client_status(
+        r1, f"commit-set,{DAEMON_KNOB}=10"
+    )
+    assert "reject-strict" in (stdout + stderr), (
+        f"bgp-daemon write must fail with reject-strict now that bgpd"
+        f" subscribes the prefix; got: {stdout + stderr}"
+    )
+
+    step("The legacy CLI still owns the knob (CLI is exempt)")
+    r1.vtysh_cmd("configure terminal\nbgp session-dscp 10\n")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "bgp session-dscp 10" in output, (
+        f"CLI write must keep authority over the daemon knob; got:\n"
+        f"{output}"
+    )
+
+    step("A gRPC re-assertion of the CLI-applied knob is refused too")
+    rc, stdout, stderr = run_grpc_client_status(
+        r1, f"commit-set,{DAEMON_KNOB}=10"
+    )
+    assert "reject-strict" in (stdout + stderr), (
+        f"programmatic re-assertion of the CLI-applied daemon knob must"
+        f" fail with reject-strict; got: {stdout + stderr}"
+    )
+
+    step("The refusals leave the commit path healthy (wired knob)")
+    # 250 (not 200) so the health check of test_unwired_write_rejected
+    # -- which re-asserts local-pref=200 -- never degenerates into an
+    # empty "No changes found" commit when both tests run in sequence
+    run_grpc_client(r1, f"commit-set,{CPP}/global/local-pref=250")
+    out = run_grpc_client(r1, f"get-config,{CPP}/global/local-pref")
+    assert "250" in out, (
+        f"wired commit after the refusals must still apply; got: {out}"
+    )
 
 
 def test_unwired_write_rejected_grpc():
@@ -738,4 +794,224 @@ def test_unwired_write_rejected_grpc():
     out = run_grpc_client(r1, f"get-config,{CPP}/global/local-pref")
     assert "200" in out, (
         f"wired commit after the refusals must still apply; got: {out}"
+    )
+
+
+PG_RA = "pg-ra"
+NBPG_RA = f"{CPP}/peer-groups/peer-group[peer-group-name='{PG_RA}']"
+PG_MEMBER = "10.0.0.9"
+
+
+def test_peer_group_remote_as_grpc():
+    """The peer-group remote-as pair is wired: a single programmatic
+    transaction creates the group and sets its AS (peer_group_remote_as
+    internals), the legacy CLI renders it, and a later gRPC AS change
+    propagates to a CLI-created member -- the peer-group semantic that
+    separates peer_group_remote_as from a bare peer_as_change on the
+    group conf."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Create the peer-group and its remote-as in one transaction")
+    # local-as rides along: the YANG makes it mandatory on the bgp
+    # container, so a fresh mgmtd datastore (no CPP entry yet -- the
+    # boot config went straight to bgpd) rejects the create without it.
+    # Re-asserting it when the entry already exists is a no-op diff.
+    run_grpc_client(
+        r1,
+        [
+            f"commit-result,ALL,"
+            f"{CPP}/global/local-as=65000,"
+            f"{NBPG_RA}/neighbor-remote-as/remote-as-type=as-specified,"
+            f"{NBPG_RA}/neighbor-remote-as/remote-as=65077",
+        ]
+    )
+
+    step("The legacy CLI shows the group and its remote-as")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert f"neighbor {PG_RA} peer-group" in output, (
+        f"peer-group missing on legacy CLI; got:\n{output}"
+    )
+    assert f"neighbor {PG_RA} remote-as 65077" in output, (
+        f"group remote-as missing on legacy CLI; got:\n{output}"
+    )
+
+    step("Add a member through the legacy CLI (binds to the group AS)")
+    r1.vtysh_cmd(
+        f"configure terminal\nrouter bgp 65000\n"
+        f"neighbor {PG_MEMBER} peer-group {PG_RA}\n"
+        f"end\n"
+    )
+
+    step("Change the group AS over gRPC; the member must follow")
+    run_grpc_client(
+        r1, f"commit-set,{NBPG_RA}/neighbor-remote-as/remote-as=65078"
+    )
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert f"neighbor {PG_RA} remote-as 65078" in output, (
+        f"group remote-as change missing; got:\n{output}"
+    )
+    summary = json.loads(r1.vtysh_cmd("show bgp summary json"))
+    peer = summary["ipv4Unicast"]["peers"][PG_MEMBER]
+    assert peer["remoteAs"] == 65078, (
+        f"group AS change did not propagate to the member; "
+        f"got: {peer['remoteAs']}"
+    )
+
+
+IF_RA = "r1-eth0"
+NBIF_RA = f"{CPP}/neighbors/unnumbered-neighbor[interface='{IF_RA}']"
+
+
+def test_unnumbered_remote_as_grpc():
+    """The unnumbered-neighbor remote-as pair is wired: a single
+    programmatic transaction creates the unnumbered peer (peer_create
+    + ENHE + RA request, vty parity) without any CLI seeding, and a
+    later gRPC AS change on the CLI-seeded-free peer reaches the
+    internals (peer_remote_as path)."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Create the unnumbered neighbor over gRPC, no CLI seeding")
+    run_grpc_client(
+        r1,
+        [
+            f"commit-result,ALL,"
+            f"{CPP}/global/local-as=65000,"
+            f"{NBIF_RA}/neighbor-remote-as/remote-as-type=as-specified,"
+            f"{NBIF_RA}/neighbor-remote-as/remote-as=65100",
+        ]
+    )
+
+    step("The legacy CLI shows the interface neighbor")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert f"neighbor {IF_RA} interface remote-as 65100" in output, (
+        f"unnumbered remote-as missing on legacy CLI; got:\n{output}"
+    )
+
+    step("The peer carries the AS in the summary")
+    summary = json.loads(r1.vtysh_cmd("show bgp summary json"))
+    peer = summary["ipv4Unicast"]["peers"][IF_RA]
+    assert peer["remoteAs"] == 65100, (
+        f"unnumbered peer remoteAs wrong; got: {peer['remoteAs']}"
+    )
+
+    step("A gRPC AS change on the existing peer applies")
+    run_grpc_client(
+        r1, f"commit-set,{NBIF_RA}/neighbor-remote-as/remote-as=65101"
+    )
+    summary = json.loads(r1.vtysh_cmd("show bgp summary json"))
+    peer = summary["ipv4Unicast"]["peers"][IF_RA]
+    assert peer["remoteAs"] == 65101, (
+        f"unnumbered AS change did not apply; got: {peer['remoteAs']}"
+    )
+
+
+PG_AF = "pg-af"
+NBPG_AF = f"{CPP}/peer-groups/peer-group[peer-group-name='{PG_AF}']"
+IF_AF = "r1-eth1"
+NBIF_AF = f"{CPP}/neighbors/unnumbered-neighbor[interface='{IF_AF}']"
+AF_EVPN_IF = (f"{NBIF_AF}/afi-safis"
+              "/afi-safi[afi-safi-name='frr-routing:l2vpn-evpn']")
+AF_EVPN_PG = (f"{NBPG_AF}/afi-safis"
+              "/afi-safi[afi-safi-name='frr-routing:l2vpn-evpn']")
+
+
+def test_fanout_af_enabled_grpc():
+    """The AF-activation leaf of the unnumbered and peer-group contexts
+    is wired: peer_activate/peer_deactivate through the shared
+    per-AF callbacks (the context lookup probes the list key), where
+    activate on a group conf propagates to the members. Both contexts
+    are created by the same gRPC transactions -- no CLI seeding."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Create the peer-group and activate l2vpn-evpn in one shot")
+    run_grpc_client(
+        r1,
+        [
+            f"commit-result,ALL,"
+            f"{CPP}/global/local-as=65000,"
+            f"{NBPG_AF}/neighbor-remote-as/remote-as-type=as-specified,"
+            f"{NBPG_AF}/neighbor-remote-as/remote-as=65090,"
+            f"{AF_EVPN_PG}/enabled=true",
+        ]
+    )
+
+    step("Create the unnumbered neighbor and activate l2vpn-evpn")
+    run_grpc_client(
+        r1,
+        [
+            f"commit-result,ALL,"
+            f"{NBIF_AF}/neighbor-remote-as/remote-as-type=as-specified,"
+            f"{NBIF_AF}/neighbor-remote-as/remote-as=65110,"
+            f"{AF_EVPN_IF}/enabled=true",
+        ]
+    )
+
+    step("Both activations render under the l2vpn-evpn address-family")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "address-family l2vpn evpn" in output, (
+        f"l2vpn evpn af block missing; got:\n{output}"
+    )
+    assert f"neighbor {PG_AF} activate" in output, (
+        f"peer-group activation missing; got:\n{output}"
+    )
+    assert f"neighbor {IF_AF} activate" in output, (
+        f"unnumbered activation missing; got:\n{output}"
+    )
+
+    step("The group activation propagates to a CLI-added member")
+    r1.vtysh_cmd(
+        f"configure terminal\nrouter bgp 65000\n"
+        f"neighbor 10.0.0.19 peer-group {PG_AF}\n"
+        f"end\n"
+    )
+    summary = json.loads(r1.vtysh_cmd("show bgp summary json"))
+    assert "l2VpnEvpn" in summary, (
+        f"l2vpn evpn section missing from summary; got: {summary.keys()}"
+    )
+    assert "10.0.0.19" in summary["l2VpnEvpn"]["peers"], (
+        f"member not activated by the group; got: "
+        f"{summary['l2VpnEvpn']['peers'].keys()}"
+    )
+
+
+def test_local_as_modify_grpc():
+    """The instance AS leaf is wired. Creation transactions exercise
+    the idempotent pass-through (bgp_router_create builds the instance
+    with the leaf, then the modify fires with the same value); the
+    gate here is the other edge: changing the AS of a running instance
+    over gRPC is refused with the legacy CLI's instance-mismatch
+    wording instead of landing as a datastore-only no-op."""
+    tgen = get_topogen()
+    r1 = tgen.gears["r1"]
+
+    step("Prime the mgmtd datastore with the instance leaf"
+         " (best-effort; a no-diff abort is fine)")
+    run_grpc_client_status(r1, f"commit-set,{CPP}/global/local-as=65000")
+
+    step("An AS change on the running instance is refused (mismatch)")
+    rc, stdout, stderr = run_grpc_client_status(
+        r1, f"commit-set,{CPP}/global/local-as=65999"
+    )
+    assert "AS number mismatch" in (stdout + stderr), (
+        f"AS change must fail with the instance-mismatch wording; "
+        f"got: {stdout + stderr}"
+    )
+
+    step("The refusal leaves the instance untouched")
+    output = r1.vtysh_cmd("show running-config bgpd")
+    assert "router bgp 65000" in output, (
+        f"instance AS must stay 65000; got:\n{output}"
+    )
+    assert "router bgp 65999" not in output, (
+        f"the refused AS must not land; got:\n{output}"
+    )
+
+    step("A wired commit still applies afterwards")
+    run_grpc_client(r1, f"commit-set,{CPP}/global/local-pref=220")
+    out = run_grpc_client(r1, f"get-config,{CPP}/global/local-pref")
+    assert "220" in out, (
+        f"wired commit after the refusal must still apply; got: {out}"
     )

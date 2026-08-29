@@ -33,6 +33,13 @@ const struct frr_yang_module_info frr_bgp_info = {
 
 		/* global */
 		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/local-as",
+			.cbs = {
+				.modify   = bgp_global_local_as_modify,
+				.cli_show = bgp_nb_handled_by_parent_cli_show,
+			},
+		},
+		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/router-id",
 			.cbs = {
 				.modify   = bgp_global_router_id_modify,
@@ -5039,6 +5046,67 @@ const struct frr_yang_module_info frr_bgp_info = {
 				.cli_show = bgp_peer_group_cli_show,
 			},
 		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/neighbor-remote-as/remote-as-type",
+			.cbs = {
+				.modify = bgp_peer_group_remote_as_type_modify,
+				.destroy = bgp_peer_group_remote_as_type_destroy,
+				.cli_show = bgp_nb_handled_by_parent_cli_show,
+			},
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/neighbor-remote-as/remote-as",
+			.cbs = {
+				.modify = bgp_peer_group_remote_as_modify,
+				.destroy = bgp_peer_group_remote_as_destroy,
+				.cli_show = bgp_nb_handled_by_parent_cli_show,
+			},
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/neighbor-remote-as/remote-as-type",
+			.cbs = {
+				.modify = bgp_unnumbered_remote_as_type_modify,
+				.destroy = bgp_unnumbered_remote_as_type_destroy,
+				.cli_show = bgp_nb_handled_by_parent_cli_show,
+			},
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/neighbor-remote-as/remote-as",
+			.cbs = {
+				.modify = bgp_unnumbered_remote_as_modify,
+				.destroy = bgp_unnumbered_remote_as_destroy,
+				.cli_show = bgp_nb_handled_by_parent_cli_show,
+			},
+		},
+
+/*
+ * AF activation of the fanout contexts: the enabled leaf of the
+ * unnumbered and peer-group afi-safi lists reuses the numbered
+ * callbacks -- bgp_nb_peer_af_lookup resolves the peer by probing the
+ * context list key, and peer_activate on a group conf propagates the
+ * activation to every member (peer_deactivate likewise).
+ */
+#define BGP_NB_AF_CTX_ENABLED_XPATH(_ctx)                                     \
+	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/" \
+	"frr-bgp:bgp/" _ctx "/afi-safis/afi-safi/enabled"
+		{
+			.xpath = BGP_NB_AF_CTX_ENABLED_XPATH(
+					 "neighbors/unnumbered-neighbor"),
+			.cbs = {
+				.modify = bgp_neighbor_af_enabled_modify,
+				.destroy = bgp_neighbor_af_enabled_destroy,
+				.cli_show = bgp_nb_handled_by_parent_cli_show,
+			},
+		},
+		{
+			.xpath = BGP_NB_AF_CTX_ENABLED_XPATH("peer-groups/peer-group"),
+			.cbs = {
+				.modify = bgp_neighbor_af_enabled_modify,
+				.destroy = bgp_neighbor_af_enabled_destroy,
+				.cli_show = bgp_nb_handled_by_parent_cli_show,
+			},
+		},
+#undef BGP_NB_AF_CTX_ENABLED_XPATH
 
 		/*
 		 * l2vpn-evpn per-neighbor fanout: the remaining core
