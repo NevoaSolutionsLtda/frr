@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 import time
 
 import pytest
@@ -285,6 +286,46 @@ class GRPCClient:
                 channel.close()
 
         return json.dumps({"attempts": count})
+
+    def shutdown_hammer(self, threads, seconds, server, port):
+        """Keep unary RPCs in flight until the server goes away.
+
+        A unary accepted by the completion-queue thread after the
+        daemon's main thread started terminating used to park the gRPC
+        pthread in run()'s callback wait forever: the queued callback
+        could never run behind the shutdown, so mgmtd never exited
+        (#36).  Each hammer thread drives GetCapabilities on its own
+        channel until the call fails with the server; an accepted but
+        unanswered call is bounded by the per-call timeout.  Returns the
+        number of successful calls.
+        """
+        target = "{}:{}".format(server, port)
+        oks = [0] * threads
+        stop = time.time() + seconds
+
+        def hammer_one(idx):
+            channel = grpc.insecure_channel(target)
+            stub = frr_northbound_pb2_grpc.NorthboundStub(channel)
+            request = frr_northbound_pb2.GetCapabilitiesRequest()
+
+            while time.time() < stop:
+                try:
+                    stub.GetCapabilities(request, timeout=seconds)
+                except grpc.RpcError:
+                    break
+                oks[idx] += 1
+            channel.close()
+
+        workers = [
+            threading.Thread(target=hammer_one, args=(i,), daemon=True)
+            for i in range(threads)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=seconds + 15)
+
+        return json.dumps({"oks": sum(oks)})
 
     # Two grpc.insecure_channel() to one target inside one process share
     # a TCP connection (global subchannel pool), so the server would see
@@ -825,6 +866,9 @@ def main(*args):
         elif action.startswith("list-transactions-hammer,"):
             _, count = raw_action.split(",", 1)
             print(c.list_transactions_hammer(int(count), args.server, args.port))
+        elif action.startswith("shutdown-hammer,"):
+            _, threads, seconds = raw_action.split(",")
+            print(c.shutdown_hammer(int(threads), int(seconds), args.server, args.port))
         elif action.startswith("lock-ownership-scenario,"):
             _, xpath, value_a, value_b = raw_action.split(",", 3)
             print(
