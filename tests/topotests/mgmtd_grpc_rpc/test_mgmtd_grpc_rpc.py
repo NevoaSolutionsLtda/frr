@@ -11,6 +11,8 @@ Test mgmtd gRPC Execute RPC dispatch to backend daemons.
 import glob
 import json
 import os
+import threading
+import time
 
 import pytest
 from lib.common_config import retry, step
@@ -443,3 +445,62 @@ def test_execute_rejects_unknown_rpc_via_mgmtd_grpc(tgen):
     )
     assert rc != 0
     assert "INVALID_ARGUMENT" in stdout + stderr
+
+
+def test_mgmtd_exits_with_rpc_in_flight_when_terminated(tgen):
+    """Terminate mgmtd while unary RPCs are still being accepted (#36).
+
+    A unary whose completion the gRPC pthread dequeues after the main
+    thread started terminating used to park it in run()'s callback wait:
+    the queued c_callback could never run behind the shutdown, so
+    frr_grpc_finish() blocked in pthread_join() and mgmtd only died on
+    SIGKILL.  The hammer keeps unary RPCs in flight across the terminate
+    window; the daemon must exit on SIGTERM alone.
+
+    The window is raced, not forced: a missed window only weakens this
+    regression net, it cannot make the fixed code fail.
+    """
+    r1 = tgen.gears["r1"]
+    results = {}
+
+    def hammer():
+        results["raw"] = r1.net.cmd_raises(
+            [script_path, f"--port={GRPCP_MGMTD}"], stdin="SHUTDOWN-HAMMER,8,6\n"
+        )
+
+    step("Hammer unary RPCs and terminate mgmtd mid-stream")
+    worker = threading.Thread(target=hammer, daemon=True)
+    worker.start()
+    time.sleep(1)
+    r1.cmd_raises("kill -TERM $(cat /var/run/frr/mgmtd.pid)")
+
+    worker.join(timeout=45)
+    assert not worker.is_alive(), "shutdown hammer did not finish"
+    stats = json.loads(results["raw"])
+    assert stats["oks"] > 0, f"hammer never reached mgmtd: {stats}"
+
+    step("mgmtd exits on SIGTERM alone")
+    # A finished mgmtd may linger as a zombie (the container's PID 1
+    # does not reap it), and kill -0 succeeds on zombies: treat the
+    # zombie state as exited.
+    poll = (
+        "sh -c 'P=$(cat /var/run/frr/mgmtd.pid 2>/dev/null);"
+        " if [ -n \"$P\" ] && [ -d /proc/$P ]"
+        " && ! grep -q \"^State:.*Z\" /proc/$P/status 2>/dev/null;"
+        " then echo alive; else echo gone; fi'"
+    )
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if r1.cmd_raises(poll).strip() == "gone":
+            break
+        time.sleep(0.3)
+    else:
+        r1.cmd_raises(
+            "kill -9 $(cat /var/run/frr/mgmtd.pid) 2>/dev/null || true"
+        )
+        pytest.fail("mgmtd did not exit after SIGTERM: gRPC shutdown hang (#36)")
+    with open(os.path.join(tgen.logdir, "r1", "mgmtd.log"), encoding="utf-8") as log:
+        contents = log.read()
+    assert "Terminating on signal" in contents
+    for sig in ("Received signal 6", "Received signal 7", "Received signal 11"):
+        assert sig not in contents, f"mgmtd crashed during shutdown: {sig}"
