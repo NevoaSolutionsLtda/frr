@@ -169,6 +169,29 @@ class Candidates
 };
 
 /*
+ * How long run() waits for the main-thread callback before re-checking
+ * whether the module is shutting down.  frr_grpc_finish() terminates the
+ * gRPC pthread from the main thread while the callback is still queued
+ * behind it, so an unconditional wait would deadlock the pthread_join().
+ */
+#define GRPC_RUN_CALLBACK_POLL_MS 100
+
+/* Absolute deadline `ms` from now on `clk`, for pthread_cond_timedwait.
+ * Matches the condvar's clock: REALTIME for PTHREAD_COND_INITIALIZER,
+ * MONOTONIC for the SubscribeCleanup condattr clock.
+ */
+static void timespec_after_ms(struct timespec *ts, clockid_t clk, long ms)
+{
+	clock_gettime(clk, ts);
+	ts->tv_sec += ms / 1000;
+	ts->tv_nsec += (ms % 1000) * 1000 * 1000;
+	if (ts->tv_nsec >= 1000 * 1000 * 1000) {
+		ts->tv_sec++;
+		ts->tv_nsec -= 1000 * 1000 * 1000;
+	}
+}
+
+/*
  * RpcStateBase is the common base class used to track a gRPC RPC.
  */
 class RpcStateBase
@@ -200,6 +223,38 @@ class RpcStateBase
 	virtual bool repost_on_cq_error(void) const
 	{
 		return state == CREATE;
+	}
+
+	/*
+	 * Tags whose wait for the main-thread callback was interrupted by
+	 * shutdown.  The completion-queue pthread parks them here instead of
+	 * freeing: their c_callback may still be queued on the main thread,
+	 * so only the main thread, after joining the gRPC pthread, may
+	 * delete them.
+	 */
+	static void park_abandoned_tag(RpcStateBase *tag)
+	{
+		pthread_mutex_lock(&abandoned_tags_mtx);
+		abandoned_tags.push_back(tag);
+		pthread_mutex_unlock(&abandoned_tags_mtx);
+	}
+
+	static void delete_abandoned_tags_from_main(void)
+	{
+		while (true) {
+			RpcStateBase *tag;
+
+			pthread_mutex_lock(&abandoned_tags_mtx);
+			if (abandoned_tags.empty()) {
+				pthread_mutex_unlock(&abandoned_tags_mtx);
+				return;
+			}
+			tag = abandoned_tags.front();
+			abandoned_tags.pop_front();
+			pthread_mutex_unlock(&abandoned_tags_mtx);
+
+			delete tag;
+		}
 	}
 
 	bool is_initial_process() const
@@ -241,9 +296,42 @@ class RpcStateBase
 		event_add_event(main_master, c_callback, (void *)this, 0, NULL);
 
 		pthread_mutex_lock(&this->cmux);
-		while (this->state == PROCESS)
-			pthread_cond_wait(&this->cond, &this->cmux);
+		while (this->state == PROCESS) {
+			struct timespec wait_until;
+
+			/*
+			 * During shutdown the main thread is inside
+			 * frr_grpc_finish() waiting for this pthread, so
+			 * the queued c_callback can never run and a plain
+			 * cond_wait would deadlock the pthread_join().
+			 * Poll with a deadline instead; the callback wait
+			 * uses the same cadence as the Subscribe cleanup
+			 * wait below.
+			 */
+			timespec_after_ms(&wait_until, CLOCK_REALTIME,
+					  GRPC_RUN_CALLBACK_POLL_MS);
+			pthread_cond_timedwait(&this->cond, &this->cmux,
+					       &wait_until);
+			if (this->state == PROCESS && !grpc_is_running())
+				break;
+		}
 		pthread_mutex_unlock(&this->cmux);
+
+		if (this->state == PROCESS) {
+			/*
+			 * Shutdown interrupted the wait.  The queued
+			 * c_callback never runs, and no other completion
+			 * is outstanding for this tag: new ops are only
+			 * posted from the tag's own main-thread callback
+			 * (held behind the shutdown) or from async
+			 * finishers, which only see tags that already
+			 * left this wait.  Park the tag for the main
+			 * thread to delete after the gRPC pthread is
+			 * joined; the tag may not be freed here.
+			 */
+			park_abandoned_tag(this);
+			return true;
+		}
 
 		grpc_debug("%s RPC in %s on grpc-io-thread", name,
 			   call_states[this->state]);
@@ -292,9 +380,16 @@ class RpcStateBase
 	CallState state = CREATE;
 	CallState entered_state = CREATE;
 
+      private:
+	static pthread_mutex_t abandoned_tags_mtx;
+	static std::list<RpcStateBase *> abandoned_tags;
+
       public:
 	const char *name;
 };
+
+pthread_mutex_t RpcStateBase::abandoned_tags_mtx = PTHREAD_MUTEX_INITIALIZER;
+std::list<RpcStateBase *> RpcStateBase::abandoned_tags;
 
 /*
  * The UnaryRpcState class is used to track the execution of a Unary RPC.
@@ -1146,7 +1241,6 @@ class SubscribeRpcState : public RpcStateBase {
 				      frr::SubscribeResponse &&resp);
 	static void deregister_all_from_main(void);
 	static void cancel_cleanup_events_from_main(void);
-	static void delete_abandoned_tags_from_main(void);
 
 	frr::SubscribeRequest request;
 	frr::SubscribeResponse response;
@@ -1259,8 +1353,6 @@ static pthread_mutex_t active_subscriptions_mtx = PTHREAD_MUTEX_INITIALIZER;
 static std::list<Subscription *> active_subscriptions;
 static pthread_mutex_t active_subscribe_cleanups_mtx = PTHREAD_MUTEX_INITIALIZER;
 static std::list<SubscribeCleanup *> active_subscribe_cleanups;
-static pthread_mutex_t abandoned_subscribe_tags_mtx = PTHREAD_MUTEX_INITIALIZER;
-static std::list<SubscribeRpcState *> abandoned_subscribe_tags;
 
 struct SubscribeCleanup {
 	pthread_mutex_t mtx;
@@ -1374,8 +1466,8 @@ static void grpc_notification_data_dispatch(const char *xpath, LYD_FORMAT format
 	 * sub->mtx is released: every path that deletes a SubscribeRpcState
 	 * runs on this thread, waits for it (SubscribeCleanup handshake),
 	 * or runs after the gRPC pthread is joined
-	 * (delete_abandoned_tags_from_main), and a tag deleted in FINISH
-	 * state already unsubscribed this selector on this thread.
+	 * (RpcStateBase::delete_abandoned_tags_from_main), and a tag deleted
+	 * in FINISH state already unsubscribed this selector on this thread.
 	 */
 	pthread_mutex_lock(&sub->mtx);
 	tag = sub->tag;
@@ -1513,24 +1605,6 @@ void SubscribeRpcState::cancel_cleanup_events_from_main(void)
 		}
 		if (free_now)
 			subscribe_cleanup_free(cleanup);
-	}
-}
-
-void SubscribeRpcState::delete_abandoned_tags_from_main(void)
-{
-	while (true) {
-		SubscribeRpcState *tag;
-
-		pthread_mutex_lock(&abandoned_subscribe_tags_mtx);
-		if (abandoned_subscribe_tags.empty()) {
-			pthread_mutex_unlock(&abandoned_subscribe_tags_mtx);
-			return;
-		}
-		tag = abandoned_subscribe_tags.front();
-		abandoned_subscribe_tags.pop_front();
-		pthread_mutex_unlock(&abandoned_subscribe_tags_mtx);
-
-		delete tag;
 	}
 }
 
@@ -2415,9 +2489,7 @@ bool SubscribeRpcState::handle_cq_error(void)
 		 * and its destructor frees the parked subscription.
 		 */
 		if (abandon) {
-			pthread_mutex_lock(&abandoned_subscribe_tags_mtx);
-			abandoned_subscribe_tags.push_back(this);
-			pthread_mutex_unlock(&abandoned_subscribe_tags_mtx);
+			park_abandoned_tag(this);
 			return false;
 		}
 		return true;
@@ -2450,12 +2522,7 @@ bool SubscribeRpcState::handle_cq_error(void)
 
 	pthread_mutex_lock(&cleanup->mtx);
 	while (!cleanup->done) {
-		clock_gettime(CLOCK_MONOTONIC, &wait_until);
-		wait_until.tv_nsec += 100 * 1000 * 1000;
-		if (wait_until.tv_nsec >= 1000 * 1000 * 1000) {
-			wait_until.tv_sec++;
-			wait_until.tv_nsec -= 1000 * 1000 * 1000;
-		}
+		timespec_after_ms(&wait_until, CLOCK_MONOTONIC, 100);
 		pthread_cond_timedwait(&cleanup->cond, &cleanup->mtx, &wait_until);
 		if (!grpc_is_running())
 			break;
@@ -4024,11 +4091,12 @@ static int frr_grpc_finish(void)
 	frr_pthread_destroy(fpt);
 
 	/*
-	 * The completion-queue pthread is gone; delete the Subscribe tags it
-	 * parked instead of freeing while the main thread could still be
-	 * using them.
+	 * The completion-queue pthread is gone; delete the tags it parked
+	 * instead of freeing while the main thread could still be using
+	 * them: Subscribe tags interrupted mid-cleanup, and any RPC tag
+	 * whose callback wait run() abandoned during shutdown.
 	 */
-	SubscribeRpcState::delete_abandoned_tags_from_main();
+	RpcStateBase::delete_abandoned_tags_from_main();
 
 	/*
 	 * Cleanup after pthread_join(): the gRPC thread is gone, so reset
