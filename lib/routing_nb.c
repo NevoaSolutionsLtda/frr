@@ -9,20 +9,43 @@
 #include "libfrr.h"
 #include "routing_nb.h"
 
+/* clang-format off */
+DEFINE_HOOK(routing_control_plane_protocol_oper_next,
+	    (const void **entry), (entry));
+DEFINE_HOOK(routing_control_plane_protocol_oper_keys,
+	    (const void *entry, struct yang_list_keys *keys), (entry, keys));
+DEFINE_HOOK(routing_control_plane_protocol_oper_lookup,
+	    (const struct yang_list_keys *keys, const void **entry),
+	    (keys, entry));
+/* clang-format on */
+
 static const void *cpp_get_next(struct nb_cb_get_next_args *args)
 {
+	const void *entry = args->list_entry;
+
+	if (hook_call(routing_control_plane_protocol_oper_next, &entry))
+		return entry;
+
 	return NULL;
 }
 
 static int cpp_get_keys(struct nb_cb_get_keys_args *args)
 {
+	if (hook_call(routing_control_plane_protocol_oper_keys,
+		      args->list_entry, args->keys))
+		return NB_OK;
+
 	args->keys->num = 0;
 	return NB_OK;
 }
 
 static const void *cpp_lookup_entry(struct nb_cb_lookup_entry_args *args)
 {
-	return NULL;
+	const void *entry = NULL;
+
+	hook_call(routing_control_plane_protocol_oper_lookup, args->keys,
+		  &entry);
+	return entry;
 }
 
 /* clang-format off */

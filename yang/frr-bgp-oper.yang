@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: BSD-2-Clause
+module frr-bgp-oper {
+  yang-version 1.1;
+  namespace "http://frrouting.org/yang/bgp-oper";
+  prefix frr-bgp-oper;
+
+  import ietf-inet-types {
+    prefix inet;
+  }
+
+  import frr-routing {
+    prefix frr-rt;
+  }
+
+  import frr-bgp {
+    prefix frr-bgp;
+  }
+
+  organization
+    "FRRouting";
+  contact
+    "FRR Users List: <mailto:frog@lists.frrouting.org>
+     FRR Development List: <mailto:dev@lists.frrouting.org>";
+  description
+    "This module defines read-only operational state for the FRR bgpd
+     daemon.
+
+     The module is a fork-local addition: the frr-bgp yang family
+     (frr-bgp.yang and submodules) is kept byte-identical to upstream
+     and carries no config false nodes, so bgpd operational state is
+     served through this separate module augmenting the bgp container
+     (the same pattern frr-zebra.yang uses for
+     /frr-interface:lib/interface).
+
+     v1 leaf inventory mirrors the 'show bgp summary json' projection
+     consumed by the MGC executor.
+
+     Copyright 2026 FRRouting
+
+     Redistribution and use in source and binary forms, with or without
+     modification, are permitted provided that the following conditions
+     are met:
+
+     1. Redistributions of source code must retain the above copyright
+        notice, this list of conditions and the following disclaimer.
+
+     2. Redistributions in binary form must reproduce the copyright
+        notice, this list of conditions and the following disclaimer in
+        the documentation and/or other materials provided with the
+        distribution.
+
+     THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+     CONTRIBUTORS 'AS IS' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+     INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+     MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+     DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS
+     BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+     EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+     TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+     DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+     ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+     LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+     ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+     POSSIBILITY OF SUCH DAMAGE.";
+
+  revision 2026-08-31 {
+    description
+      "Initial revision: instance, global per-afi-safi and neighbor
+       session state (B5.1 pull path).";
+  }
+
+  augment "/frr-rt:routing/frr-rt:control-plane-protocols/frr-rt:control-plane-protocol/frr-bgp:bgp" {
+    container state {
+      config false;
+      description
+        "Per-instance operational state.";
+      leaf router-id {
+        type inet:ipv4-address;
+        description
+          "BGP router identifier in use by this instance.";
+      }
+      leaf local-as {
+        type uint32;
+        description
+          "Local autonomous system number of this instance.";
+      }
+      leaf view {
+        type string;
+        description
+          "View name when this instance is a view.";
+      }
+    }
+  }
+
+  augment "/frr-rt:routing/frr-rt:control-plane-protocols/frr-rt:control-plane-protocol/frr-bgp:bgp/frr-bgp:global" {
+    container state {
+      config false;
+      description
+        "Global per-address-family operational counters.";
+      list afi-safi {
+        key "afi-safi-name";
+        description
+          "Operational counters for one enabled address family.";
+        leaf afi-safi-name {
+          type identityref {
+            base frr-rt:afi-safi-type;
+          }
+          description
+            "AFI, SAFI.";
+        }
+        leaf table-version {
+          type uint64;
+          description
+            "Routing table version counter for this address family.";
+        }
+        leaf rib-count {
+          type uint32;
+          description
+            "Number of RIB entries for this address family.";
+        }
+      }
+    }
+  }
+
+  augment "/frr-rt:routing/frr-rt:control-plane-protocols/frr-rt:control-plane-protocol/frr-bgp:bgp/frr-bgp:neighbors/frr-bgp:neighbor" {
+    container state {
+      config false;
+      description
+        "Neighbor session state (the 'show bgp summary json'
+         projection).";
+      leaf fsm-state {
+        type string;
+        description
+          "BGP finite state machine state of the connection
+           (Idle, Connect, Active, OpenSent, OpenConfirm,
+           Established).";
+      }
+      leaf connections-established {
+        type uint32;
+        description
+          "Number of times the session entered the established
+           state.";
+      }
+      leaf connections-dropped {
+        type uint32;
+        description
+          "Number of times an established session was dropped.";
+      }
+      leaf uptime-msec {
+        type uint64;
+        description
+          "Time since the last up/down transition, in
+           milliseconds.";
+      }
+      leaf last-reset {
+        type string;
+        description
+          "Reason the session was last reset.";
+      }
+      leaf msg-rcvd {
+        type uint64;
+        description
+          "Total number of messages received.";
+      }
+      leaf msg-snt {
+        type uint64;
+        description
+          "Total number of messages sent.";
+      }
+      list afi-safi {
+        key "afi-safi-name";
+        description
+          "Per-address-family prefix counters for this neighbor.";
+        leaf afi-safi-name {
+          type identityref {
+            base frr-rt:afi-safi-type;
+          }
+          description
+            "AFI, SAFI.";
+        }
+        leaf pfx-rcd {
+          type uint32;
+          description
+            "Number of prefixes received.";
+        }
+        leaf pfx-snt {
+          type uint32;
+          description
+            "Number of prefixes sent.";
+        }
+      }
+    }
+  }
+}

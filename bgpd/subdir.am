@@ -71,6 +71,7 @@ bgpd_libbgp_a_SOURCES = \
 	bgpd/bgp_route.c \
 	bgpd/bgp_nb.c \
 	bgpd/bgp_nb_config.c \
+	bgpd/bgp_nb_oper.c \
 	bgpd/bgp_nb_stubs.c \
 	bgpd/bgp_routemap.c \
 	bgpd/bgp_routemap_nb.c \
@@ -254,4 +255,5 @@ nodist_bgpd_bgpd_SOURCES = \
 	yang/frr-deviations-bgp-datacenter.yang.c \
 	yang/frr-bgp-filter.yang.c \
 	yang/frr-bgp-route-map.yang.c \
+	yang/frr-bgp-oper.yang.c \
 	# end

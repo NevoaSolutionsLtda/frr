@@ -103,6 +103,7 @@ dist_yangmodels_DATA += yang/frr-bgp-bmp.yang
 dist_yangmodels_DATA += yang/frr-bgp-evpn.yang
 dist_yangmodels_DATA += yang/frr-bgp-types.yang
 dist_yangmodels_DATA += yang/frr-bgp.yang
+dist_yangmodels_DATA += yang/frr-bgp-oper.yang
 endif
 
 if OSPFD

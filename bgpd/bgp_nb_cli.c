@@ -24,3 +24,19 @@ const struct frr_yang_module_info frr_bgp_cli_info = {
 		},
 	},
 };
+
+/*
+ * Schema-only registration for the fork-local frr-bgp-oper state
+ * module: mgmtd must resolve .../frr-bgp-oper:* xpaths so Get(STATE)
+ * and Subscribe on the BGP subtree dispatch to the bgpd backend
+ * client. bgpd serves the module in tree mode (bgpd/bgp_nb_oper.c).
+ */
+const struct frr_yang_module_info frr_bgp_oper_cli_info = {
+	.name = "frr-bgp-oper",
+	.ignore_cfg_cbs = true,
+	.nodes = {
+		{
+			.xpath = NULL,
+		},
+	},
+};
