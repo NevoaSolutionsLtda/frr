@@ -128,6 +128,7 @@ extern const struct frr_yang_module_info frr_staticd_cli_info;
 #endif
 #ifdef HAVE_BGPD
 extern const struct frr_yang_module_info frr_bgp_cli_info;
+extern const struct frr_yang_module_info frr_bgp_oper_cli_info;
 #endif
 
 /*
@@ -206,6 +207,7 @@ static const struct frr_yang_module_info *const mgmt_yang_modules[] = {
 #endif
 #ifdef HAVE_BGPD
 	&frr_bgp_cli_info,
+	&frr_bgp_oper_cli_info,
 #endif
 #ifdef HAVE_MGMTD_TESTC
 	&frr_test_config_info,

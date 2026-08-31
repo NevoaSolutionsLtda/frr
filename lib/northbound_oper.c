@@ -2068,11 +2068,28 @@ static enum nb_error nb_op_ys_init_schema_path(struct nb_op_yield_state *ys,
 		int mnlen = 0;
 
 		s2 = s;
+		int nlen0 = nlen;
 		while (true) {
 			/* skip past any module name prefix */
 			s2 = strstr(s2, name);
 			if (!s2)
 				goto error;
+
+			/*
+			 * Position of the matched name before any module
+			 * prefix adjustment. Advancing must always move
+			 * past this match: after a successful prefix
+			 * adjustment the scan position moved BACK by
+			 * mnlen, so advancing by strlen(name) alone could
+			 * re-find the same match forever when a predicate
+			 * value contains "<module>:<name>" (e.g.
+			 * [type='frr-bgp:bgp'] when tokenizing "bgp" of
+			 * module frr-bgp). The token length is likewise
+			 * tracked per candidate: a failed candidate must
+			 * not leave its prefix adjustment behind.
+			 */
+			const char *match = s2;
+			int cand_len = nlen0;
 
 			if (s2 > s && s2[-1] == ':') {
 				mnlen = strlen(modname) + 1;
@@ -2082,16 +2099,17 @@ static enum nb_error nb_op_ys_init_schema_path(struct nb_op_yield_state *ys,
 					continue;
 				}
 				s2 -= mnlen;
-				nlen += mnlen;
+				cand_len += mnlen;
 			}
 
 			if ((i == 0 || s2[-1] == '/') &&
-			    (s2[nlen] == 0 || s2[nlen] == '[' || s2[nlen] == '/')) {
+			    (s2[cand_len] == 0 || s2[cand_len] == '[' || s2[cand_len] == '/')) {
 				s = s2;
+				nlen = cand_len;
 				break;
 			}
 			/* No exact match at end, advance and try again */
-			s2 += strlen(name);
+			s2 = match + nlen0;
 		}
 
 		/* NUL terminate previous token and save this one */

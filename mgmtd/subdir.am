@@ -124,6 +124,7 @@ nodist_mgmtd_mgmtd_SOURCES += \
 	yang/frr-deviations-bgp-datacenter.yang.c \
 	yang/frr-bgp-filter.yang.c \
 	yang/frr-bgp-route-map.yang.c \
+	yang/frr-bgp-oper.yang.c \
 	# end
 mgmtd_libmgmt_be_nb_la_SOURCES += \
 	bgpd/bgp_nb_cli.c \

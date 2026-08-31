@@ -39,6 +39,7 @@
 #include "bgpd/bgp_nexthop.h"
 #include "bgpd/bgp_regex.h"
 #include "bgpd/bgp_clist.h"
+#include "bgpd/bgp_nb_oper.h"
 #include "bgpd/bgp_debug.h"
 #include "bgpd/bgp_errors.h"
 #include "bgpd/bgp_filter.h"
@@ -419,6 +420,7 @@ static const struct frr_yang_module_info *const bgpd_yang_modules[] = {
 	&frr_vrf_info,
 	&frr_bgp_info,
 	&frr_bgp_route_map_info,
+	&frr_bgp_oper_info,
 };
 
 /*
@@ -452,9 +454,24 @@ static const char *const bgpd_config_xpaths[] = {
 	"/frr-route-map:lib",
 };
 
+/*
+ * Oper-state subscriptions (B5.1): the exact frr-bgp-oper augmented
+ * prefixes, so Get/Subscribe on the BGP subtree (or anything broader)
+ * dispatches to bgpd without claiming non-BGP protocol subtrees. A
+ * query that is a prefix of these paths (e.g. the whole
+ * control-plane-protocols container) also matches.
+ */
+static const char *const bgpd_oper_xpaths[] = {
+	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/frr-bgp-oper:state",
+	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/global/frr-bgp-oper:state",
+	"/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/frr-bgp-oper:state",
+};
+
 static struct mgmt_be_client_cbs bgpd_be_client_cbs = {
 	.config_xpaths  = bgpd_config_xpaths,
 	.nconfig_xpaths = array_size(bgpd_config_xpaths),
+	.oper_xpaths  = bgpd_oper_xpaths,
+	.noper_xpaths = array_size(bgpd_oper_xpaths),
 };
 
 /* clang-format off */
@@ -604,6 +621,9 @@ int main(int argc, char **argv)
 
 	/* BGP related initialization.  */
 	bgp_init((unsigned short)instance);
+
+	/* B5.1: oper-state trunk-list iteration providers. */
+	bgp_nb_oper_init();
 
 	if (list_isempty(bm->addresses)) {
 		snprintf(bgpd_di.startinfo, sizeof(bgpd_di.startinfo),

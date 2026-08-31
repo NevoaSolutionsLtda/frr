@@ -13,6 +13,7 @@
 
 #include "bgpd/bgpd.h"
 #include "bgpd/bgp_nb.h"
+#include "bgpd/bgp_nb_oper.h"
 #include "bgpd/bgp_nb_stubs.h"
 
 /* clang-format off */
@@ -824,9 +825,16 @@ const struct frr_yang_module_info frr_bgp_info = {
 			.cbs = {
 				.create  = bgp_neighbor_create,
 				.destroy = bgp_neighbor_destroy,
-				.get_next     = bgp_nb_stub_get_next,
-				.get_keys     = bgp_nb_stub_get_keys,
-				.lookup_entry = bgp_nb_stub_lookup_entry,
+				/*
+				 * Real iteration for oper walks (B5.1):
+				 * keyed lookups and list enumeration on
+				 * the state path resolve through the
+				 * peer list; the config path never
+				 * invokes these.
+				 */
+				.get_next     = bgp_nb_oper_neighbor_get_next,
+				.get_keys     = bgp_nb_oper_neighbor_get_keys,
+				.lookup_entry = bgp_nb_oper_neighbor_lookup_entry,
 				.cli_show = bgp_nb_handled_by_parent_cli_show,
 			},
 		},
